@@ -1,86 +1,129 @@
-# nazar-tray — project notes and v1 spec
+# nazar-tray — project notes and v1 plan
 
 Internal project notes. Kept in English so the repo is readable by everyone.
 
-> **The system-tray face of Nazar.** Shows your Claude Code and Codex usage windows (5-hour and weekly) in the tray, with an icon that fills up as you burn quota. Feeds the same `limits.json` that the Nazar canvas reads.
+> **The system-tray face of Nazar.** Shows your Claude Code and Codex usage windows (5-hour and weekly) in the tray, with a bead icon that fills up as you burn quota. Writes the same `limits.json` that the Nazar canvas reads. **Reads nothing but local files. Never touches credentials. Never touches the network.**
 
 - Folder: `C:\nazar-tray` · Repo: `github.com/xfurqan0/nazar-tray` — private until first release
-- Started: 2026-09-07 (maintainer decision; the underlying tray app has existed since 2026-08-27 inside a private vault)
-- License: MIT · Sibling projects: [Nazar](https://github.com/xfurqan0/nazar) (canvas monitor), Dile (dictation)
-- Competitive scan: internal notes, 2026-09-06 (19+ Windows tray tools found; summary in §1)
+- Started: 2026-09-07 · License: MIT · Siblings: [Nazar](https://github.com/xfurqan0/nazar) (canvas monitor), Dile (dictation)
+- Research phase closed 2026-09-07 03:00: market study (8 competitors, issue clustering, stack and distribution analysis) + code audit of the existing prototype (36 findings). Internal notes hold the full reports.
+- **Policy (maintainer):** quality over schedule, no deadline. Work packages are ordered; a package is done before the next starts. Code starts only when the maintainer says go.
 
 ---
 
 ## 1. Why this exists, and why it is not "the 20th tray"
 
-A Windows tray showing AI-agent quota is a crowded niche: Win-CodexBar (1.0k★), Token Monitor (2.0k★), CodeZeno's Usage Monitor, and a dozen smaller ones, most committed to within the last week. Nothing here wins on "tray + progress bars".
+A tray showing AI-agent quota is a crowded niche: Token Monitor (2.0k★), Win-CodexBar (1.0k★), CodeZeno (447★), aqua5230/usage (309★), and a dozen smaller ones, most active this week. Nothing wins on "tray + progress bars".
 
-nazar-tray is different in two ways, and only these two are worth writing in the README:
+What the research found that nobody ships:
 
-1. **The tray process never touches credentials or the network.** Most tools in this niche read `~/.claude/.credentials.json` or even browser cookies from inside an unsigned binary. nazar-tray splits the job: a small fetcher (`nazar-limits`) reads the local OAuth tokens in memory, calls the two official usage endpoints, and writes a token-free `limits.json`. The tray only reads that file. The compiled tray links no networking stack at all, which can be verified from the binary.
-2. **It is part of Nazar.** The same `limits.json` drives the quota strip on the Nazar canvas. Install the tray, and the canvas gets quota for free. The tray stays a separately downloadable app (maintainer decision, 2026-09-07); it does not get folded into Nazar.
+1. **Zero credentials, zero network — end to end.** Every competitor reads OAuth tokens or browser cookies from inside an unsigned binary and calls an undocumented endpoint that returns 429 under load. It turns out the data is already on disk:
+   - **Codex** writes its server-reported quota into every session log: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` carries `rate_limits.primary/secondary` with `used_percent`, `window_minutes` (300 / 10080), `resets_at`, `plan_type`. Verified on the maintainer's machine (13 writes in one session).
+   - **Claude Code** hands the same numbers to the status-line command on every refresh: `rate_limits.five_hour.used_percentage`, `rate_limits.seven_day.used_percentage`, `resets_at` (documented at code.claude.com/docs/en/statusline).
+   So nazar-tray needs no fetcher, no token, no HTTP client. This also keeps it clearly outside Anthropic's terms, which forbid tools that "collect, store, or intermediate Claude.ai credentials or session tokens".
+2. **Threshold notifications.** The two Windows leaders do not mention notifications at all. Being warned at 85 % before hitting the wall is the reason a quota tray exists.
+3. **Multi-account is the most requested feature and nobody has it.** CodexBar's maintainer: token/cookie-based fetching "will not work if we ever wanna support multiple accounts". A file-based design gets it almost for free (v2).
+4. **Part of Nazar.** The same `limits.json` drives the quota strip on the Nazar canvas. The tray stays a separately downloadable app (maintainer decision); it is not folded into Nazar.
 
 ## 2. Scope and non-goals
 
 | nazar-tray **is** | nazar-tray **is not** |
 |---|---|
-| Tray icon + popup panel with Claude and Codex windows, reset countdowns | A launcher, session manager, or cost analytics dashboard |
-| A tiny fetcher that writes `~/.nazar/limits.json` on a schedule | A tool that stores, logs, or forwards tokens anywhere |
-| Windows first (v1), macOS and Linux later (v2, Tauri rewrite) | A cross-platform app in v1 |
+| Tray icon + popup panel: Claude and Codex windows, percentages, reset countdowns | A launcher, session manager, or cost analytics dashboard |
+| A passive reader of local files that writes `~/.nazar/limits.json` | Anything that reads, stores, or forwards tokens |
+| Windows release first; macOS and Linux builds later from the same code | A Windows-only codebase |
+| Six UI languages from day one: EN, TR, ZH, KO, RU, ES | — |
 
-## 3. What already exists (source of v1)
+## 3. Decisions taken in the research phase (2026-09-07)
 
-Built 2026-08-27 as a personal tool, audited, running daily since. To be migrated into this repo at M1:
-
-| Piece | Current form | Notes |
+| Topic | Decision | Why |
 |---|---|---|
-| Tray app | `Tray.cs`, ~690 lines, C# 5, WinForms, compiled with the `csc.exe` that ships with .NET Framework 4.x — **no SDK needed**, ~24 KB exe | Hard-coded vault paths; Turkish comments; visual language borrowed from Win-CodexBar (Apple system greys) |
-| Fetcher | `limit-widget.js`, Node stdlib only | Reads `~/.claude/.credentials.json` and `~/.codex/auth.json` in memory, calls `api.anthropic.com/api/oauth/usage` and `chatgpt.com/backend-api/codex/usage`, writes `limits.json` + a Markdown note; keeps last-good data on failure and marks it stale |
-| Scheduler | Windows Scheduled Task every 30 min via a hidden `.vbs` launcher | `install-limit-widget-task.ps1` |
-| Autostart | Startup-folder shortcut (added 2026-09-06) | |
+| Data source | **Passive.** Codex: tail the newest `rollout-*.jsonl`. Claude: a tiny status-line wrapper that records the payload's `rate_limits` and then runs the user's existing status-line command unchanged. | See §1.1. Removes tokens, network, 429s, the scheduled task, the lock file and ~120 lines of shell glue. |
+| Stack | **Tauri v2** (Rust core + small web panel). Ship **Windows only** in v1; macOS build later; Linux via CLI output and the Nazar canvas (no stack supports a tray popup reliably on Linux; even 21k★ CodexBar closed its Linux tray issue as not planned). | Tauri 5 MB vs Electron 105 MB; tray, notification, autostart and updater are first-party plugins. Windows-only → cross-platform is a ~20 % step; WinForms → anything is a rewrite. Same stack as Dile. |
+| Existing C# prototype | **Not migrated.** Used as the behavioral spec; its good decisions are listed in §5. | The repo has no code yet, so the cost of not porting is zero today and grows after the first package. |
+| Refresh | **Inside the tray process.** File watchers + a 60 s poll; no OS scheduler. | Kills the Task Scheduler / launchd / systemd triple, the VBS launcher and the lock race the audit proved from logs. |
+| i18n | JSON locale files, system language auto-detected, override in settings. EN and TR by the maintainer; ZH, KO, RU, ES machine-translated first, corrections via PR. | Win-CodexBar ships five languages; table stakes. |
+| Distribution | GitHub Releases + **winget** (accepts unsigned installers) + apply to **SignPath Foundation** for a free OSS Windows OV certificate. macOS notarization ($99/yr) only with the macOS build; Homebrew cask needs 225★. | EV certs no longer bypass SmartScreen (2024). Budget ceiling ≈ $126/yr. |
+| Visual identity | Nazar bead: deep blue / light blue / white / black dot. Icon = bead filling from the bottom with the binding window; amber ≥ 60 %, red ≥ 85 %, **grey = unknown** (never a reassuring "0"). Panel on navy. Themes as JSON: `nazar` (default), `graphite`. | Drops the Apple-grey look inherited from Win-CodexBar; inspiration credited in README, not in code. |
 
-Security profile of the tray, verified on source and binary: no `System.Net`, `wininet`, `ws2_32`, `winhttp`, `crypt32`; no credential file paths; exactly two `Process.Start` uses (hidden refresh, note open) — the note-open action was removed on 2026-09-06, leaving one.
+## 4. Known limits of the passive design (write them in the README)
 
-## 4. v1 scope (one working day)
+- Claude numbers update only while a Claude Code session refreshes its status line. Between sessions the tray shows the last value with its age and a countdown computed locally from `resets_at`. Quota does not burn while you are not using it, so this is honest, not stale.
+- The status-line payload carries the 5-hour and 7-day windows. Model-scoped weekly windows (e.g. a Fable-only weekly cap) are only available from the official usage endpoint. **Open decision:** an opt-in "official endpoint" mode for users who want that window (default off, clearly labeled, never required).
+- Users who already run a custom status line keep it: the wrapper chains to it. Users without one get a minimal default.
+- Codex log format is not a documented contract; the reader is defensive (schema-tolerant, keeps last good value, reports "unknown" rather than guessing).
+- Unsigned until SignPath approval; SmartScreen will warn. winget install avoids the browser download warning.
 
-**In:**
-1. Migrate `Tray.cs` → `src/tray/`, `limit-widget.js` → `src/limits/`. **All comments and strings in English.** Paths parameterized: config at `%APPDATA%\nazar\config.json`, data at `~/.nazar/limits.json` (shared with Nazar).
-2. **New visual identity.** Drop the Apple-grey / Win-CodexBar look. Palette from the nazar bead: deep blue, light blue, white, black dot. Tray icon = the bead, filling from the bottom as the binding window fills; amber at 60 %, red at 85 %. Panel on a navy ground. Remove the "Win-CodexBar panel" comment from the source; acknowledge inspiration in README instead.
-3. **Themes as a JSON file.** Two shipped: `nazar` (default) and `graphite` (today's dark grey). Palette + thresholds only. More themes later, shared with Nazar's theme system.
-4. Threshold notifications (Windows toast) at 85 % and 100 %, once per window per reset.
-5. Stale-data state: if `limits.json` is older than 45 min, icon turns grey.
-6. Show the Fable weekly window separately (present in the data, not yet in the tray).
-7. `install.ps1`: compile with `csc.exe`, place exe, register the scheduled task, add autostart. `uninstall.ps1` reverses all of it.
+## 5. What the audit said to keep and to fix
 
-**Out (v2+):** macOS/Linux (Tauri rewrite, same stack as Dile) · light theme · per-provider enable/disable · history graph · other providers (Gemini, Copilot).
+**Keep from the prototype (proven, port the behavior):** split between data producer and display · last-good data with an explicit stale flag · never mix response bodies into error text · one function measures and draws the panel · rotate icon handles to avoid GDI leaks · single-instance guard.
 
-**Known limits (README):** the Codex usage endpoint is undocumented and may change. The tray is unsigned; SmartScreen will warn (same as every tool in this niche; code signing is a later decision). Windows 11 hides new tray icons in the `^` overflow by default.
+**Fix (all 🔴/🟠 findings become acceptance criteria):**
+- On any read error the icon shows **unknown** (grey, "?"), never `0`.
+- **Binding window** = the window with the highest percentage across all windows of a provider; never invented from a flag that the source does not provide.
+- Atomic writes: temp file + rename. Single writer (the tray process).
+- Reset math in the user's local time zone; percent rounding at display time only.
+- Windows 11 tray overflow: first-run hint to pin the icon.
+- DPI-aware rendering (Tauri handles the window; icon rendered per scale factor).
+- Config at `%APPDATA%\nazar\config.json`; data at `~/.nazar/limits.json`. No absolute paths in code.
+- Transcript scanning for "estimated usage" (the prototype read up to 400 transcript files on 401) is **dropped**; no estimates, only reported numbers.
 
-## 5. Architecture
+## 6. `limits.json` contract (frozen at v1, shared with Nazar)
 
+```json
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-07T00:12:34+03:00",
+  "providers": {
+    "claude": {
+      "configured": true,
+      "plan": "max_20x",
+      "sourceAt": "2026-09-07T00:12:30+03:00",
+      "binding": "five_hour",
+      "windows": {
+        "five_hour": { "percent": 15, "resetsAt": "2026-09-07T01:10:00+03:00" },
+        "seven_day": { "percent": 14, "resetsAt": "2026-09-12T05:00:00+03:00" }
+      }
+    },
+    "codex": {
+      "configured": true,
+      "plan": "plus",
+      "sourceAt": "…",
+      "binding": "secondary",
+      "windows": {
+        "primary":   { "percent": 54, "windowMinutes": 300,   "resetsAt": "…" },
+        "secondary": { "percent": 70, "windowMinutes": 10080, "resetsAt": "…" }
+      }
+    }
+  }
+}
 ```
-nazar-limits (Node, every 30 min)        nazar-tray (C#, reads only)
-  reads OAuth tokens in memory   ──▶   ~/.nazar/limits.json   ──▶   icon + panel
-  calls 2 official endpoints                  │
-  writes token-free JSON                      └──▶   Nazar canvas quota strip
-```
+No tokens, no account ids, no e-mail. `configured:false` when the provider's files are absent. Nazar reads this file and nothing else from nazar-tray.
 
-`limits.json` schema (v1, stable, shared with Nazar): `{ updatedAt, providers: { claude: { plan, ok, stale, windows: [{ label, percent, resetsAt, active }] }, codex: {...} } }`. No tokens, no account ids.
+## 7. Work packages (ordered; no dates)
 
-## 6. Milestones
+| # | Package | Done when |
+|---|---|---|
+| WP0 | Repo skeleton: Tauri v2 project, Rust core crate, CI (GitHub Actions, Windows build + tests), locale scaffolding with EN/TR, `limits.json` contract doc | `cargo test` and a Windows build pass in CI on an empty tray |
+| WP1 | **Codex reader**: find newest `rollout-*.jsonl`, tail for `rate_limits`, tolerate schema drift, fixtures from real logs | Unit tests on captured fixtures incl. missing/partial fields; live value matches Codex `/status` on the maintainer's machine |
+| WP2 | **Claude reader**: `nazar-statusline` wrapper (records `rate_limits`, chains to existing command, < 50 ms), installer merges into `~/.claude/settings.json` without clobbering | Works with no status line, with ccstatusline, with the maintainer's custom script; uninstall restores the previous command exactly |
+| WP3 | **State model**: binding window, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | Property tests on window selection and reset math across time zones |
+| WP4 | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur |
+| WP5 | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | Toast appears exactly once when crossing 85 %; survives sleep/wake |
+| WP6 | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | Every UI string comes from locale files; no hard-coded text in code |
+| WP7 | **Distribution**: NSIS/MSI installer via Tauri bundler, winget manifest, SignPath Foundation application, README (EN) with GIF, CHANGELOG, first release checklist | Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files |
+| WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
 
-| # | What | Acceptance | Time |
-|---|---|---|---|
-| M1 | Migrate sources, English comments, parameterized paths, `limits.json` at `~/.nazar/` | Builds with `build.ps1` on a clean Windows; tray shows today's data | ½ day |
-| M2 | Nazar identity: icon, palette, theme JSON, remove borrowed look | Icon fills as bead; `graphite` theme switch works | ½ day |
-| M3 | Toasts, stale-grey, Fable window, install/uninstall scripts, README + GIF | Fresh install → tray in 2 minutes; uninstall leaves nothing | ½ day |
+Going public happens after WP7, not before.
 
-Runs in parallel with Nazar, triggered when the maintainer says go.
+## 8. Open decisions
+- Opt-in official-endpoint mode for model-scoped weekly windows (see §4). Leaning: v2, only if users ask.
+- Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework. Leaning: plain.
+- Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing. Leaning: runtime in Rust (`tiny-skia`), one source of truth for themes.
+- Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
 
-## 7. Open decisions
-- Code signing: none for v1. Revisit if downloads grow.
-- Whether `nazar-limits` should live here or in the Nazar repo. v1: here (it ships with the tray). Nazar consumes the file.
-- Icon rendering: GDI+ at runtime (current) vs. pre-rendered PNG set. v1: runtime, it already works.
-
-## 8. Log
-- 2026-09-07 01:55 — Repo opened, spec written. Decisions (maintainer): stays a separate downloadable app; new nazar identity replaces the Win-CodexBar-derived look; cross-platform via Tauri in v2; all code, comments, commits and docs in English. No code migrated yet.
+## 9. Log
+- 2026-09-07 01:55 — Repo opened, first spec (C# migration plan). Decisions: separate downloadable app; nazar identity; English everywhere.
+- 2026-09-07 02:30 — Maintainer: Windows first, infrastructure ready for macOS/Linux, six UI languages.
+- 2026-09-07 02:35 — Maintainer: quality over schedule; no deadline; research phase before code on every repo.
+- 2026-09-07 03:00 — Research phase closed. Plan rewritten: passive data sources (no credentials, no network), Tauri v2 from day one, C# prototype retired as behavioral spec, work packages WP0–WP8. Waiting for the maintainer's go.
