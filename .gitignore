@@ -1,0 +1,12 @@
+bin/
+obj/
+dist/
+*.exe
+*.pdb
+*.log
+.env
+.env.*
+.claude/settings.local.json
+limits.json
+.DS_Store
+Thumbs.db
