@@ -10,14 +10,16 @@ A bead in your tray fills up as you burn through your 5-hour and weekly windows.
 
 There are many. This one is built on one rule:
 
-**nazar-tray never reads your tokens and never talks to the network.**
+**By default, nazar-tray never reads your tokens and never talks to the network.**
 
-Every other quota tool reads your OAuth token, or even your browser cookies, from inside an unsigned binary, then calls an undocumented endpoint that rate-limits them. nazar-tray does neither, because the numbers are already on your disk:
+Every other quota tool reads your OAuth token, or even your browser cookies, from inside an unsigned binary, then calls an undocumented endpoint that rate-limits them. nazar-tray does neither by default, because the numbers are already on your disk:
 
 - **Codex** writes its server-reported usage into every session log (`~/.codex/sessions/…/rollout-*.jsonl`).
 - **Claude Code** hands the same numbers to your status line on every refresh. nazar-tray installs a tiny status-line wrapper that records them and then runs whatever status line you already had.
 
-That is the whole data path: two local files in, one local `limits.json` out. No token is ever read, stored, or sent. The same file feeds the quota strip on the Nazar canvas.
+That is the whole default data path: two local files in, one local `limits.json` out. The same file feeds the quota strip on the Nazar canvas.
+
+**Detailed windows (opt-in).** Claude's status line only reports the 5-hour and the global weekly window. If you are on a Max plan, your real constraint may be a model-specific weekly window that only the official usage endpoint reports. Turn on *Detailed windows* in settings and nazar-tray will read the token Claude Code already stores, keep it in memory for a single request, and never write or log it. Off by default; the app asks once if it detects a Max plan.
 
 ## What you get
 

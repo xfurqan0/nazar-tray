@@ -2,7 +2,7 @@
 
 Internal project notes. Kept in English so the repo is readable by everyone.
 
-> **The system-tray face of Nazar.** Shows your Claude Code and Codex usage windows (5-hour and weekly) in the tray, with a bead icon that fills up as you burn quota. Writes the same `limits.json` that the Nazar canvas reads. **Reads nothing but local files. Never touches credentials. Never touches the network.**
+> **The system-tray face of Nazar.** Shows your Claude Code and Codex usage windows (5-hour and weekly) in the tray, with a bead icon that fills up as you burn quota. Writes the same `limits.json` that the Nazar canvas reads. **By default it reads nothing but local files: no credentials, no network.** An opt-in "detailed windows" mode adds the model-scoped weekly windows from the official usage endpoint for users who need them.
 
 - Folder: `C:\nazar-tray` · Repo: `github.com/xfurqan0/nazar-tray` — private until first release
 - Started: 2026-09-07 · License: MIT · Siblings: [Nazar](https://github.com/xfurqan0/nazar) (canvas monitor), Dile (dictation)
@@ -38,7 +38,7 @@ What the research found that nobody ships:
 
 | Topic | Decision | Why |
 |---|---|---|
-| Data source | **Passive.** Codex: tail the newest `rollout-*.jsonl`. Claude: a tiny status-line wrapper that records the payload's `rate_limits` and then runs the user's existing status-line command unchanged. | See §1.1. Removes tokens, network, 429s, the scheduled task, the lock file and ~120 lines of shell glue. |
+| Data source | **Passive by default, hybrid on request.** Codex: tail the newest `rollout-*.jsonl` (both windows present). Claude: a tiny status-line wrapper records the payload's `rate_limits` (5-hour + global 7-day) and then runs the user's existing status-line command unchanged. **Opt-in "detailed windows" mode** (settings, default off): reads the Claude Code OAuth token in memory only and calls the official usage endpoint to get model-scoped weekly windows (e.g. a Fable-only weekly cap). The app suggests the mode once when it detects a Max plan; the user decides. | Verified 2026-09-07 03:05 on the maintainer's machine: status-line `seven_day` = 18 % (global), official endpoint reported Fable weekly = 23 % — the binding window for a Fable-heavy Max user is invisible to the passive path. Passive still removes 429s, the scheduled task, the lock file and ~120 lines of shell glue for everyone; the hybrid keeps the number honest for Max users. |
 | Stack | **Tauri v2** (Rust core + small web panel). Ship **Windows only** in v1; macOS build later; Linux via CLI output and the Nazar canvas (no stack supports a tray popup reliably on Linux; even 21k★ CodexBar closed its Linux tray issue as not planned). | Tauri 5 MB vs Electron 105 MB; tray, notification, autostart and updater are first-party plugins. Windows-only → cross-platform is a ~20 % step; WinForms → anything is a rewrite. Same stack as Dile. |
 | Existing C# prototype | **Not migrated.** Used as the behavioral spec; its good decisions are listed in §5. | The repo has no code yet, so the cost of not porting is zero today and grows after the first package. |
 | Refresh | **Inside the tray process.** File watchers + a 60 s poll; no OS scheduler. | Kills the Task Scheduler / launchd / systemd triple, the VBS launcher and the lock race the audit proved from logs. |
@@ -49,7 +49,7 @@ What the research found that nobody ships:
 ## 4. Known limits of the passive design (write them in the README)
 
 - Claude numbers update only while a Claude Code session refreshes its status line. Between sessions the tray shows the last value with its age and a countdown computed locally from `resets_at`. Quota does not burn while you are not using it, so this is honest, not stale.
-- The status-line payload carries the 5-hour and 7-day windows. Model-scoped weekly windows (e.g. a Fable-only weekly cap) are only available from the official usage endpoint. **Open decision:** an opt-in "official endpoint" mode for users who want that window (default off, clearly labeled, never required).
+- The status-line payload carries only the 5-hour and the global 7-day window (documented; verified live). Model-scoped weekly windows come only from the official usage endpoint, so they need the opt-in **detailed windows** mode. In that mode the token is read from `~/.claude/.credentials.json`, held in memory for one request, never written or logged; the README states this in plain words, and the mode is off by default. The endpoint is undocumented and rate-limited (429); detailed mode keeps last-good values and backs off.
 - Users who already run a custom status line keep it: the wrapper chains to it. Users without one get a minimal default.
 - Codex log format is not a documented contract; the reader is defensive (schema-tolerant, keeps last good value, reports "unknown" rather than guessing).
 - Unsigned until SignPath approval; SmartScreen will warn. winget install avoids the browser download warning.
@@ -79,10 +79,12 @@ What the research found that nobody ships:
       "configured": true,
       "plan": "max_20x",
       "sourceAt": "2026-09-07T00:12:30+03:00",
-      "binding": "five_hour",
+      "source": "statusline | endpoint",
+      "binding": "seven_day_fable",
       "windows": {
-        "five_hour": { "percent": 15, "resetsAt": "2026-09-07T01:10:00+03:00" },
-        "seven_day": { "percent": 14, "resetsAt": "2026-09-12T05:00:00+03:00" }
+        "five_hour":        { "percent": 12, "resetsAt": "2026-09-07T06:10:00+03:00" },
+        "seven_day":        { "percent": 18, "resetsAt": "2026-09-12T05:00:00+03:00" },
+        "seven_day_fable":  { "percent": 23, "resetsAt": "2026-09-12T05:00:00+03:00", "model": "Fable", "detailed": true }
       }
     },
     "codex": {
@@ -107,7 +109,8 @@ No tokens, no account ids, no e-mail. `configured:false` when the provider's fil
 | WP0 | Repo skeleton: Tauri v2 project, Rust core crate, CI (GitHub Actions, Windows build + tests), locale scaffolding with EN/TR, `limits.json` contract doc | `cargo test` and a Windows build pass in CI on an empty tray |
 | WP1 | **Codex reader**: find newest `rollout-*.jsonl`, tail for `rate_limits`, tolerate schema drift, fixtures from real logs | Unit tests on captured fixtures incl. missing/partial fields; live value matches Codex `/status` on the maintainer's machine |
 | WP2 | **Claude reader**: `nazar-statusline` wrapper (records `rate_limits`, chains to existing command, < 50 ms), installer merges into `~/.claude/settings.json` without clobbering | Works with no status line, with ccstatusline, with the maintainer's custom script; uninstall restores the previous command exactly |
-| WP3 | **State model**: binding window, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | Property tests on window selection and reset math across time zones |
+| WP2b | **Detailed windows mode (opt-in)**: settings toggle, token read in memory only, official usage endpoint client with backoff and last-good cache, model-scoped windows merged into the state with `detailed:true`, Max-plan detection prompt | Off by default; with the toggle on, the Fable weekly window appears and matches `/usage`; token never appears in any file, log, or error text (test asserts it); 429 leaves last value with a stale flag |
+| WP3 | **State model**: binding window across passive + detailed windows, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | Property tests on window selection and reset math across time zones |
 | WP4 | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur |
 | WP5 | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | Toast appears exactly once when crossing 85 %; survives sleep/wake |
 | WP6 | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | Every UI string comes from locale files; no hard-coded text in code |
@@ -117,7 +120,7 @@ No tokens, no account ids, no e-mail. `configured:false` when the provider's fil
 Going public happens after WP7, not before.
 
 ## 8. Open decisions
-- Opt-in official-endpoint mode for model-scoped weekly windows (see §4). Leaning: v2, only if users ask.
+- ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
 - Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework. Leaning: plain.
 - Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing. Leaning: runtime in Rust (`tiny-skia`), one source of truth for themes.
 - Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
@@ -127,3 +130,4 @@ Going public happens after WP7, not before.
 - 2026-09-07 02:30 — Maintainer: Windows first, infrastructure ready for macOS/Linux, six UI languages.
 - 2026-09-07 02:35 — Maintainer: quality over schedule; no deadline; research phase before code on every repo.
 - 2026-09-07 03:00 — Research phase closed. Plan rewritten: passive data sources (no credentials, no network), Tauri v2 from day one, C# prototype retired as behavioral spec, work packages WP0–WP8. Waiting for the maintainer's go.
+- 2026-09-07 03:20 — Live check showed the status-line payload lacks model-scoped weekly windows (global 7-day 18 % vs Fable weekly 23 % on the maintainer's machine). Decision: hybrid. Passive by default; opt-in **detailed windows** mode (WP2b) reads the token in memory only and calls the official endpoint. Claim reworded to "by default". Raw status-line payload captured as a WP2 fixture.
