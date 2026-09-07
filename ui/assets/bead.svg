@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Nazar bead">
+  <title>Nazar bead</title>
+  <!--
+    The four bead colours are the brand definition shared with Nazar. They are copied
+    from nazar/packages/ui/theme.nazar.json and must not drift; ui/test/theme.test.mjs
+    asserts every hex below against theme.nazar.json.
+
+    Concentric circles only, in painter's order. scripts/render-bead-png.mjs parses this
+    file and rasterises exactly these circles, so the SVG stays the single source for
+    both the panel artwork and the application icon.
+  -->
+  <circle cx="512" cy="512" r="480" fill="#0E2A5A"/>
+  <circle cx="512" cy="512" r="330" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="210" fill="#3FA9F5"/>
+  <circle cx="512" cy="512" r="96" fill="#0A0A0F"/>
+</svg>

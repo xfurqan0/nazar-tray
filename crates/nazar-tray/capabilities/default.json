@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The popup panel. It renders local state and closes itself; it opens no dialogs, runs no shell commands and reaches no network. Every permission beyond the core defaults is listed here with the reason it is needed.",
+  "windows": ["panel"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide"
+  ]
+}

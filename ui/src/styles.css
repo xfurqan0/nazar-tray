@@ -1,0 +1,102 @@
+/*
+ * Every colour, font and size here comes from a custom property that src/theme.ts sets
+ * from the theme JSON. Nothing is written twice: change the theme file, not this one.
+ * The fallbacks after each `var()` are what the panel looks like in the split second
+ * before the script runs, and in a browser opened straight on dist/index.html.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-panel, #0e2340);
+  color: var(--color-text, #eaf2ff);
+  font-family: var(--type-font-family, system-ui, sans-serif);
+  font-size: var(--type-size-md, 13px);
+  font-weight: var(--type-weight-regular, 450);
+  /* A tray popup is not a document: no text selection, no drag-select, no context menu
+     feel. WP4 will make individual numbers selectable if that turns out to matter. */
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  height: 100%;
+  padding: 20px 18px 16px;
+  border: 1px solid var(--color-panel-border, #1d3e6b);
+  border-radius: 10px;
+}
+
+.bead {
+  width: 72px;
+  height: 72px;
+  flex: none;
+}
+
+.bead svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.headline {
+  margin: 0;
+  font-size: var(--type-size-lg, 15px);
+  font-weight: var(--type-weight-strong, 680);
+  text-align: center;
+  line-height: 1.35;
+}
+
+.providers {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-node-border, #1e4372);
+  border-radius: 7px;
+  background: var(--color-node, #102a4c);
+}
+
+.provider-name {
+  color: var(--color-text, #eaf2ff);
+  font-weight: var(--type-weight-medium, 560);
+}
+
+/* Grey, never green and never a number: an unread window is unknown, not zero. */
+.provider-value {
+  color: var(--color-unknown-grey-text, #a3b2c4);
+  font-family: var(--type-mono-family, ui-monospace, monospace);
+  font-size: var(--type-size-sm, 11.5px);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+  text-transform: lowercase;
+}
+
+.hint {
+  margin: auto 0 0;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+}

@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/nazar-core", "crates/nazar-tray"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["nazar-tray contributors"]
+repository = "https://github.com/xfurqan0/nazar-tray"
+homepage = "https://github.com/xfurqan0/nazar-tray"
+description = "The system-tray face of Nazar: Claude Code and Codex quota windows, read from local files."
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

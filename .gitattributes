@@ -1,0 +1,24 @@
+# One line ending everywhere. Without this the first contributor's pull request puts
+# every file in the diff, which the code audit flagged on the retired prototype.
+* text=auto eol=lf
+
+# Windows-only files that genuinely need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.nsi text eol=crlf
+
+# Binary, never diffed or line-ending converted.
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.woff binary
+*.woff2 binary
+
+# Generated: keep them out of pull-request diffs and language statistics.
+crates/nazar-tray/icons/** linguist-generated=true
+ui/assets/bead-1024.png linguist-generated=true
+Cargo.lock linguist-generated=true
+package-lock.json linguist-generated=true

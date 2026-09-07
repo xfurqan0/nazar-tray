@@ -1,0 +1,31 @@
+[package]
+name = "nazar-tray"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "System-tray app showing Claude Code and Codex quota windows."
+
+[lints.rust]
+missing_docs = "warn"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nazar-core = { path = "../nazar-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+# `tray-icon` is what turns on the tray in Tauri v2; `image-png` lets the tray take the
+# bead PNG. Both are Tauri's own features, not extra crates.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+
+# WP0 declares these so the versions are resolved and the licence audit sees them.
+# None of them is initialised yet; each is wired by the work package named beside it.
+tauri-plugin-notification = "2" # WP5: threshold toasts at 60 / 85 / 100 %
+tauri-plugin-autostart = "2"    # WP5: "start with Windows" toggle
+tauri-plugin-updater = "2"      # WP7: signed updates from GitHub Releases

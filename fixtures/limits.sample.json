@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-07T00:12:34+03:00",
+  "providers": {
+    "claude": {
+      "configured": true,
+      "plan": "max_20x",
+      "source": "statusline",
+      "sourceAt": "2026-09-07T00:12:30+03:00",
+      "binding": "seven_day_fable",
+      "windows": {
+        "five_hour": {
+          "percent": 12,
+          "resetsAt": "2026-09-07T06:10:00+03:00",
+          "windowMinutes": 300,
+          "state": "ok"
+        },
+        "seven_day": {
+          "percent": 18,
+          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok"
+        },
+        "seven_day_fable": {
+          "percent": 23,
+          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok",
+          "model": "Fable",
+          "detailed": true
+        }
+      }
+    },
+    "codex": {
+      "configured": true,
+      "plan": "plus",
+      "source": "rollout",
+      "sourceAt": "2026-09-07T00:11:58+03:00",
+      "binding": "secondary",
+      "windows": {
+        "primary": {
+          "percent": 54,
+          "resetsAt": "2026-09-07T04:41:00+03:00",
+          "windowMinutes": 300,
+          "state": "ok"
+        },
+        "secondary": {
+          "percent": 70,
+          "resetsAt": "2026-09-11T12:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok"
+        }
+      }
+    }
+  }
+}

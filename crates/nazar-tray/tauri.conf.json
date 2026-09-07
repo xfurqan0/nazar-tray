@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "nazar-tray",
+  "version": "0.1.0",
+  "identifier": "xyz.qarpus.nazar-tray",
+  "build": {
+    "frontendDist": "../../ui/dist",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "panel",
+        "title": "nazar-tray",
+        "width": 340,
+        "height": 300,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": true,
+        "center": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "copyright": "Copyright (c) 2026 nazar-tray contributors",
+    "category": "DeveloperTool",
+    "shortDescription": "Claude Code and Codex quota in the system tray.",
+    "longDescription": "A bead in your tray fills up as you burn through your 5-hour and weekly windows. Reads local files only: no credentials, no network by default.",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

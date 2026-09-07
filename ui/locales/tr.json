@@ -1,0 +1,10 @@
+{
+  "app.name": "nazar-tray",
+  "panel.headline": "{name} {version} — {status}",
+  "panel.status.noData": "henüz veri yok",
+  "panel.provider.claude": "Claude Code",
+  "panel.provider.codex": "Codex",
+  "panel.window.unknown": "bilinmiyor",
+  "panel.hint.close": "Esc bu paneli kapatır",
+  "panel.bead.alt": "Nazar boncuğu"
+}

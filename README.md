@@ -4,7 +4,11 @@
 
 A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **pre-alpha, planning complete, no code yet.** Windows first; macOS and Linux builds later from the same codebase. See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan.
+> Status: **skeleton (WP0).** The workspace builds, the tests pass and the tray opens an
+> empty panel that says so. No reader, no state model, nothing written to disk yet.
+> Windows first; macOS and Linux builds later from the same codebase.
+> See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and [CHANGELOG.md](CHANGELOG.md)
+> for what has landed.
 
 ## Why another quota tray
 
@@ -34,6 +38,59 @@ That is the whole default data path: two local files in, one local `limits.json`
 - v1: Windows (winget + GitHub Releases), Claude Code + Codex
 - v2: macOS build, multiple accounts, more providers
 - Linux: CLI output and the Nazar canvas; a tray popup is not reliably possible on Linux today
+
+## Development
+
+Windows, because that is what v1 targets. `nazar-core` builds and tests on Linux and
+macOS too, and CI keeps it that way.
+
+**Prerequisites**
+
+| Tool | Version | Why |
+|---|---|---|
+| Rust | stable, ≥ 1.85 | `rust-toolchain.toml` pins the channel and pulls `clippy` and `rustfmt` |
+| MSVC Build Tools 2022 | with the C++ workload | there is no linker without it |
+| WebView2 | already part of Windows 10 1803+ and Windows 11 | the panel runs in it |
+| Node | 22 | builds the panel and runs its tests |
+| `tauri-cli` | 2.x | `cargo install tauri-cli --locked` — only needed for `tauri build` and `tauri icon` |
+
+**Layout**
+
+```
+crates/nazar-core    the limits.json contract, its writer and reader. No Tauri.
+crates/nazar-tray    the Tauri v2 app: tray icon, panel window. Windows first.
+ui/                  the panel: plain TypeScript, HTML and CSS, bundled by esbuild
+fixtures/            limits.sample.json, the file consumers copy into their tests
+scripts/             licence gate and the bead rasteriser
+docs/                the plan, and the limits.json contract
+```
+
+**Everyday commands**
+
+```powershell
+cd ui; npm ci; npm test      # builds ui/dist, then runs the panel tests
+cd ..; cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all
+node scripts/check-licenses.mjs
+```
+
+**Running it**
+
+`ui/dist` must exist before the Rust side builds, and nothing builds it implicitly:
+
+```powershell
+cd ui; npm run build; cd ..
+cd crates/nazar-tray
+cargo tauri dev            # or: cargo tauri build --debug
+```
+
+**Regenerating the icons** — after editing `ui/assets/bead.svg`:
+
+```powershell
+node scripts/render-bead-png.mjs
+cargo tauri icon ui/assets/bead-1024.png -o crates/nazar-tray/icons
+```
 
 ## Credits
 

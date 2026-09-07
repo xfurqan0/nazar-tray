@@ -1,0 +1,10 @@
+{
+  "app.name": "nazar-tray",
+  "panel.headline": "{name} {version} — {status}",
+  "panel.status.noData": "no data yet",
+  "panel.provider.claude": "Claude Code",
+  "panel.provider.codex": "Codex",
+  "panel.window.unknown": "unknown",
+  "panel.hint.close": "Esc closes this panel",
+  "panel.bead.alt": "Nazar bead"
+}

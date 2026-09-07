@@ -1,12 +1,36 @@
-bin/
-obj/
+# Rust
+/target/
+**/*.rs.bk
+
+# Tauri generates these from tauri.conf.json and the capability files at build time.
+crates/nazar-tray/gen/
+src-tauri/gen/
+
+# Node and the built panel
+node_modules/
 dist/
-*.exe
-*.pdb
+*.tsbuildinfo
+
+# Never commit an updater private key. Losing it means never shipping an update to the
+# installed base again; leaking it means someone else can. See docs/RELEASE.md.
+*.key
+*.pem
+minisign*.key
+
+# Local machine state
 *.log
 .env
 .env.*
 .claude/settings.local.json
-limits.json
 .DS_Store
 Thumbs.db
+
+# A real limits.json is this machine's usage data, not a fixture.
+limits.json
+!fixtures/limits.sample.json
+
+# Local pack and capture artifacts
+*.tgz
+*.raw.json
+*.raw.jsonl
+fixtures/local/

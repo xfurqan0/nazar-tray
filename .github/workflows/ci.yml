@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The gate. Everything that decides whether a change is correct lives here, and none
+  # of it needs the bundler. Risk R1 in the unified plan: the Tauri bundler is the
+  # fragile part of a Windows pipeline (WebView2, NSIS, code signing), and a bundler
+  # problem must never be able to make a correct change look broken.
+  windows:
+    name: Windows — lint, test, build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Check dependency licences
+        run: node scripts/check-licenses.mjs
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Type-check the panel
+        working-directory: ui
+        run: npm run typecheck
+
+      # Builds ui/dist as a side effect, which the Rust build needs for frontendDist.
+      - name: Test the panel
+        working-directory: ui
+        run: npm test
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
+  # nazar-core is pure Rust with no Tauri in it, so it compiles and tests everywhere.
+  # The tray app itself is Windows-only in v1 on purpose: no toolkit gives a reliable
+  # tray popup on Linux (even CodexBar closed its Linux tray issue as not planned), and
+  # the macOS build waits for a signing certificate. Keeping the core green on all three
+  # is what makes those later builds a step rather than a rewrite, so it is checked from
+  # the first commit instead of the first port.
+  core:
+    name: Core — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-${{ matrix.os }}
+
+      - name: Test nazar-core
+        run: cargo test -p nazar-core
+
+  # Produces the artifact, and is deliberately not a gate: `continue-on-error` means a
+  # bundler failure is visible without turning the whole run red. Promote it to a gate
+  # in WP7, when the installer becomes a deliverable rather than a by-product.
+  bundle:
+    name: Windows — debug bundle
+    runs-on: windows-latest
+    needs: windows
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bundle
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build the panel
+        working-directory: ui
+        run: npm run build
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # The NSIS toolchain is downloaded by the Tauri bundler on first use.
+      - name: Build the debug bundle
+        working-directory: crates/nazar-tray
+        run: cargo tauri build --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nazar-tray-debug-windows
+          path: |
+            target/debug/nazar-tray.exe
+            target/debug/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,240 @@
+# `limits.json` — the contract
+
+The one file nazar-tray writes for other programs to read. Frozen at `schemaVersion: 1`.
+Nazar's quota strip reads this file and nothing else from nazar-tray.
+
+- **Location:** `~/.nazar/limits.json` (`%USERPROFILE%\.nazar\limits.json` on Windows).
+- **Written by:** the nazar-tray process, and only it. One writer, many readers.
+- **Sample:** [`fixtures/limits.sample.json`](../fixtures/limits.sample.json). Consumers
+  are expected to copy that file into their own test suite rather than hand-write one.
+- **Implemented by:** `crates/nazar-core/src/limits.rs`. The tests in that file are the
+  executable half of this document; if the two ever disagree, the tests are right.
+
+> The plan's section 1.2 refers to this document as `LIMITS-CONTRACT.md`. It is
+> `docs/limits-contract.md`; the contents are what was described there.
+
+## Five rules that shape the format
+
+1. **No credentials, ever.** No tokens, no account identifiers, no e-mail addresses, no
+   session ids. The file is safe to paste into a bug report. If a future field cannot
+   meet that bar, it does not go in this file.
+2. **No invented numbers.** `percent` is **optional**. A window that could not be read
+   omits it entirely and carries `"state": "error"`. A consumer renders such a window as
+   *unknown* — grey, a question mark, the word — and never as `0 %`. "I do not know" and
+   "you have used nothing" are opposite messages to someone about to start a long task.
+3. **Atomic writes.** The writer builds a temporary file in the same directory and
+   renames it over the target. A reader sees the previous document or the new one, never
+   a prefix of either. A write that dies half way leaves no partial file and no leftover
+   temporary.
+4. **Unknown fields survive.** A reader keeps fields it does not understand and writes
+   them back unchanged, and an unrecognised `state` or `source` value is preserved as
+   written. An older tray next to a newer file loses nothing.
+5. **Rounding happens at display time.** `percent` is stored as reported. A consumer that
+   wants `18 %` rounds it itself.
+
+## Document
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `schemaVersion` | integer | yes | `1`. A bump is a breaking change for Nazar. |
+| `updatedAt` | string | yes | RFC 3339 with the writer's local offset. When the tray last wrote the file. |
+| `providers` | object | yes | See below. |
+
+### `providers.<name>`
+
+`claude` and `codex` in v1. A provider whose files are absent on this machine is present
+with `"configured": false` and no windows — the key never disappears.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `configured` | boolean | yes | `false` when the provider's files are not on this machine. |
+| `plan` | string | no | As the source reported it: `max_20x`, `plus`, … Never normalised. |
+| `source` | string | no | `statusline` \| `endpoint` for Claude, `rollout` for Codex. |
+| `sourceAt` | string | no | RFC 3339. When the *source* produced the numbers, which is older than `updatedAt` by design. |
+| `binding` | string | no | Key of the window with the **highest percentage** among this provider's windows. Never taken from a flag the source does not provide. |
+| `windows` | object | no | Window key to window object. Absent or empty when nothing is known. |
+
+Window keys are provider-specific and open-ended:
+
+- Claude: `five_hour`, `seven_day`, and model-scoped weeklies named
+  `seven_day_<model>` (`seven_day_fable`), which appear only in detailed mode.
+- Codex: `primary` (5 hours) and `secondary` (7 days), named after the fields in the
+  rollout log.
+
+A consumer must not hard-code the set. Iterate the object; use `windowMinutes` when it
+needs to know how long a window is.
+
+### `providers.<name>.windows.<key>`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `percent` | number | **no** | 0–100, unrounded. **Absent when the value is unknown.** See rule 2. |
+| `resetsAt` | string | no | RFC 3339, as the source reported it. Countdowns are computed locally in the user's time zone. |
+| `windowMinutes` | integer | no | `300` for five-hour windows, `10080` for weekly ones. Written for **both** providers so consumers need no provider-specific logic. |
+| `state` | string | **yes** | `ok` \| `stale` \| `error`. There is no safe default, so it is required rather than assumed. |
+| `error` | string | no | Short reason the window is stale or in error. Never file contents, never a response body. |
+| `model` | string | no | Model a weekly window is scoped to. Absent for global windows. |
+| `detailed` | boolean | no | `true` when the window came from the opt-in detailed-windows mode (WP2b). |
+
+## Sample
+
+```json
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-07T00:12:34+03:00",
+  "providers": {
+    "claude": {
+      "configured": true,
+      "plan": "max_20x",
+      "source": "statusline",
+      "sourceAt": "2026-09-07T00:12:30+03:00",
+      "binding": "seven_day_fable",
+      "windows": {
+        "five_hour": {
+          "percent": 12,
+          "resetsAt": "2026-09-07T06:10:00+03:00",
+          "windowMinutes": 300,
+          "state": "ok"
+        },
+        "seven_day": {
+          "percent": 18,
+          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok"
+        },
+        "seven_day_fable": {
+          "percent": 23,
+          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok",
+          "model": "Fable",
+          "detailed": true
+        }
+      }
+    },
+    "codex": {
+      "configured": true,
+      "plan": "plus",
+      "source": "rollout",
+      "sourceAt": "2026-09-07T00:11:58+03:00",
+      "binding": "secondary",
+      "windows": {
+        "primary": {
+          "percent": 54,
+          "resetsAt": "2026-09-07T04:41:00+03:00",
+          "windowMinutes": 300,
+          "state": "ok"
+        },
+        "secondary": {
+          "percent": 70,
+          "resetsAt": "2026-09-11T12:00:00+03:00",
+          "windowMinutes": 10080,
+          "state": "ok"
+        }
+      }
+    }
+  }
+}
+```
+
+`source` is `statusline` for Claude even though one window came from the endpoint: the
+provider records the path that produced its **passive** numbers, and the per-window
+`detailed: true` marks the ones that did not. `binding` is `seven_day_fable` because 23
+is the highest of 12, 18 and 23 — the constraint a Fable-heavy Max user actually hits,
+and the one the passive path cannot see.
+
+## A window that could not be read
+
+```json
+{
+  "percent": 54,
+  "windowMinutes": 300,
+  "state": "stale",
+  "error": "no rollout log written since 2026-09-06T21:40:00+03:00"
+}
+```
+
+```json
+{
+  "windowMinutes": 10080,
+  "state": "error",
+  "error": "rollout log is not valid JSON lines"
+}
+```
+
+The second window has no `percent` at all. That is the point.
+
+## Schema
+
+JSON Schema draft 2020-12. Validation is a convenience, not the contract: a document that
+this schema accepts and the rules above reject is still wrong.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xfurqan0/nazar-tray/docs/limits-contract.md",
+  "title": "nazar-tray limits.json",
+  "type": "object",
+  "required": ["schemaVersion", "updatedAt", "providers"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "providers": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/provider" }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "required": ["configured"],
+      "properties": {
+        "configured": { "type": "boolean" },
+        "plan": { "type": "string" },
+        "source": { "type": "string" },
+        "sourceAt": { "type": "string", "format": "date-time" },
+        "binding": { "type": "string" },
+        "windows": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/window" }
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "resetsAt": { "type": "string", "format": "date-time" },
+        "windowMinutes": { "type": "integer", "exclusiveMinimum": 0 },
+        "state": { "type": "string" },
+        "error": { "type": "string" },
+        "model": { "type": "string" },
+        "detailed": { "type": "boolean" }
+      }
+    }
+  }
+}
+```
+
+`state` and `source` are typed as plain strings rather than enumerations on purpose. A
+validator that rejects a value a newer writer introduced would turn a forward-compatible
+document into a hard failure, which is exactly what rule 4 exists to prevent. The known
+values are in the tables above.
+
+## Reserved for v2
+
+`~/.nazar/limits/<profile>.json`, one file per account, for multi-account support
+(decision K22). **v1 consumers may assume the single file at `~/.nazar/limits.json`.**
+This is written down now so that adding the second file later is a v2 change in two
+repositories rather than a surprise in one.
+
+## What changing this costs
+
+Two repositories read it, so a change is a two-repository change:
+
+1. Update `crates/nazar-core/src/limits.rs` and `fixtures/limits.sample.json`.
+2. Update this document.
+3. Copy the fixture into Nazar and run its schema test.
+4. Bump `schemaVersion` only for a change that removes or repurposes a field. Adding an
+   optional field is not breaking — rule 4 is what makes that true.
