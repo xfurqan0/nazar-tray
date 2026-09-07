@@ -43,16 +43,15 @@ pub const LOCK_FILES: [&str; 3] = ["settings.json.lock", ".settings.json.lock", 
 ///
 /// `explicit` wins (the `--config-dir` flag), then `CLAUDE_CONFIG_DIR`, then `~/.claude`.
 /// An empty environment variable is not a directory and is ignored.
+///
+/// The environment half is [`nazar_core::paths::claude_config_dir`], so the two crates
+/// cannot drift on where Claude Code keeps its files; only the `--config-dir` override,
+/// which is this program's own, lives here.
 pub fn config_dir(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(dir) = explicit {
         return Ok(dir.to_path_buf());
     }
-    if let Some(value) = std::env::var_os(CLAUDE_CONFIG_DIR_VAR) {
-        if !value.is_empty() {
-            return Ok(PathBuf::from(value));
-        }
-    }
-    Ok(nazar_core::paths::home_dir()?.join(".claude"))
+    Ok(nazar_core::paths::claude_config_dir()?)
 }
 
 /// `<config dir>/settings.json`.

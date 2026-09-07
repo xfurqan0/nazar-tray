@@ -68,7 +68,15 @@ pub fn statusline_dir() -> Result<PathBuf> {
 /// `~/.config/nazar/config.json` elsewhere.
 ///
 /// Separate from [`data_dir`] on purpose: settings are the user's, `~/.nazar` is ours.
+///
+/// `NAZAR_HOME` overrides both, and it is checked **first**. The variable exists so that
+/// a whole installation can be pointed at a throwaway directory; settings that stayed
+/// behind in the real `%APPDATA%` would make that promise only half true, and a test that
+/// turned the detailed-windows mode on would turn it on for the machine it ran on.
 pub fn config_path() -> Result<PathBuf> {
+    if let Some(dir) = resolve_data_dir(std::env::var_os(NAZAR_HOME_VAR).as_deref()) {
+        return Ok(dir.join("config.json"));
+    }
     let dir = if cfg!(windows) {
         match std::env::var_os("APPDATA") {
             Some(value) if !value.is_empty() => PathBuf::from(value).join("nazar"),
@@ -81,6 +89,18 @@ pub fn config_path() -> Result<PathBuf> {
         }
     };
     Ok(dir.join("config.json"))
+}
+
+/// `<CLAUDE_CONFIG_DIR or ~/.claude>` — Claude Code's own directory.
+///
+/// Nothing on the default path opens anything in here except the wrapper's installer,
+/// which edits `settings.json`. The opt-in detailed-windows mode reads one more file from
+/// it, and only while that mode is on; see `docs/detailed-windows.md`.
+pub fn claude_config_dir() -> Result<PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
+        _ => Ok(home_dir()?.join(".claude")),
+    }
 }
 
 #[cfg(test)]

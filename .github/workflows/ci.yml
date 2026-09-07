@@ -68,6 +68,14 @@ jobs:
       - name: Test the workspace
         run: cargo test --workspace
 
+      # The opt-in detailed-windows mode is the only part of this product that reads a
+      # token or opens a socket, and it sits behind a cargo feature as well as a runtime
+      # flag. This run is the proof that the switch is real: with the feature off the
+      # module is not compiled, no HTTP client is linked, and everything else still passes.
+      # It is also the shape `nazar-statusline` is released in.
+      - name: Test nazar-core with the opt-in mode compiled out
+        run: cargo test -p nazar-core --no-default-features
+
   # nazar-core and nazar-statusline are pure Rust with no Tauri in them, so they compile
   # and test everywhere. The tray app itself is Windows-only in v1 on purpose: no toolkit
   # gives a reliable tray popup on Linux (even CodexBar closed its Linux tray issue as not

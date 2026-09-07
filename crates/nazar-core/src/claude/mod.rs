@@ -40,6 +40,11 @@
 //! Each of those is "we do not know", and each produces a window with **no percentage** —
 //! never a reassuring `0`. See `docs/statusline-wrapper.md`.
 
+#[cfg(feature = "detailed-windows")]
+pub mod detailed;
+#[cfg(feature = "detailed-windows")]
+pub mod merge;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -50,7 +55,8 @@ use crate::error::Result;
 use crate::limits::{Provider, Source, Window};
 use crate::paths::statusline_dir;
 use crate::timefmt::{
-    rfc3339_from_system_time, rfc3339_from_unix_auto, sanitize_plan, sanitize_timestamp,
+    rfc3339_from_system_time, rfc3339_from_unix_auto, rfc3339_utc, sanitize_plan,
+    sanitize_timestamp,
 };
 
 /// Key of the five-hour window in `limits.json`.
@@ -292,16 +298,23 @@ fn window(value: &Value) -> Option<ReadingWindow> {
     }
     Some(ReadingWindow {
         used_percentage,
-        resets_at: object.get("resets_at").and_then(resets_at),
+        resets_at: object.get("resets_at").and_then(resets_at_value),
     })
 }
 
-/// Read `resets_at` as RFC 3339 text.
+/// Read `resets_at` as RFC 3339 text, in the one spelling the contract allows.
 ///
-/// Claude Code writes Unix seconds, the same as Codex. An integer too large to be seconds
-/// is read as milliseconds, and a string is accepted only if it already looks like a
-/// timestamp, so a format change degrades rather than breaks.
-fn resets_at(value: &Value) -> Option<String> {
+/// The two sources disagree about how to write an instant, which is exactly why this is
+/// one function rather than two:
+///
+/// * the **status-line payload** writes Unix seconds (`1788768000`), the same as Codex;
+/// * the **usage endpoint** writes text with microseconds and a numeric offset
+///   (`2026-09-07T13:10:00.130195+00:00`), observed live on 2026-09-07.
+///
+/// Both come out as `2026-09-07T13:10:00Z`. An integer too large to be seconds is read as
+/// milliseconds and a string that is not a timestamp yields nothing, so a format change
+/// degrades rather than breaks.
+pub(crate) fn resets_at_value(value: &Value) -> Option<String> {
     if let Some(seconds) = value.as_i64() {
         return Some(rfc3339_from_unix_auto(seconds));
     }
@@ -311,7 +324,7 @@ fn resets_at(value: &Value) -> Option<String> {
         }
         return None;
     }
-    value.as_str().and_then(sanitize_timestamp)
+    value.as_str().and_then(rfc3339_utc)
 }
 
 /// Render a status as the `providers.claude` block of `limits.json`.
@@ -401,23 +414,35 @@ fn readable(reading: &Reading, captured_at: &str) -> Provider {
     }
 }
 
-/// Key of the window with the highest percentage.
+/// Key of the window with the highest percentage, over **every** window there is.
 ///
-/// Computed, never taken from a flag — the payload has none, and the retired prototype
-/// inventing one is finding B04 of the code audit. Ties go to `five_hour`, the shorter
-/// window: when both are equally full, the five-hour one is what you hit first.
-fn binding(windows: &BTreeMap<String, Window>) -> Option<String> {
-    let mut best: Option<(&str, f64)> = None;
-    for key in [WINDOW_FIVE_HOUR, WINDOW_SEVEN_DAY] {
-        let Some(percent) = windows.get(key).and_then(|window| window.percent) else {
-            continue;
-        };
-        // Strictly greater, and `five_hour` is tried first, so a tie keeps `five_hour`.
-        if best.is_none_or(|(_, highest)| percent > highest) {
-            best = Some((key, percent));
-        }
-    }
-    best.map(|(key, _)| key.to_owned())
+/// Computed, never taken from a flag — the status-line payload has none, the usage
+/// endpoint's `is_active` is not read, and the retired prototype inventing one is finding
+/// B04 of the code audit. Written to iterate the map rather than a fixed pair of keys,
+/// because in detailed mode the provider carries model-scoped weeklies too and the one
+/// that constrains a Fable-heavy Max user is exactly the one a fixed list would miss.
+///
+/// Ties are broken by the shorter window first and then by key, so the answer is the same
+/// on every run: when two windows are equally full, the one that resets sooner is the one
+/// you hit first.
+pub(crate) fn binding(windows: &BTreeMap<String, Window>) -> Option<String> {
+    // A window with no stated length sorts last among equals rather than first: it is the
+    // one we know least about, so it is the one that should not win a coin toss.
+    let length = |window: &Window| window.window_minutes.unwrap_or(u32::MAX);
+
+    windows
+        .iter()
+        .filter_map(|(key, window)| window.percent.map(|percent| (key, window, percent)))
+        .max_by(|left, right| {
+            left.2
+                .total_cmp(&right.2)
+                // The tie-breaks are written the other way round on purpose: the
+                // comparator answers "is left greater", and among equal percentages the
+                // *smaller* window length, then the *smaller* key, is what should win.
+                .then_with(|| length(right.1).cmp(&length(left.1)))
+                .then_with(|| right.0.cmp(left.0))
+        })
+        .map(|(key, _, _)| key.clone())
 }
 
 #[cfg(test)]

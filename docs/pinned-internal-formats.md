@@ -11,8 +11,11 @@ the two repositories read different files and keep separate inventories.
 **18 rollout logs** written between 2026-08-27 and 2026-09-07 and containing **329
 `rate_limits` lines** (652 window objects). **Claude rows observed under Claude Code
 2.1.263, Windows 11, 2026-09-07**: one captured status-line payload and the maintainer's
-own `settings.json`. Nothing on this page is copied from documentation without a matching
-observation on a real machine.
+own `settings.json`. The **usage endpoint and sign-in rows were observed live on
+2026-09-07** in a single read-only request on the maintainer's own machine, and neither has
+a fixture on purpose — a real response is a real account's usage, and a real sign-in file is
+a sign-in. Nothing on this page is copied from documentation without a matching observation
+on a real machine.
 
 Rules that follow from this table, and that the tests enforce:
 
@@ -35,7 +38,8 @@ Rules that follow from this table, and that the tests enforce:
 | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
-| Claude Code usage endpoint | model-scoped weekly windows | not read yet | none yet | **WP2b, opt-in and off by default.** The only path in the whole product that reads a token, held in memory for one request. It will live behind its own switch and its own tests; the credential gate below grows an explicit allow-list for it rather than losing a needle. |
+| `GET https://api.anthropic.com/api/oauth/usage` | `limits[]`, and inside each entry `{kind, percent, resets_at, scope.model.display_name}`; or the older top-level `five_hour`/`seven_day` `{utilization, resets_at}` | observed live 2026-09-07 | none — no fixture may hold a real response | **Opt-in, off by default.** See "The usage endpoint" below. |
+| `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` | `claudeAiOauth.{accessToken, expiresAt, rateLimitTier, subscriptionType}` — **four values, and the token is never stored** | Claude Code 2.1.263 | none — and there never will be one | **Opt-in, off by default.** Read-only, never written. See "The sign-in file" below. |
 
 ## The Codex rollout log
 
@@ -143,7 +147,7 @@ sentinel appears anywhere in the parser's output or in the serialised provider b
 | Path | Why not |
 |---|---|
 | `$CODEX_HOME/auth.json` | Sign-in material. **Never opened.** The passive design has no use for it: the numbers are in the logs. The retired prototype read this file to call an endpoint, and got an HTTP 404 out of it on 2026-09-03 when an account id was missing — a documented failure of exactly the approach this one replaces. |
-| `~/.claude/.credentials.json` | Same, for the other provider. WP2b's opt-in mode is the single sanctioned exception, off by default, in memory for one request, never written and never logged. |
+| `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` **on the default path** | Sign-in material. The opt-in detailed-windows mode is the single sanctioned exception and it is a switch the user turns; with it off this file is not opened, and a test poisons it to prove that. `refreshToken`, `refreshTokenExpiresAt` and `scopes` are never read even with the mode on. |
 | `$CODEX_HOME/*.sqlite`, `*.sqlite-wal`, `*.sqlite-shm` | Conversation history, memories, queues, logs. Not quota, and not ours to open. |
 | `$CODEX_HOME/session_index.jsonl` | Thread names and ids. Useful to Nazar's canvas; identity to a quota tray, so it stays unread here. |
 | `$CODEX_HOME/{archived_sessions,attachments,dictation-history,transcription-history.jsonl,generated_images,…}` | The user's content. None of it is quota. |
@@ -153,6 +157,82 @@ sentinel appears anywhere in the parser's output or in the serialised provider b
 for the name of a credential file and for token-shaped identifiers, and fails the build on
 a hit. It assembles the needles at run time so it does not match itself, which is also why
 the file names above live in this document and not in a comment in the source.
+
+**The gate's one exception**, added in WP2b: files under
+`crates/nazar-core/src/claude/detailed/` are skipped. It is an allow-listed **directory**
+rather than a dropped needle, so the exception cannot spread — a new file that wants
+sign-in material has to be created in one specific place, next to the tests that keep it
+honest. Three more tests hold that place down: the directory must exist and must still trip
+a needle (otherwise the allow-list is guarding nothing and should be deleted), nothing in
+it may contain a printing macro, and `Secret::expose_for_one_request` must have exactly one
+call site in shipping code.
+
+## The usage endpoint
+
+Read only while the opt-in detailed-windows mode is on;
+[`detailed-windows.md`](detailed-windows.md) is the whole story, including the
+terms-of-service note. This section is the format.
+
+### The observed shape
+
+`GET https://api.anthropic.com/api/oauth/usage`, observed live 2026-09-07 on a Max 20x
+account. The endpoint is **undocumented**: it is the one Claude Code's own `/usage` panel
+calls, and it can change without notice, which is why the mapper skips what it does not
+recognise instead of guessing.
+
+```json
+{"limits":[
+   {"kind":"session",       "percent":2,  "resets_at":"2026-09-07T13:10:00.130195+00:00","is_active":true},
+   {"kind":"weekly_all",    "percent":38, "resets_at":"2026-09-12T02:00:00.130216+00:00"},
+   {"kind":"weekly_scoped", "percent":30, "resets_at":"2026-09-12T02:00:00.130399+00:00",
+    "scope":{"model":{"display_name":"Fable"}}}],
+ "extra_usage":{"is_enabled":false,"utilization":0}}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `limits` | array | Three entries on this account. An entry with an unknown `kind` is **skipped**: a window whose meaning is unknown cannot be given a length, and a window without a length is worse than absent. |
+| `…kind` | string | `session`, `weekly_all`, `weekly_scoped`, and the older `opus`. The mapping to window keys is in [`detailed-windows.md`](detailed-windows.md). |
+| `…percent` | number | Integer in every observation. Accepted only in `0..=100`; outside that the window is dropped rather than clamped, because clamping would invent a number. |
+| `…resets_at` | **string, RFC 3339 with microseconds and `+00:00`** | **Not** the encoding the status line uses for the same idea, which is Unix seconds. Both are rewritten to the contract's `…Z` with whole seconds before they reach `limits.json`; the observed string above is pinned as a test in `timefmt.rs`. |
+| `…scope.model.display_name` | string | `Fable`. Becomes the window's `model` and, slugged, the second half of its key (`seven_day_fable`). Dropped if it is not a name — bounded, no control characters, no path separators, at least one alphanumeric. |
+| `…is_active` | boolean | **Not read.** The binding window is computed as the highest percentage across all windows; see finding B04/B16 and the note in `detailed-windows.md`. |
+| `extra_usage` | object | **Not read.** `limits.json` has no field for paid overflow usage. |
+| older top-level `five_hour`/`seven_day` | object with `utilization`, `resets_at` | Read **only** when `limits[]` produced nothing, never merged with it. Not present in the 2026-09-07 observation; kept because the retired prototype carried the fallback and dropping it would be a regression the day the array changes name. |
+
+No fixture pins this row, and that is deliberate: a captured response is a real account's
+usage, and there is no version of it that is safe to commit. The mapper is tested against
+hand-written bodies covering every `kind`, both shapes, the duplicate-model case, the
+unnamed-scope case and six bodies it must refuse.
+
+## The sign-in file
+
+`CLAUDE_CONFIG_DIR` moves the directory; the default is `~/.claude`. Read only while the
+opt-in mode is on, **read-only always** — nothing in this product creates, writes, renames
+or deletes it.
+
+Observed 2026-09-07, Claude Code 2.1.263, 509 bytes:
+
+```json
+{"claudeAiOauth":{
+  "accessToken":"…","refreshToken":"…",
+  "expiresAt":1788785223254,"refreshTokenExpiresAt":1791150214254,
+  "scopes":["…"],"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}
+```
+
+| Field | Read? | Why |
+|---|---|---|
+| `claudeAiOauth.accessToken` | yes | One `Authorization` header, in a wiping wrapper, then gone. **Never stored.** |
+| `claudeAiOauth.expiresAt` | yes | **Milliseconds** since the epoch — unlike every other timestamp either source writes, which is why the reader decides by magnitude. An expiry that has passed means no request is sent at all. |
+| `claudeAiOauth.rateLimitTier` | yes | `default_claude_max_20x` → `plan: "max_20x"`. |
+| `claudeAiOauth.subscriptionType` | yes | `max`. The fallback when there is no tier. |
+| `claudeAiOauth.refreshToken`, `refreshTokenExpiresAt` | **no** | Refreshing a token is Claude Code's job. A tool that could do it would be one that intermediates a sign-in. |
+| `claudeAiOauth.scopes` | **no** | Not quota. |
+
+The file's **size and modification time** are also read, and nothing else about it: they
+answer "did Claude Code rewrite this", which clears the backoff (so a refreshed token is
+tried at once rather than waited out) and drops remembered numbers when the plan changed
+underneath them. Neither is a hash of the contents and neither is derived from the token.
 
 ## The status-line payload
 

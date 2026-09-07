@@ -327,7 +327,7 @@ mod tests {
         let claude = &limits.providers.claude;
         assert!(claude.configured);
         assert_eq!(claude.plan.as_deref(), Some("max_20x"));
-        assert_eq!(claude.source, Some(Source::Statusline));
+        assert_eq!(claude.source, Some(Source::Endpoint));
         assert_eq!(claude.binding.as_deref(), Some("seven_day_fable"));
         assert_eq!(claude.windows.len(), 3);
 

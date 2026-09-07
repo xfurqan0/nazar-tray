@@ -25,6 +25,8 @@ That is the whole default data path: two local files in, one local `limits.json`
 
 **Detailed windows (opt-in).** Claude's status line only reports the 5-hour and the global weekly window. If you are on a Max plan, your real constraint may be a model-specific weekly window that only the official usage endpoint reports. Turn on *Detailed windows* in settings and nazar-tray will read the token Claude Code already stores, keep it in memory for a single request, and never write or log it. Off by default; the app asks once if it detects a Max plan.
 
+With the mode **off** — which is how it ships — nothing in nazar-tray opens a credential file or a socket, and a test poisons that file to prove it. With it **on**, this is the whole of it: `claudeAiOauth.accessToken` is read out of `~/.claude/.credentials.json` (which is never written), held in a wrapper that wipes itself and prints `<redacted>`, and sent as one `Authorization` header on a single 20-second `GET` to `api.anthropic.com/api/oauth/usage` — the endpoint your own `/usage` command calls. The answer becomes your model-scoped weekly windows, marked `detailed` in `limits.json`. The token is never written to a file, never logged and never put in an error message, and no response body reaches one either; a test runs the entire flow with a sentinel in place of the token and fails if it turns up anywhere but that header. When the endpoint says no, the last known numbers stay with a *stale* flag and the next attempt backs off — 1 s, 2 s, 4 s and so on to half an hour, or whatever `Retry-After` asked for. Your `refreshToken` is never read: refreshing is Claude Code's job. `nazar-tray --print --detailed` runs the mode once without switching it on. The full account, including where this sits against Anthropic's terms and why it is your call rather than the default, is in [docs/detailed-windows.md](docs/detailed-windows.md).
+
 ## What you get
 
 - Tray bead icon showing your most-constrained window; grey means "unknown", never a false zero
@@ -58,6 +60,7 @@ macOS too, and CI keeps it that way.
 
 ```
 crates/nazar-core    the limits.json contract, its writer and reader. No Tauri.
+                     `--no-default-features` drops the opt-in detailed-windows mode
 crates/nazar-tray    the Tauri v2 app: tray icon, panel window. Windows first.
 ui/                  the panel: plain TypeScript, HTML and CSS, bundled by esbuild
 fixtures/            limits.sample.json, the file consumers copy into their tests

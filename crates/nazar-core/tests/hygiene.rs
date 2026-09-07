@@ -46,20 +46,19 @@ fn files_under(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     found
 }
 
-/// The reader must never name a credential file.
+/// The one directory allowed to name a sign-in file, relative to the repository root.
 ///
-/// The retired prototype read `~/.codex/auth.json` and `~/.claude/.credentials.json` to
-/// call an endpoint. The passive design does not need either, and this test is what keeps
-/// "does not need" from drifting into "does not currently".
+/// The opt-in detailed-windows mode (WP2b) is the single sanctioned exception to "this
+/// product reads no credentials". It is an exception the user turns on, it is behind the
+/// `detailed-windows` cargo feature as well as the runtime flag, and it is confined to one
+/// directory so that the gate below keeps holding for every other file in the workspace.
+const DETAILED_WINDOWS_DIR: &str = "crates/nazar-core/src/claude/detailed";
+
+/// Words that mean a file is reaching for sign-in material.
 ///
-/// The opt-in detailed-windows mode (WP2b) is the one sanctioned exception, and it will
-/// live in its own crate behind its own feature so that this gate keeps holding for
-/// everything else. When that lands, this test grows an explicit allow-list rather than
-/// losing a needle.
-#[test]
-fn no_source_file_names_a_credential_file() {
-    // Assembled at run time so this file does not match itself.
-    let needles: Vec<String> = vec![
+/// Assembled at run time so this file does not match itself.
+fn credential_needles() -> Vec<String> {
+    vec![
         format!("{}{}", "auth", ".json"),
         format!("{}{}", "credential", "s"),
         format!("{}{}", ".credential", "s.json"),
@@ -68,8 +67,11 @@ fn no_source_file_names_a_credential_file() {
         format!("{}{}", "id", "_token"),
         format!("{}{}", "Bearer ", ""),
         format!("{}{}", "api", "_key"),
-    ];
+    ]
+}
 
+/// Every `.rs` file in the workspace's three crates.
+fn workspace_sources() -> Vec<PathBuf> {
     let root = repo_root();
     let mut sources = Vec::new();
     for crate_name in ["nazar-core", "nazar-statusline", "nazar-tray"] {
@@ -78,15 +80,40 @@ fn no_source_file_names_a_credential_file() {
             &["rs"],
         ));
     }
+    sources
+}
+
+/// Whether a path is inside the one directory that is allowed the exception.
+fn is_allow_listed(path: &Path) -> bool {
+    let root = repo_root().join(DETAILED_WINDOWS_DIR);
+    path.starts_with(&root)
+}
+
+/// No source file outside the opt-in mode may name a sign-in file.
+///
+/// The retired prototype read `~/.codex/auth.json` and the Claude sign-in file to call an
+/// endpoint, on every run, for everybody. The passive design needs neither, and this test
+/// is what keeps "does not need" from drifting into "does not currently".
+///
+/// The allow-list is a **directory**, not a list of needles: dropping a needle would have
+/// let the exception spread silently across the workspace, while an allow-listed path
+/// makes any new file that wants sign-in material an obvious diff — it has to be created
+/// in one specific place, next to the tests that keep it honest.
+#[test]
+fn no_source_file_outside_the_opt_in_mode_names_a_credential_file() {
+    let needles = credential_needles();
+    let sources = workspace_sources();
     assert!(
         sources.len() >= 14,
         "the gate found almost no source to check, which means it is not working"
     );
 
     let mut hits = Vec::new();
-    for path in sources {
-        // This file is the only one allowed to hold the needles, and it is not in `src`.
-        let Ok(text) = std::fs::read_to_string(&path) else {
+    for path in &sources {
+        if is_allow_listed(path) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
         let lowered = text.to_lowercase();
@@ -102,8 +129,105 @@ fn no_source_file_names_a_credential_file() {
 
     assert!(
         hits.is_empty(),
-        "nazar-tray reads no credentials; these files say otherwise:\n  {}",
+        "outside the opt-in detailed-windows mode, nazar-tray reads no credentials; \
+         these files say otherwise:\n  {}",
         hits.join("\n  ")
+    );
+}
+
+/// The exception has to still be where the allow-list says it is.
+///
+/// A directory-shaped allow-list has one failure mode: the code moves, the entry stays,
+/// and the gate silently guards nothing. So the directory must exist, and something in it
+/// must actually trip a needle — if the opt-in mode ever stops reading sign-in material,
+/// this test fails and the allow-list gets deleted along with it.
+#[test]
+fn the_allow_listed_directory_is_the_only_place_that_needs_the_exception() {
+    let root = repo_root().join(DETAILED_WINDOWS_DIR);
+    assert!(
+        root.is_dir(),
+        "{DETAILED_WINDOWS_DIR} is not there; move the allow-list or delete it"
+    );
+
+    let needles = credential_needles();
+    let mut tripped = Vec::new();
+    for path in files_under(&root, &["rs"]) {
+        let text = std::fs::read_to_string(&path).unwrap().to_lowercase();
+        if needles
+            .iter()
+            .any(|needle| text.contains(&needle.to_lowercase()))
+        {
+            tripped.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert!(
+        !tripped.is_empty(),
+        "nothing in {DETAILED_WINDOWS_DIR} reads sign-in material any more, so the \
+         allow-list is guarding nothing and should go"
+    );
+}
+
+/// The opt-in mode prints nothing, ever.
+///
+/// A token that never reaches a file can still reach a terminal. There is no logging
+/// framework in this crate to configure away, so the rule is mechanical: the module that
+/// handles the token contains no printing macro at all. The tray, which does have a
+/// console in debug builds, gets its diagnostics from returned values.
+#[test]
+fn the_opt_in_mode_contains_no_printing_at_all() {
+    let root = repo_root().join(DETAILED_WINDOWS_DIR);
+    // Assembled so this file does not match itself.
+    let macros = [
+        format!("{}{}", "print", "ln!"),
+        format!("{}{}", "eprint", "ln!"),
+        format!("{}{}", "e", "print!"),
+        format!("{}{}", "db", "g!"),
+    ];
+
+    let mut hits = Vec::new();
+    for path in files_under(&root, &["rs"]) {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // The mock server is test scaffolding and prints nothing either, but the rule is
+        // simplest when it has no exceptions at all.
+        let text = std::fs::read_to_string(&path).unwrap();
+        for macro_name in &macros {
+            if text.contains(macro_name.as_str()) {
+                hits.push(format!("{name} uses {macro_name}"));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "the opt-in mode must not print; found:\n  {}",
+        hits.join("\n  ")
+    );
+}
+
+/// The token is read out of its wrapper in exactly one place.
+///
+/// `Secret::expose_for_one_request` is named to be greppable, and this is the grep. One
+/// call in the client and one in each of the two tests that check the wrapper works: a
+/// fourth call site is a decision somebody should have to argue for in review.
+#[test]
+fn the_token_is_exposed_in_one_place_in_the_shipping_code() {
+    let method = format!("{}{}", "expose_for", "_one_request");
+    let mut call_sites = Vec::new();
+    for path in workspace_sources() {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // The definition itself, and the tests, are not call sites in shipping code.
+        if name == "secret.rs" || name == "tests.rs" {
+            continue;
+        }
+        let uses = text.matches(method.as_str()).count();
+        if uses > 0 {
+            call_sites.push(format!("{name} ({uses})"));
+        }
+    }
+    assert_eq!(
+        call_sites,
+        vec!["client.rs (1)".to_owned()],
+        "the token should leave its wrapper once, in the one place that builds the header"
     );
 }
 

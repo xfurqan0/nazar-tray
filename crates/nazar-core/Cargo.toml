@@ -11,6 +11,28 @@ description = "Pure-Rust core of nazar-tray: the limits.json contract, its atomi
 [lints.rust]
 missing_docs = "warn"
 
+# The opt-in detailed-windows mode is the only part of this product that reads a token or
+# opens a socket, so it is also the only part behind a compile-time switch. On by default,
+# because the shipped tray offers the toggle; `nazar-statusline` turns it off, so building
+# that binary on its own compiles neither the HTTP client nor the reader that uses it.
+# See `docs/detailed-windows.md`.
+[features]
+default = ["detailed-windows"]
+detailed-windows = ["dep:ureq", "dep:zeroize"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+# Blocking HTTPS for the opt-in mode. `ureq` over `reqwest` on measurement rather than
+# taste: four new packages against seventeen, and none of them needs a C toolchain.
+# Reasoning in `docs/detailed-windows.md`.
+ureq = { version = "3", default-features = false, features = [
+    "rustls",
+], optional = true }
+
+# Wipes the token out of memory when the request that borrowed it is over. `alloc` is
+# what implements the trait for `String`, which is the only shape the token ever has.
+zeroize = { version = "1", default-features = false, features = [
+    "alloc",
+], optional = true }

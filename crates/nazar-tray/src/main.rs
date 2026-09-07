@@ -4,15 +4,16 @@
 //! on either mouse button, and a panel that closes itself on Esc or when it loses focus.
 //! WP1 added the first reader — Codex's quota, taken from its own session logs — and a
 //! `--print` flag that dumps the `limits.json` document it produces. WP2 adds the second:
-//! Claude's quota, taken from the captures the `nazar-statusline` wrapper writes. The tray
-//! itself still shows a static bead; wiring the readers into the icon and the panel is WP3
-//! and WP4.
+//! Claude's quota, taken from the captures the `nazar-statusline` wrapper writes. WP2b
+//! adds the opt-in detailed-windows mode behind `config.detailedWindows`, off by default,
+//! and `--print --detailed` to force it on for one run. The tray itself still shows a
+//! static bead; wiring the readers into the icon and the panel is WP3 and WP4.
 //!
 //! What this binary deliberately does **not** do yet, and the package that will add it:
 //!
 //! | Behaviour | Package |
 //! |---|---|
-//! | Detailed windows from the usage endpoint (opt-in) | WP2b |
+//! | The settings panel that turns detailed windows on, and the Max-plan offer | WP5 |
 //! | Staleness, local countdown, writing `~/.nazar/limits.json` | WP3 |
 //! | Bead drawn per scale factor, real panel contents | WP4 |
 //! | Notifications, autostart, settings | WP5 |

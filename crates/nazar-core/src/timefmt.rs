@@ -144,6 +144,99 @@ pub fn sanitize_plan(value: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
+/// Read an RFC 3339 timestamp back as Unix seconds.
+///
+/// The inverse of [`rfc3339_from_unix_seconds`], and the reason it exists is age: "did
+/// this number arrive in the last quarter of an hour" cannot be answered by comparing two
+/// strings. Fractional seconds are read and discarded — a window's age is not measured in
+/// milliseconds — and a numeric offset is applied, so a timestamp another program wrote
+/// with `+03:00` names the same instant here as it does there.
+///
+/// Returns `None` for anything [`sanitize_timestamp`] would reject, and for a date the
+/// calendar does not have.
+#[must_use]
+pub fn unix_seconds_from_rfc3339(text: &str) -> Option<i64> {
+    let text = sanitize_timestamp(text)?;
+    let bytes = text.as_bytes();
+    let number = |from: usize, to: usize| text.get(from..to)?.parse::<i64>().ok();
+
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let days = days_from_civil(year, month as u32, day as u32);
+    // The conversion accepts a day the month does not have (31 April becomes 1 May), so
+    // the round trip is the validity check.
+    if civil_from_days(days) != (year, month as u32, day as u32) {
+        return None;
+    }
+    let mut seconds = days * 86_400 + hour * 3600 + minute * 60 + second;
+
+    // A zone that is not `Z` is `±HH:MM`, and the last six characters are all of it.
+    if !(text.ends_with('Z') || text.ends_with('z')) {
+        let sign_at = text.len() - 6;
+        let sign = match bytes[sign_at] {
+            b'+' => 1,
+            b'-' => -1,
+            _ => return None,
+        };
+        let offset_hours = number(sign_at + 1, sign_at + 3)?;
+        let offset_minutes = number(sign_at + 4, sign_at + 6)?;
+        if offset_hours > 23 || offset_minutes > 59 {
+            return None;
+        }
+        seconds -= sign * (offset_hours * 3600 + offset_minutes * 60);
+    }
+    Some(seconds)
+}
+
+/// Rewrite any RFC 3339 timestamp as the contract's form: UTC, whole seconds, `…Z`.
+///
+/// Rule 6 of `docs/limits-contract.md` is that every timestamp in `limits.json` ends in a
+/// `Z`, so that consumers never have to work out an offset and never see two spellings of
+/// the same instant. A source that writes Unix seconds gets that for free from
+/// [`rfc3339_from_unix_seconds`]. A source that writes text does not: the usage endpoint
+/// answers `2026-09-07T13:10:00.130195+00:00`, which is the same instant, is legal
+/// RFC 3339, and is neither of the two things the contract promises.
+///
+/// So a string goes round the loop — read to seconds, written back out — which converts
+/// the offset and drops sub-second precision nobody is counting down to. A string that
+/// does not survive the trip is not a timestamp and yields nothing.
+#[must_use]
+pub fn rfc3339_utc(text: &str) -> Option<String> {
+    unix_seconds_from_rfc3339(text).map(rfc3339_from_unix_seconds)
+}
+
+/// Seconds from `earlier` to `later`, when both are RFC 3339.
+///
+/// `None` when either side is not a timestamp; negative when `later` is the earlier one,
+/// which happens on a machine whose clock went backwards and is not this function's
+/// problem to hide.
+#[must_use]
+pub fn seconds_between(earlier: &str, later: &str) -> Option<i64> {
+    Some(unix_seconds_from_rfc3339(later)? - unix_seconds_from_rfc3339(earlier)?)
+}
+
+/// A civil `(year, month, day)` to days since 1970-01-01.
+///
+/// Howard Hinnant's `days_from_civil`, the exact inverse of [`civil_from_days`]. It
+/// accepts a day number the month does not have (31 April), so the caller checks the
+/// round trip when that matters.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 /// Days since 1970-01-01 to a civil `(year, month, day)`.
 ///
 /// Howard Hinnant's `civil_from_days`, which is exact for the proleptic Gregorian
@@ -283,6 +376,120 @@ mod tests {
         assert_eq!(sanitize_plan("SENTINEL prompt text"), None);
         assert_eq!(sanitize_plan(&"x".repeat(MAX_PLAN_LEN + 1)), None);
         assert_eq!(sanitize_plan("C:\\Users\\someone"), None);
+    }
+
+    #[test]
+    fn timestamps_read_back_as_the_seconds_they_were_written_from() {
+        for seconds in [
+            0,
+            1,
+            951_782_400,    // 2000-02-29
+            1_709_164_800,  // 2024-02-29
+            1_788_751_044,  // the observed Codex five-hour reset
+            1_788_783_892,  // and the weekly one
+            -2_203_977_600, // 1900-02-28
+            4_102_444_800,  // 2100-01-01
+        ] {
+            let text = rfc3339_from_unix_seconds(seconds);
+            assert_eq!(
+                unix_seconds_from_rfc3339(&text),
+                Some(seconds),
+                "{text} did not read back"
+            );
+        }
+    }
+
+    #[test]
+    fn an_offset_names_the_same_instant_as_the_utc_form() {
+        // 2026-09-07T03:17:24Z is 06:17:24 in Istanbul and 22:17:24 the previous day in
+        // New York. All three have to be the same number of seconds.
+        assert_eq!(
+            unix_seconds_from_rfc3339("2026-09-07T03:17:24Z"),
+            Some(1_788_751_044)
+        );
+        assert_eq!(
+            unix_seconds_from_rfc3339("2026-09-07T06:17:24+03:00"),
+            Some(1_788_751_044)
+        );
+        assert_eq!(
+            unix_seconds_from_rfc3339("2026-09-06T23:17:24-04:00"),
+            Some(1_788_751_044)
+        );
+        // Fractional seconds are read and dropped, not rejected.
+        assert_eq!(
+            unix_seconds_from_rfc3339("2026-09-07T03:17:24.987Z"),
+            Some(1_788_751_044)
+        );
+    }
+
+    #[test]
+    fn a_date_the_calendar_does_not_have_is_rejected() {
+        for value in [
+            "2026-02-30T00:00:00Z",
+            "2025-02-29T00:00:00Z", // 2025 is not a leap year
+            "2026-04-31T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-00-10T00:00:00Z",
+            "2026-09-00T00:00:00Z",
+            "2026-09-07T24:00:00Z",
+            "2026-09-07T00:60:00Z",
+            "not a timestamp",
+        ] {
+            assert_eq!(
+                unix_seconds_from_rfc3339(value),
+                None,
+                "should have rejected {value}"
+            );
+        }
+        // A leap second is a real instant that a source may report; it is read, not refused.
+        assert!(unix_seconds_from_rfc3339("2016-12-31T23:59:60Z").is_some());
+    }
+
+    /// The three timestamps observed live on 2026-09-07, and the one spelling the
+    /// contract accepts for all of them.
+    #[test]
+    fn every_source_is_rewritten_into_the_contracts_one_spelling() {
+        // The usage endpoint: microseconds and a numeric offset, not a `Z` in sight.
+        assert_eq!(
+            rfc3339_utc("2026-09-07T13:10:00.130195+00:00").as_deref(),
+            Some("2026-09-07T13:10:00Z")
+        );
+        assert_eq!(
+            rfc3339_utc("2026-09-12T02:00:00.130216+00:00").as_deref(),
+            Some("2026-09-12T02:00:00Z")
+        );
+        // A real offset is converted, not truncated.
+        assert_eq!(
+            rfc3339_utc("2026-09-07T16:10:00+03:00").as_deref(),
+            Some("2026-09-07T13:10:00Z")
+        );
+        // Already right, and left alone.
+        assert_eq!(
+            rfc3339_utc("2026-09-07T13:10:00Z").as_deref(),
+            Some("2026-09-07T13:10:00Z")
+        );
+        // And the status line's own encoding lands in the same place.
+        assert_eq!(
+            rfc3339_from_unix_auto(1_788_786_600),
+            "2026-09-07T13:10:00Z"
+        );
+
+        assert_eq!(rfc3339_utc("2026-02-30T00:00:00Z"), None);
+        assert_eq!(rfc3339_utc("whenever you like"), None);
+    }
+
+    #[test]
+    fn the_gap_between_two_timestamps_is_signed_seconds() {
+        assert_eq!(
+            seconds_between("2026-09-07T03:00:00Z", "2026-09-07T03:15:00Z"),
+            Some(900)
+        );
+        assert_eq!(
+            seconds_between("2026-09-07T03:15:00Z", "2026-09-07T03:00:00Z"),
+            Some(-900),
+            "a clock that went backwards is reported, not hidden"
+        );
+        assert_eq!(seconds_between("nonsense", "2026-09-07T03:00:00Z"), None);
     }
 
     #[test]

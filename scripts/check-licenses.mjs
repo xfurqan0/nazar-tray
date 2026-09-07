@@ -18,12 +18,13 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /**
  * SPDX identifiers this project accepts. Anything else stops the build.
  *
- * `CDLA-Permissive-2.0` is the odd one out and is here on purpose. It covers exactly one
- * dependency, `webpki-root-certs`, and what it licenses is *data*: Mozilla's root
- * certificate list. It grants unrestricted use with no share-alike clause, so it is
- * permissive in the sense this list cares about. It arrives through `reqwest`, which is
- * a dependency of `tauri` itself rather than of the updater plugin, so it cannot be
- * dropped without dropping Tauri.
+ * `CDLA-Permissive-2.0` is the odd one out and is here on purpose. It covers exactly two
+ * dependencies, `webpki-root-certs` and `webpki-roots`, and what it licenses is *data*:
+ * Mozilla's root certificate list. It grants unrestricted use with no share-alike clause,
+ * so it is permissive in the sense this list cares about. The first arrives through
+ * `reqwest`, a dependency of `tauri` itself rather than of the updater plugin, so it
+ * cannot be dropped without dropping Tauri; the second through `ureq`, the HTTP client of
+ * the opt-in detailed-windows mode.
  */
 const ALLOWED = new Set([
   "0BSD",

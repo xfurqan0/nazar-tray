@@ -22,7 +22,11 @@ path = "src/main.rs"
 
 # Deliberately three dependencies and no Tauri: this binary runs on every status-line
 # refresh, so every millisecond of start-up is a millisecond of the user's prompt.
+#
+# `default-features = false` drops nazar-core's `detailed-windows` feature, so the wrapper
+# asks for neither an HTTP client nor the module that reads a token. Built on its own —
+# which is how it is released — none of that is compiled at all.
 [dependencies]
-nazar-core = { path = "../nazar-core" }
+nazar-core = { path = "../nazar-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

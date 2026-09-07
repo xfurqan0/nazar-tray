@@ -50,8 +50,8 @@ with `"configured": false` and no windows — the key never disappears.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `configured` | boolean | yes | `false` when the provider's files are not on this machine. |
-| `plan` | string | no | As the source reported it: `max_20x`, `plus`, … Never normalised. |
-| `source` | string | no | `statusline` \| `endpoint` for Claude, `rollout` for Codex. |
+| `plan` | string | no | `max_20x`, `plus`, … Codex's comes through as the rollout log reported it. Claude's is normalised from the usage endpoint's tier (`default_claude_max_20x` → `max_20x`) and exists only in detailed mode; the passive path derives none. |
+| `source` | string | no | `statusline` \| `endpoint` for Claude, `rollout` for Codex. `endpoint` whenever the opt-in mode produced the block, even if a newer status-line capture replaced some of its windows — see "Which source wins" below. |
 | `sourceAt` | string | no | RFC 3339. When the *source* produced the numbers, which is older than `updatedAt` by design. |
 | `binding` | string | no | Key of the window with the **highest percentage** among this provider's windows. Never taken from a flag the source does not provide. |
 | `windows` | object | no | Window key to window object. Absent or empty when nothing is known. |
@@ -76,7 +76,7 @@ needs to know how long a window is.
 | `state` | string | **yes** | `ok` \| `stale` \| `error`. There is no safe default, so it is required rather than assumed. |
 | `error` | string | no | Short reason the window is stale or in error. Never file contents, never a response body. |
 | `model` | string | no | Model a weekly window is scoped to. Absent for global windows. |
-| `detailed` | boolean | no | `true` when the window came from the opt-in detailed-windows mode (WP2b). |
+| `detailed` | boolean | no | `true` when the window came from the opt-in detailed-windows mode and nothing has replaced it since. Read it as "no status line produced this". |
 
 ## Sample
 
@@ -139,11 +139,45 @@ needs to know how long a window is.
 }
 ```
 
-`source` is `statusline` for Claude even though one window came from the endpoint: the
-provider records the path that produced its **passive** numbers, and the per-window
-`detailed: true` marks the ones that did not. `binding` is `seven_day_fable` because 23
-is the highest of 12, 18 and 23 — the constraint a Fable-heavy Max user actually hits,
-and the one the passive path cannot see.
+`source` is `endpoint` because the opt-in detailed-windows mode laid this block down —
+and `five_hour` and `seven_day` carry **no** `detailed` flag because a newer status-line
+capture replaced them afterwards, which is exactly what the precedence rules below say
+happens. `seven_day_fable` keeps its flag because nothing else can produce that window.
+`binding` is `seven_day_fable` because 23 is the highest of 12, 18 and 23 — the constraint
+a Fable-heavy Max user actually hits, and the one the passive path cannot see.
+
+## Which source wins (detailed-windows mode)
+
+With the opt-in mode off there is one source and nothing to decide: `source` is
+`statusline`, the two passive windows are the whole block, and none of this applies.
+
+With it on there are two, and they do not overlap neatly:
+
+| | `five_hour` | `seven_day` | `seven_day_<model>` |
+|---|---|---|---|
+| status line (passive, always on) | yes | yes | **no** |
+| usage endpoint (opt-in) | yes | yes | yes |
+
+1. **The endpoint lays down the block.** Its windows, its `plan`, and `source: "endpoint"`.
+   Every window it produced carries `detailed: true`.
+2. **A newer status-line capture wins on the two windows they share.** The status line is
+   rewritten every few seconds while a session is open; the endpoint is asked on a timer
+   and backed off from when it says no. So if `providers.claude.sourceAt` from the passive
+   path is later than the endpoint's fetch, `five_hour` and `seven_day` are replaced with
+   the passive readings — and lose `detailed`, because they are no longer that window.
+   A passive window with **no** `percent` never replaces one that has one: "I could not
+   read it" is not fresher information than a number.
+3. **Model-scoped weeklies are never replaced.** Nothing else produces them.
+4. **`sourceAt` is the newest source that actually contributed a window**, so it never
+   claims to be fresher than the numbers it stands over.
+5. **The endpoint reading goes stale after fifteen minutes**, or immediately when it is a
+   remembered value from before a failure. Stale means `state: "stale"` with a short
+   `error` saying why — never a dropped number, and never a `0`.
+6. **With the mode on but the endpoint never having answered, the passive block passes
+   through untouched.** The fallback is the default path, not an empty document.
+
+`detailed: true` is therefore readable as "no status line produced this", which is the
+question a consumer actually has. What produced the block as a whole is `source`.
 
 ## A window that could not be read
 

@@ -5,7 +5,7 @@
     "claude": {
       "configured": true,
       "plan": "max_20x",
-      "source": "statusline",
+      "source": "endpoint",
       "sourceAt": "2026-09-06T21:12:30Z",
       "binding": "seven_day_fable",
       "windows": {
