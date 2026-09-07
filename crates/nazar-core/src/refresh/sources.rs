@@ -96,25 +96,40 @@ impl ReaderSet {
         self
     }
 
-    /// The two readers this build ships, pointed at this machine.
+    /// The readers this build ships, pointed at this machine and at these settings.
     ///
-    /// `detailed` is `config.detailedWindows`. With it false the opt-in mode is not built,
-    /// so nothing in it can run; see [`crate::claude::detailed`].
+    /// Two things in the settings decide what is built, and in both cases "off" means the
+    /// reader **does not exist** rather than that its answer is thrown away:
+    ///
+    /// * `config.providers` switches a whole provider off. Somebody who does not use Codex
+    ///   should not have a program listing their session directory every five seconds to
+    ///   find out; with the switch off, nothing here opens `~/.codex` at all.
+    /// * `config.detailedWindows` switches the opt-in endpoint mode on. With it false the
+    ///   mode is not built, so no path in it can run; see [`crate::claude::detailed`].
     #[must_use]
-    pub fn discover(detailed: bool) -> Self {
-        let _ = detailed;
+    pub fn discover(config: &crate::config::Config) -> Self {
         let mut set = ReaderSet::new();
-        if let Ok(reader) = CodexReader::discover() {
+        if config.providers.codex
+            && let Ok(reader) = CodexReader::discover()
+        {
             set.readers.push(Box::new(CodexSource::new(reader)));
         }
-        if let Ok(reader) = ClaudeReader::discover() {
+        if config.providers.claude
+            && let Ok(reader) = ClaudeReader::discover()
+        {
             #[cfg(feature = "detailed-windows")]
             set.readers
-                .push(Box::new(ClaudeSource::new(reader, detailed)));
+                .push(Box::new(ClaudeSource::new(reader, config.detailed_windows)));
             #[cfg(not(feature = "detailed-windows"))]
             set.readers.push(Box::new(ClaudeSource::new(reader)));
         }
         set
+    }
+
+    /// The provider keys this set will fill in.
+    #[must_use]
+    pub fn keys(&self) -> Vec<&'static str> {
+        self.readers.iter().map(|reader| reader.key()).collect()
     }
 
     /// Build the whole document for `now`.

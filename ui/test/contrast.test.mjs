@@ -46,7 +46,10 @@ const TEXT = [
   ["warnText", "panel", "the demo badge"],
   ["dangerText", "node", "a window over the red threshold"],
   ["unknownGreyText", "node", "a window nobody could read, and its error line"],
-  ["bannerText", "bannerBg", "the first-run overflow hint"],
+  ["bannerText", "bannerBg", "the first-run overflow hint, and a refused settings form"],
+  ["text", "nodeHeader", "what you type into a settings control"],
+  ["accentText", "node", "the Saved confirmation on the settings page"],
+  ["text", "nodeHeader", "the label on the settings page's Save button, hovered"],
 ];
 
 /** The meter is decorative — the percentage is text beside it — but it is the thing the
@@ -57,6 +60,7 @@ const GRAPHICS = [
   ["danger", "nodeHeader", "the bar of a window over the red threshold"],
   ["unknownGrey", "nodeHeader", "the hatched track of an unknown window"],
   ["focusRing", "panel", "the keyboard focus ring"],
+  ["accentText", "panel", "the outline of the settings page's Save button"],
 ];
 
 for (const theme of THEMES) {
@@ -93,5 +97,26 @@ test("the stylesheet uses the tokens this file measured, not other ones", () => 
   assert.ok(
     !/\.meter-fill \{[^}]*var\(--color-accent,/s.test(css),
     "the meter fill must use the derived accent tone, not the raw one",
+  );
+
+  // The settings page's own pairs, so that a rule quietly changing background is a failing
+  // test rather than a page nobody can read in light mode.
+  assert.match(css, /\.control \{[^}]*--color-node-header/s, "a control sits on nodeHeader");
+  assert.match(css, /\.control \{[^}]*--color-text,/s, "and what you type into it is `text`");
+  // The raw accent as a *fill* is 2.56:1 under the panel's own text colour in light mode.
+  // Save is an outline in the derived tone instead, which is the same trade the meter made.
+  assert.match(
+    css,
+    /\.button\.primary \{[^}]*--color-accent-text/s,
+    "Save is outlined in the derived accent tone",
+  );
+  assert.ok(
+    !/\.button\.primary \{[^}]*background:\s*var\(--color-accent,/s.test(css),
+    "a filled Save button would put white on a mid blue in light mode",
+  );
+  assert.ok(
+    !/\.note-error \{[^}]*color:\s*var\(--color-danger-text/s.test(css),
+    "a refused form says what is wrong in words; the red is the border, and `dangerText` " +
+      "on the banner background is not a pair this file has measured",
   );
 });

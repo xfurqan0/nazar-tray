@@ -19,6 +19,15 @@
 //! at once is worse than either: the menu takes the focus, the panel blurs behind it, and
 //! the blur-suppression that keeps it alive then leaves a panel nobody can dismiss. The
 //! deviation is written up in `docs/PROJECT.md` section 9.
+//!
+//! **WP5 adds `Settings` and makes the menu rebuildable.** A menu item's text is set when the
+//! item is *built*, so a menu built in English stays in English however the settings change —
+//! which was WP4's open risk, written down at the time and closed here. [`rebuild_menu`]
+//! throws the whole menu away and makes a new one in the current language; it is called from
+//! `set_config`, and only when the language actually moved, because replacing a menu the user
+//! may have open is not a thing to do for nothing.
+
+use std::sync::Arc;
 
 use nazar_core::state::{SnapshotView, WindowView};
 use tauri::image::Image;
@@ -26,7 +35,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::i18n::{self, Catalog};
+use crate::i18n::{self, Catalog, Strings};
 use crate::icon::{self, IconState};
 use crate::state::AppState;
 
@@ -37,6 +46,8 @@ pub const TRAY_ID: &str = "nazar-tray";
 const MENU_OPEN: &str = "nazar-open";
 /// Menu item: ask the loop for a pass right now.
 const MENU_REFRESH: &str = "nazar-refresh";
+/// Menu item: show the panel with the settings view open.
+const MENU_SETTINGS: &str = "nazar-settings";
 /// Menu item: stop the loop, release the lock, exit.
 const MENU_QUIT: &str = "nazar-quit";
 
@@ -45,8 +56,11 @@ const MENU_QUIT: &str = "nazar-quit";
 /// one.
 const TOOLTIP_LIMIT: usize = 127;
 
-/// Create the tray icon, its menu, and the mouse bindings.
-pub fn install(app: &AppHandle, catalog: &Catalog) -> tauri::Result<()> {
+/// Build the context menu in one language.
+///
+/// Four entries and a separator, in the order a Windows user looks for them: the thing they
+/// came for, the thing they might want next, the settings, and the way out.
+fn build_menu(app: &AppHandle, catalog: &Catalog) -> tauri::Result<Menu<tauri::Wry>> {
     let open = MenuItem::with_id(
         app,
         MENU_OPEN,
@@ -61,6 +75,13 @@ pub fn install(app: &AppHandle, catalog: &Catalog) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let settings = MenuItem::with_id(
+        app,
+        MENU_SETTINGS,
+        catalog.text("tray.menu.settings"),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(
         app,
@@ -69,7 +90,36 @@ pub fn install(app: &AppHandle, catalog: &Catalog) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let menu = Menu::with_items(app, &[&open, &refresh_item, &separator, &quit])?;
+    Menu::with_items(app, &[&open, &refresh_item, &settings, &separator, &quit])
+}
+
+/// Replace the menu and the tooltip with ones written in the current language.
+///
+/// Called when — and only when — the language actually changed. A menu item's text cannot be
+/// changed after the item is built, so this makes new items; the tray icon keeps its own
+/// identity, so nothing flickers and nothing moves in the Windows 11 overflow.
+pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
+    let catalog = strings.catalog();
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    match build_menu(app, &catalog) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        // A menu that could not be rebuilt is a menu in the old language, which is a much
+        // smaller problem than no menu at all — and `Quit` is in the old one too.
+        Err(error) => eprintln!("nazar-tray: could not rebuild the tray menu: {error}"),
+    }
+    if let Some(state) = app.try_state::<AppState>() {
+        let _ = tray.set_tooltip(Some(tooltip(&state.view(), &catalog)));
+    }
+}
+
+/// Create the tray icon, its menu, and the mouse bindings.
+pub fn install(app: &AppHandle, strings: &Arc<Strings>) -> tauri::Result<()> {
+    let catalog = strings.catalog();
+    let menu = build_menu(app, &catalog)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(image(&IconState::default(), 1.0))
@@ -87,6 +137,8 @@ pub fn install(app: &AppHandle, catalog: &Catalog) -> tauri::Result<()> {
                     state.refresh();
                 }
             }
+            // The settings live in the panel, so the menu asks the panel to show them.
+            MENU_SETTINGS => crate::state::open_settings(app.clone()),
             MENU_QUIT => {
                 // The lock first, the process second. This is the whole reason the menu
                 // exists; see the module note.
@@ -99,7 +151,7 @@ pub fn install(app: &AppHandle, catalog: &Catalog) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             // Acts on release, so a click that started elsewhere does not count. The middle
-            // button is deliberately left free: WP5 has a use for it.
+            // button is deliberately left free.
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -362,6 +414,32 @@ mod tests {
             text.chars().count()
         );
         assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn the_tooltip_follows_the_language_the_settings_choose_at_run_time() {
+        // WP4's open risk in one test. The tooltip is drawn from `Strings`, and `Strings`
+        // is swapped by `set_config` rather than fixed at start-up — so a language change
+        // rewrites the tooltip without the process restarting. (The menu cannot be tested
+        // here because building a `MenuItem` needs a running application; what proves it
+        // is `rebuild_menu` above, and the bridge test that `set_config` calls it.)
+        let strings = crate::i18n::Strings::new("en");
+        let view = view(vec![provider(
+            "codex",
+            vec![window("secondary", Some(70.0), 10080, true)],
+        )]);
+
+        assert_eq!(
+            tooltip(&view, &strings.catalog()),
+            "Codex week 70 % (resets in 2 h 10 m)"
+        );
+
+        assert!(strings.set("tr"), "the language actually moved");
+        assert_eq!(
+            tooltip(&view, &strings.catalog()),
+            "Codex hafta %70 (2 sa 10 dk sonra sıfırlanır)",
+            "the same numbers, in the language the user has just chosen"
+        );
     }
 
     #[test]

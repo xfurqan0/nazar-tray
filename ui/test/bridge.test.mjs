@@ -61,18 +61,139 @@ test("WP4's commands are all there: the panel's actions and the way out", () => 
   );
 });
 
-test("the tray menu offers the same three actions", () => {
+test("WP5's commands are all there: the settings and the startup entry", () => {
+  for (const command of [
+    "get_config",
+    "set_config",
+    "get_autostart",
+    "set_autostart",
+    "reset_hint",
+    "dismiss_detailed_suggestion",
+  ]) {
+    assert.ok(registered.includes(command), `${command} is not registered`);
+    assert.ok(invoked.includes(command), `the panel never calls ${command}`);
+  }
+
+  // `open_settings` is the odd one out: it is called from the tray menu, on the Rust side,
+  // because the panel that would otherwise call it is the panel it opens. What reaches the
+  // webview is the event it emits.
+  assert.ok(registered.includes("open_settings"));
+  assert.match(
+    read("crates/nazar-tray/src/tray.rs"),
+    /MENU_SETTINGS => crate::state::open_settings/,
+    "the tray menu's Settings entry no longer opens the settings",
+  );
+
+  // Validate, then write, then apply. A form that does not validate changes nothing at all.
+  assert.match(
+    rustState,
+    /let problems = next\.validate\(\);\s*if !problems\.is_empty\(\) \{\s*return Err\(problems\);/s,
+    "set_config must refuse the whole form rather than saving part of it",
+  );
+  // The switch reads the machine, not our own settings file.
+  assert.match(
+    rustState,
+    /manager\.is_enabled\(\)\.map_err/,
+    "set_autostart must read the state back from the plugin rather than assuming it",
+  );
+});
+
+test("the tray menu offers the four actions, and can be rebuilt in another language", () => {
   const tray = read("crates/nazar-tray/src/tray.rs");
-  for (const key of ["tray.menu.open", "tray.menu.refresh", "tray.menu.quit"]) {
+  for (const key of [
+    "tray.menu.open",
+    "tray.menu.refresh",
+    "tray.menu.settings",
+    "tray.menu.quit",
+  ]) {
     assert.ok(tray.includes(`"${key}"`), `the tray menu no longer names ${key}`);
   }
   assert.match(tray, /state\.shutdown\(\);/, "the menu's Quit must release the lock");
+  // WP4's open risk: a menu item's text is set when the item is built, so a language change
+  // has to build new ones.
+  assert.match(tray, /pub fn rebuild_menu/, "the menu must be rebuildable");
+  assert.match(tray, /tray\.set_menu\(Some\(menu\)\)/);
+  assert.match(
+    rustState,
+    /if applied\.locale_changed \{[\s\S]{0,200}?crate::tray::rebuild_menu/,
+    "changing the language must rebuild the tray menu",
+  );
 });
 
-test("the panel listens for the event name the Rust side emits", () => {
-  const constant = /pub const SNAPSHOT_CHANGED: &str = "([^"]+)"/.exec(rustState);
-  assert.ok(constant, "state.rs no longer names the event");
-  assert.match(panel, new RegExp(`listen\\("${constant[1]}"`), "the panel listens for something else");
+test("the plugins are initialised, and the panel is granted neither", () => {
+  const main = read("crates/nazar-tray/src/main.rs");
+  assert.match(main, /tauri_plugin_notification::init\(\)/);
+  assert.match(main, /tauri_plugin_autostart::init\(/);
+  // The autostart entry passes `--hidden`, which is the difference between a tray that
+  // starts quietly and one that opens a popup at every login.
+  assert.match(main, /Some\(vec!\["--hidden"\]\)/);
+
+  // Both plugins are driven from Rust, so the webview needs no plugin permission at all.
+  // A capability the panel does not use is a capability it should not have.
+  const capabilities = JSON.parse(read("crates/nazar-tray/capabilities/default.json"));
+  for (const permission of capabilities.permissions) {
+    assert.ok(
+      permission.startsWith("core:"),
+      `${permission} grants the panel something outside the core defaults`,
+    );
+  }
+  assert.deepEqual(capabilities.permissions, ["core:default", "core:window:allow-hide"]);
+});
+
+test("the notification keys the Rust side names all exist", () => {
+  const alerts = read("crates/nazar-tray/src/alerts.rs");
+  for (const key of [
+    "alert.title",
+    "alert.window.fiveHour",
+    "alert.window.weekly",
+    "alert.window.modelWeekly",
+    "alert.body.resets",
+    "alert.body.resetDue",
+    "alert.body.noReset",
+  ]) {
+    assert.ok(alerts.includes(`"${key}"`), `alerts.rs no longer names ${key}`);
+  }
+});
+
+test("the panel and the settings agree on which languages exist", () => {
+  // `LOCALES` is written down twice — once in TypeScript, once in Rust — because neither
+  // side can import the other's. A language in one list and not the other is a language the
+  // settings offer and the panel cannot paint, or the other way round.
+  const typescript = read("ui/src/i18n.ts");
+  const rust = read("crates/nazar-core/src/config.rs");
+
+  const listed = (source, pattern) =>
+    [...(pattern.exec(source)?.[1] ?? "").matchAll(/"(\w+)"/g)].map((match) => match[1]);
+
+  const fromTs = listed(typescript, /export const LOCALES = \[([^\]]+)\]/);
+  const fromRust = listed(rust, /pub const LOCALES: \[&str; \d+\] = \[([^\]]+)\]/);
+
+  assert.ok(fromTs.length >= 6, `ui/src/i18n.ts declares ${fromTs.join(", ")}`);
+  assert.deepEqual(fromRust, fromTs, "ui/src/i18n.ts and config.rs list different languages");
+});
+
+test("the panel listens for the event names the Rust side emits", () => {
+  for (const name of ["SNAPSHOT_CHANGED", "OPEN_SETTINGS"]) {
+    const constant = new RegExp(`pub const ${name}: &str = "([^"]+)"`).exec(rustState);
+    assert.ok(constant, `state.rs no longer names ${name}`);
+    assert.match(
+      panel,
+      new RegExp(`listen\\("${constant[1]}"`),
+      `the panel does not listen for ${constant[1]}`,
+    );
+  }
+});
+
+test("the refresh loop announces every pass, not only the ones that moved", () => {
+  // The notifications look at every reading: a tray started when the weekly window is
+  // already at 91 % changes nothing, and that is the case where the user most needs telling.
+  const refresh = read("crates/nazar-core/src/refresh/mod.rs");
+  assert.match(
+    refresh,
+    /self\.emit\(Event::Refreshed\);\s*if changed \{\s*self\.emit\(Event::SnapshotChanged\)/s,
+  );
+  const main = read("crates/nazar-tray/src/main.rs");
+  assert.match(main, /Event::Refreshed => alerts::on_refresh\(app\)/);
 });
 
 test("the panel asks for the fields the derived view actually carries", () => {
@@ -86,7 +207,7 @@ test("the panel asks for the fields the derived view actually carries", () => {
 });
 
 /** Message keys look like `panel.window.weekly`: a namespace and at least one dot. */
-const KEY = /"((?:app|panel|tray|time|window)\.[A-Za-z0-9_.]+)"/g;
+const KEY = /"((?:app|panel|tray|time|window|alert|settings)\.[A-Za-z0-9_.]+)"/g;
 
 test("every message key either side names is in the locale files", () => {
   const english = JSON.parse(read("ui/locales/en.json"));
@@ -98,6 +219,7 @@ test("every message key either side names is in the locale files", () => {
     "ui/src/index.html",
     "crates/nazar-tray/src/tray.rs",
     "crates/nazar-tray/src/i18n.rs",
+    "crates/nazar-tray/src/alerts.rs",
   ];
 
   for (const source of sources) {

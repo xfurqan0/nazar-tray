@@ -6,22 +6,34 @@
 //! `ui/locales/<lang>.json` catalogues are compiled in with `include_str!` and looked up
 //! with the same `{placeholder}` substitution `ui/src/i18n.ts` does, in about forty lines.
 //!
-//! Two things this deliberately does not do, and where they land:
+//! **WP5 made this the only opinion about the language.** WP4 left two: the tray fell back
+//! to English while the panel guessed from `navigator.languages`, so a Turkish machine could
+//! get a Turkish panel under an English tooltip. Now [`resolve`] answers once — the settings
+//! override, then the operating system's UI language ([`crate::system::ui_language`]), then
+//! English — and the answer is handed to the panel as well as used here. [`Strings`] holds
+//! it behind a lock so that changing the language in the settings rebuilds the tray menu and
+//! rewrites the tooltip without a restart.
 //!
-//! * **Detecting the language.** WP5 reads the Windows UI language and adds the override in
-//!   settings; until then the locale comes from `config.json`'s `locale` key, and the
-//!   default is English. A guess here would be a second, different guess from the panel's.
-//! * **Carrying ZH, KO, RU and ES.** Those catalogues are still empty (WP6). An empty
-//!   catalogue falls through to English rather than showing a key.
+//! All six catalogues are compiled in, including the four WP6 has not written yet. An empty
+//! catalogue is **not offered** — [`available`] leaves it out of the settings list — and if
+//! one were selected anyway it would fall through to English rather than show message keys.
+//! That way the day a translation lands is the day it appears, with no code change here.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 /// English, the fallback for every missing string.
 const EN: &str = include_str!("../../../ui/locales/en.json");
 /// Turkish, written by hand alongside English.
 const TR: &str = include_str!("../../../ui/locales/tr.json");
+/// The four WP6 owns. Empty today; compiled in so that filling them is all it takes.
+const ZH: &str = include_str!("../../../ui/locales/zh.json");
+const KO: &str = include_str!("../../../ui/locales/ko.json");
+const RU: &str = include_str!("../../../ui/locales/ru.json");
+const ES: &str = include_str!("../../../ui/locales/es.json");
 
 /// A catalogue bound to one language, with English behind it.
+#[derive(Debug)]
 pub struct Catalog {
     messages: BTreeMap<String, String>,
     fallback: BTreeMap<String, String>,
@@ -33,21 +45,132 @@ fn parse(text: &str) -> BTreeMap<String, String> {
     serde_json::from_str(text).unwrap_or_default()
 }
 
-/// The catalogue for a language tag such as `tr`, `tr-TR` or `en-GB`.
+/// The primary subtag of a language tag: `tr-TR` and `TR_tr` both become `tr`.
 #[must_use]
-pub fn catalog(locale: &str) -> Catalog {
-    let primary = locale
+pub fn primary_subtag(locale: &str) -> String {
+    locale
         .split(['-', '_'])
         .next()
         .unwrap_or_default()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+/// The source text of a catalogue this build carries, or `None`.
+fn source(primary: &str) -> Option<&'static str> {
+    match primary {
+        "en" => Some(EN),
+        "tr" => Some(TR),
+        "zh" => Some(ZH),
+        "ko" => Some(KO),
+        "ru" => Some(RU),
+        "es" => Some(ES),
+        _ => None,
+    }
+}
+
+/// The catalogue for a language tag such as `tr`, `tr-TR` or `en-GB`.
+#[must_use]
+pub fn catalog(locale: &str) -> Catalog {
+    let primary = primary_subtag(locale);
     let messages = match primary.as_str() {
-        "tr" => parse(TR),
-        _ => BTreeMap::new(),
+        // English is the fallback; loading it twice would only double the memory.
+        "en" => BTreeMap::new(),
+        other => source(other).map(parse).unwrap_or_default(),
     };
     Catalog {
         messages,
         fallback: parse(EN),
+    }
+}
+
+/// The languages this build can actually paint itself in, in the order the form lists them.
+///
+/// English first because it is the fallback, then whatever else has been translated. A
+/// language whose catalogue is still empty is left out: offering it and then showing English
+/// would be a menu entry that lies.
+#[must_use]
+pub fn available() -> Vec<&'static str> {
+    let mut languages = vec!["en"];
+    for locale in nazar_core::config::LOCALES {
+        if locale != "en" && source(locale).is_some_and(|text| !parse(text).is_empty()) {
+            languages.push(locale);
+        }
+    }
+    languages
+}
+
+/// The language the application is in: the override, the machine, then English.
+///
+/// `chosen` is `config.locale`; `system` is what the operating system says
+/// ([`crate::system::ui_language`]). A tag neither this build nor WP6 has a catalogue for
+/// falls through rather than being selected, so a machine set to German gets an English
+/// panel and an English tooltip instead of a panel full of message keys.
+#[must_use]
+pub fn resolve(chosen: Option<&str>, system: Option<&str>) -> String {
+    let offered = available();
+    for tag in chosen.into_iter().chain(system) {
+        let primary = primary_subtag(tag);
+        if offered.contains(&primary.as_str()) {
+            return primary;
+        }
+    }
+    "en".to_owned()
+}
+
+/// The language the whole application is in, changeable while it runs.
+///
+/// One value, read by the tray menu, the tooltip and the notifications, and replaced by the
+/// settings form. Behind an `RwLock` because it is read on the refresh loop's thread and on
+/// the event loop's, and written on neither of them regularly: the contended case is a user
+/// changing their language, which happens about once.
+#[derive(Debug)]
+pub struct Strings {
+    inner: RwLock<(String, Arc<Catalog>)>,
+}
+
+impl Strings {
+    /// Bind to a language tag, resolved by [`resolve`] beforehand.
+    #[must_use]
+    pub fn new(locale: &str) -> Self {
+        Strings {
+            inner: RwLock::new((locale.to_owned(), Arc::new(catalog(locale)))),
+        }
+    }
+
+    /// The catalogue as it is right now.
+    #[must_use]
+    pub fn catalog(&self) -> Arc<Catalog> {
+        Arc::clone(
+            &self
+                .inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1,
+        )
+    }
+
+    /// The language tag in force.
+    #[must_use]
+    pub fn locale(&self) -> String {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .clone()
+    }
+
+    /// Switch language. `true` when it actually changed, which is what tells the caller
+    /// the tray menu has to be rebuilt.
+    pub fn set(&self, locale: &str) -> bool {
+        let mut held = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.0 == locale {
+            return false;
+        }
+        *held = (locale.to_owned(), Arc::new(catalog(locale)));
+        true
     }
 }
 
@@ -199,6 +322,69 @@ mod tests {
         assert!(
             missing.is_empty(),
             "EN and TR are both written by hand and must stay level: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn the_language_is_the_override_then_the_machine_then_english() {
+        assert_eq!(
+            resolve(Some("tr"), Some("en-GB")),
+            "tr",
+            "the user's choice wins"
+        );
+        assert_eq!(resolve(None, Some("tr-TR")), "tr", "then the machine's");
+        assert_eq!(resolve(None, None), "en", "and English is the floor");
+        assert_eq!(
+            resolve(None, Some("de-DE")),
+            "en",
+            "a language nobody has translated must not be selected: an English panel beats              a panel full of message keys"
+        );
+        assert_eq!(
+            resolve(Some("ko"), Some("tr-TR")),
+            "tr",
+            "a chosen language whose catalogue is still empty falls through to the machine's"
+        );
+        assert_eq!(resolve(Some("TR_tr"), None), "tr", "tags are normalised");
+    }
+
+    #[test]
+    fn only_the_languages_that_are_actually_written_are_offered() {
+        let offered = available();
+        assert_eq!(
+            offered[0], "en",
+            "English is the fallback, so it is listed first"
+        );
+        assert!(offered.contains(&"tr"));
+        for locale in &offered {
+            assert!(
+                nazar_core::config::LOCALES.contains(locale),
+                "{locale} is not a language the settings know about"
+            );
+            assert!(
+                !catalog(locale).fallback.is_empty(),
+                "{locale} was offered with nothing behind it"
+            );
+        }
+        // WP6's four are compiled in and still empty, so they are not offered yet. The day
+        // one of them is written, this assertion is what says so.
+        assert_eq!(
+            offered.len(),
+            2,
+            "EN and TR are written by hand; ZH, KO, RU and ES are WP6's, got {offered:?}"
+        );
+    }
+
+    #[test]
+    fn the_language_can_be_changed_while_the_application_runs() {
+        let strings = Strings::new("en");
+        assert_eq!(strings.locale(), "en");
+        assert_eq!(strings.catalog().text("tray.menu.quit"), "Quit");
+
+        assert!(strings.set("tr"), "a real change has to be announced");
+        assert_eq!(strings.catalog().text("tray.menu.quit"), "Çık");
+        assert!(
+            !strings.set("tr"),
+            "setting the same language again must not rebuild the tray menu"
         );
     }
 

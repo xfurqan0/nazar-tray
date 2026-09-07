@@ -66,6 +66,14 @@ pub const REQUEST_MAX_AGE: Duration = Duration::from_secs(60);
 /// Something the loop wants the application to know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
+    /// A pass finished, whether or not anything moved.
+    ///
+    /// Emitted **before** [`Event::SnapshotChanged`] on a pass that changed something, and
+    /// on its own on a pass that did not. The threshold notifications listen for this one
+    /// rather than for the change, because the first pass after a restart has to be able to
+    /// say "you are already at 91 %" even when the file on disk said so all along — and
+    /// because a pass that read nothing new is still the pass that follows a wake-up.
+    Refreshed,
     /// The document changed. The panel should re-read the snapshot.
     SnapshotChanged,
     /// Somebody asked for the panel: a second launch of the application.
@@ -255,6 +263,23 @@ impl Engine {
             .signal(clock.monotonic_millis(), Cause::Requested);
     }
 
+    /// Replace the readers and the rules, and refresh at once.
+    ///
+    /// What a settings change does. Switching a provider off has to mean the reader is
+    /// **gone** rather than that its answer is ignored (`docs/PROJECT.md` WP5), and the only
+    /// place a reader can be dropped is here, on the thread that owns it — which is why this
+    /// arrives as a command rather than as a lock somebody else can take.
+    ///
+    /// The watch list is cleared with the readers: a directory nobody reads any more is a
+    /// directory nobody should be listing every five seconds.
+    pub fn apply(&mut self, readers: ReaderSet, rules: Rules, clock: &dyn Clock) {
+        self.readers = readers;
+        self.rules = rules;
+        self.watch.set_targets(self.readers.watched());
+        self.schedule
+            .signal(clock.monotonic_millis(), Cause::Requested);
+    }
+
     /// One pass of the loop.
     pub fn tick(&mut self, clock: &dyn Clock) -> Cycle {
         let now_ms = clock.monotonic_millis();
@@ -348,6 +373,10 @@ impl Engine {
             .published
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = self.warnings();
+        // Every pass, then the news. A listener that only cares about news filters; one
+        // that has to look at every reading — the notifications do — would otherwise have
+        // to poll, and a poll would be a second schedule disagreeing with this one.
+        self.emit(Event::Refreshed);
         if changed {
             self.emit(Event::SnapshotChanged);
         }
@@ -431,12 +460,23 @@ pub fn place_request(path: &Path, now: &str) -> Result<()> {
 }
 
 /// What the loop's owner can tell it to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     /// Refresh at the next pass.
     RefreshNow,
+    /// Read different providers from now on, and refresh.
+    Reconfigure(Box<(ReaderSet, Rules)>),
     /// Finish and give the engine back.
     Stop,
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Command::RefreshNow => f.write_str("RefreshNow"),
+            Command::Reconfigure(_) => f.write_str("Reconfigure"),
+            Command::Stop => f.write_str("Stop"),
+        }
+    }
 }
 
 /// A running loop.
@@ -450,6 +490,17 @@ impl LoopHandle {
     /// Ask for a refresh. `false` when the loop has already stopped.
     pub fn refresh_now(&self) -> bool {
         self.commands.send(Command::RefreshNow).is_ok()
+    }
+
+    /// Hand the loop a new set of readers and rules. `false` when it has already stopped.
+    ///
+    /// The refresh that follows is immediate rather than at the next tick: a user who has
+    /// just switched a provider on is looking at the panel, and a minute of nothing would
+    /// read as the switch not working.
+    pub fn reconfigure(&self, readers: ReaderSet, rules: Rules) -> bool {
+        self.commands
+            .send(Command::Reconfigure(Box::new((readers, rules))))
+            .is_ok()
     }
 
     /// Stop the loop and take the engine back.
@@ -492,6 +543,10 @@ fn run(mut engine: Engine, clock: &dyn Clock, orders: &Receiver<Command>) -> Eng
         let cycle = engine.tick(clock);
         match orders.recv_timeout(cycle.sleep_for) {
             Ok(Command::RefreshNow) => engine.request_refresh(clock),
+            Ok(Command::Reconfigure(change)) => {
+                let (readers, rules) = *change;
+                engine.apply(readers, rules, clock);
+            }
             Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => return engine,
             Err(RecvTimeoutError::Timeout) => {}
         }

@@ -42,6 +42,8 @@ Rules that follow from this table, and that the tests enforce:
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` | `claudeAiOauth.{accessToken, expiresAt, rateLimitTier, subscriptionType}` — **four values, and the token is never stored** | Claude Code 2.1.263 | none — and there never will be one | **Opt-in, off by default.** Read-only, never written. See "The sign-in file" below. |
 | `~/.nazar/limits.lock` | `{schemaVersion, pid, startedAt, heartbeatAt}` — **ours**, read and written | this build | none needed; `lock.rs`'s tests are the fixture | The advisory file that makes "one writer" true. See "The advisory lock" below. |
 | `~/.nazar/tray.request` | **existence and modification time only.** The contents are one timestamp, for a human reading the directory | this build | none | How a second launch reaches the running tray. See "The request marker" below. |
+| `%APPDATA%\nazar\config.json` | **ours**, read and written; every key the settings page owns, and unknown keys preserved verbatim | this build | none needed; `config.rs`'s tests are the fixture | The user's settings. See "The settings file" below. |
+| `%APPDATA%\nazar\alerts.json` | **ours**, read and written: `{schemaVersion, windows{<provider>/<window>{resetsAt, fired[]}}}` | this build | none needed; `alerts.rs`'s tests are the fixture | Which threshold notifications have already been shown. See "The notification log" below. |
 
 ## The Codex rollout log
 
@@ -216,8 +218,8 @@ whether it still names this process. A tray whose lock was reclaimed while its m
 finds out at the top of its next refresh and stops writing — before the write, not after it.
 
 **Consequence worth knowing:** a tray that is *killed* rather than quit does not release its
-lock, so a relaunch within five minutes defers to a process that is gone. WP5 adds the Quit
-command that makes a graceful exit possible at all; until then, deleting
+lock, so a relaunch within five minutes defers to a process that is gone. WP4's `Quit` is the
+graceful exit that avoids it; when a tray really has been killed, deleting
 `~/.nazar/limits.lock` by hand is the manual escape, and doing so is safe when no tray is
 running.
 
@@ -239,6 +241,125 @@ Only two things about the file are ever read: **that it exists**, and **when it 
 written**. The timestamp inside is for a human looking at the directory. A marker older than
 sixty seconds is swept up without being obeyed — one left behind by a crash is litter, not an
 instruction, and a panel opening days later because of it would be a small haunting.
+
+## The settings file
+
+`%APPDATA%\nazar\config.json` on Windows, `$XDG_CONFIG_HOME/nazar/config.json` or
+`~/.config/nazar/config.json` elsewhere, and `$NAZAR_HOME/config.json` when that override is
+set. It is the user's file: they may edit it by hand, and this application must not lose what
+they wrote.
+
+```json
+{
+  "schemaVersion": 1,
+  "detailedWindows": false,
+  "detailedSuggested": false,
+  "thresholds": { "warn": 60.0, "critical": 85.0, "exhausted": 100.0 },
+  "freshness": { "freshMinutes": 5, "agingMinutes": 45 },
+  "theme": "nazar",
+  "themeMode": "system",
+  "firstRunHintDismissed": false,
+  "notifications": true,
+  "quietHours": { "from": "22:00", "to": "07:00" },
+  "providers": { "claude": true, "codex": true }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1`. Separate from `limits.json`'s: this file is the user's, that one is a contract with another program. |
+| `detailedWindows` | Whether the opt-in endpoint mode is on. **`false` ships, and it is the only value a fresh machine has.** |
+| `detailedSuggested` | Whether the Max-plan offer has already been made. Set when it is shown, so a user who said no is not asked twice. |
+| `thresholds` | Where a window turns amber, red and spent — and where a notification fires. One set of numbers, read by the icon, the panel and the notifications (finding B14). |
+| `freshness` | When a reading stops being fresh (`5` min) and starts being stale (`45` min). |
+| `theme`, `themeMode` | `nazar` \| `graphite`, and `system` \| `light` \| `dark`. |
+| `firstRunHintDismissed` | Whether the Windows 11 overflow tip has been read. |
+| `locale` | **Absent** means "follow the system". Present, it is one of `en tr zh ko ru es`. |
+| `notifications` | The master switch above the thresholds and the quiet hours. |
+| `quietHours` | `HH:MM` **local** wall-clock times; the range wraps midnight when `to` is earlier than `from`, and equal endpoints are an empty range. Absent means there are none. |
+| `providers` | Which providers are read at all. A provider switched off has **no reader built for it**: its files are never opened. |
+
+Three rules, and each is a way a settings file gets lost:
+
+* **Unknown keys survive.** A key a newer build wrote is read back and written out unchanged,
+  so running an older tray once does not throw the user's settings away. The settings page
+  writes the keys it owns into the file *as it is on disk*, rather than replacing it with what
+  the application happens to hold.
+* **A damaged file is reported, never replaced.** The user wrote it, and overwriting it with
+  the defaults would lose their settings to a stray comma.
+* **Reading is forgiving; writing is strict.** Whatever is on disk is used as best it can be —
+  thresholds that do not ascend still colour the icon, a theme nobody has heard of falls back
+  to `nazar` — because a user whose file has a bad number still has to be able to open the
+  form that fixes it. `Config::validate` is the gate that form goes through, and it refuses
+  thresholds that do not strictly ascend inside `0 < value <= 100`, a language this build
+  cannot paint, a mode that is not one of the three, a quiet-hours endpoint that is not an
+  `HH:MM` time, and freshness rules that do not ascend.
+
+**The startup entry is deliberately not in here.** "Start with Windows" lives in
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written by `tauri-plugin-autostart`,
+and the settings switch reads its state back from there. A copy in this file would drift the
+first time somebody used Task Manager's Startup tab.
+
+## The notification log
+
+`%APPDATA%\nazar\alerts.json`, beside the settings rather than in `~/.nazar`: no consumer
+reads it, it is not part of the contract with Nazar, and a machine that has never crossed a
+threshold does not have one.
+
+```json
+{
+  "schemaVersion": 1,
+  "windows": {
+    "codex/secondary": {
+      "resetsAt": "2026-09-07T12:24:52Z",
+      "fired": [60.0]
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1`. Unknown keys are preserved through a rewrite, like everywhere else. |
+| key | `"<provider>/<window>"`. Neither half contains a slash in the `limits.json` contract, so a human reading the file can always tell them apart. |
+| `resetsAt` | The reset this record belongs to, copied from the window. A **different** one is a new period: the fired set is cleared and the remembered percentage forgotten. |
+| `fired` | The thresholds already consumed in this period, ascending. |
+
+**This file is the difference between a warning and a nuisance.** Without it, restarting the
+tray would re-fire every threshold the user is already above. With it, the key
+`(provider, window, threshold, resetsAt)` is written before the toast is shown, so a process
+that dies a second later still does not repeat itself.
+
+**A record is only written when something fires.** A window sitting quietly at 10 % has no
+entry at all, and a record whose period has turned over with nothing fired in the new one is
+removed rather than left as an empty shell. Records for windows nobody reports any more are
+swept up **48 hours after their reset** — long enough that a provider which could not be read
+for one refresh keeps its bookkeeping, short enough that the file does not grow for ever.
+
+**A damaged file is treated as an empty one**, and this is the one place in the product where
+that is the right answer rather than the wrong one: the file is ours, nothing in it can be
+recovered by hand, and the cost of the wrong guess here is one extra toast where the cost of
+the other wrong guess is silence.
+
+## The startup entry
+
+Written by `tauri-plugin-autostart` 2.5.1 through `auto-launch` 0.5.0, and listed here
+because it is a change this application makes outside its own directories.
+
+| Key | Value |
+|---|---|
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | `nazar-tray` = `<path to nazar-tray.exe> --hidden` (`REG_SZ`) |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` | `nazar-tray` = `02 00 …` (`REG_BINARY`), which is what Task Manager's Startup tab reads as *Enabled* |
+
+Observed live on 2026-09-07 by turning the switch on and off again on the maintainer's own
+machine. **Two things the plugin does not do**, both of which belong to WP7's uninstaller:
+
+* Disabling removes the `Run` value but **leaves the `StartupApproved` value behind**. It is
+  inert — Task Manager only lists entries that exist in `Run` — but it is residue, and an
+  uninstall should take it with it.
+* The `Run` value is written **unquoted**: `C:\Program Files\nazar-tray\nazar-tray.exe
+  --hidden`. Windows resolves that by trying each space-delimited prefix, so it works, but a
+  quoted path would not depend on that.
 
 ## The usage endpoint
 

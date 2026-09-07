@@ -195,7 +195,11 @@ fn the_first_pass_reads_and_writes() {
         harness.document().unwrap().providers.codex.windows["primary"].percent,
         Some(54.0)
     );
-    assert_eq!(harness.events(), vec![Event::SnapshotChanged]);
+    assert_eq!(
+        harness.events(),
+        vec![Event::Refreshed, Event::SnapshotChanged],
+        "every pass is announced; only a pass that moved the numbers is news"
+    );
 }
 
 #[test]
@@ -255,9 +259,22 @@ fn an_unchanged_document_is_read_again_and_written_once() {
         "updatedAt moves with the content, not with the clock"
     );
     assert_eq!(
-        harness.events(),
-        vec![Event::SnapshotChanged],
+        harness
+            .events()
+            .into_iter()
+            .filter(|event| *event == Event::SnapshotChanged)
+            .count(),
+        1,
         "and told the panel once"
+    );
+    assert_eq!(
+        harness
+            .events()
+            .into_iter()
+            .filter(|event| *event == Event::Refreshed)
+            .count(),
+        6,
+        "but announced every pass, because the notifications look at each reading and          not only at the ones that moved"
     );
 }
 
@@ -284,7 +301,12 @@ fn a_changed_number_is_written_and_announced() {
     assert_ne!(document.updated_at, first_stamp);
     assert_eq!(
         harness.events(),
-        vec![Event::SnapshotChanged, Event::SnapshotChanged]
+        vec![
+            Event::Refreshed,
+            Event::SnapshotChanged,
+            Event::Refreshed,
+            Event::SnapshotChanged
+        ]
     );
 }
 
@@ -682,10 +704,91 @@ fn the_loop_runs_on_its_own_thread_and_gives_the_engine_back() {
 fn the_readers_this_build_ships_can_be_discovered() {
     // Nothing is read here: `discover` only resolves paths. It is checked because a machine
     // with no home directory is a real environment and must not panic.
-    let readers = ReaderSet::discover(false);
+    let readers = ReaderSet::discover(&crate::config::Config::default());
     assert!(readers.len() <= 2);
     for (key, count) in readers.warnings() {
         assert!(["claude", "codex"].contains(&key.as_str()), "got {key}");
         assert_eq!(count, 0);
     }
+}
+
+#[test]
+fn changing_the_readers_replaces_them_and_refreshes_at_once() {
+    let harness = Harness::new("refresh-reconfigure");
+    let codex = FakeReader::new("codex", reading(54.0));
+    let (_, codex_reads, _) = codex.handle();
+    let mut engine = harness.engine(ReaderSet::new().with(Box::new(codex)), Some(harness.lock()));
+
+    engine.tick(&harness.clock);
+    assert_eq!(codex_reads.load(Ordering::Relaxed), 1);
+
+    // The user switches Codex off and Claude on. The old reader has to be *gone*, not
+    // merely ignored: that is what "not read" means in the settings.
+    let claude = FakeReader::new("claude", reading(31.0)).watching(harness.dir.join("captures"));
+    let (_, claude_reads, _) = claude.handle();
+    engine.apply(
+        ReaderSet::new().with(Box::new(claude)),
+        crate::state::Rules::default(),
+        &harness.clock,
+    );
+
+    harness.clock.advance(Duration::from_millis(300));
+    let cycle = engine.tick(&harness.clock);
+    assert_eq!(
+        cycle.cause,
+        Some(Cause::Requested),
+        "a settings change refreshes now, not at the next minute"
+    );
+    assert_eq!(
+        codex_reads.load(Ordering::Relaxed),
+        1,
+        "the reader that was switched off is not called again"
+    );
+    assert_eq!(claude_reads.load(Ordering::Relaxed), 1);
+
+    let document = harness.document().unwrap();
+    assert!(
+        !document.providers.codex.configured,
+        "and its block goes back to `configured: false` rather than keeping stale numbers"
+    );
+    assert_eq!(
+        document.providers.claude.windows["primary"].percent,
+        Some(31.0)
+    );
+    assert_eq!(
+        engine.watched(),
+        [harness.dir.join("captures")],
+        "the watch list follows the readers: nobody lists a directory nobody reads"
+    );
+}
+
+#[test]
+fn a_provider_switched_off_in_the_settings_has_no_reader_at_all() {
+    use crate::config::{Config, ProviderSwitches};
+
+    let both_off = ReaderSet::discover(&Config {
+        providers: ProviderSwitches {
+            claude: false,
+            codex: false,
+        },
+        ..Config::default()
+    });
+    assert_eq!(
+        both_off.len(),
+        0,
+        "off must mean the reader is never built, not that its answer is discarded"
+    );
+    assert!(
+        both_off.watched().is_empty(),
+        "and nothing is watched either"
+    );
+
+    let codex_only = ReaderSet::discover(&Config {
+        providers: ProviderSwitches {
+            claude: false,
+            codex: true,
+        },
+        ..Config::default()
+    });
+    assert!(!codex_only.keys().contains(&"claude"));
 }

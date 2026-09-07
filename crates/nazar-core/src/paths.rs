@@ -84,31 +84,48 @@ pub fn statusline_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("statusline"))
 }
 
-/// Where the user's own settings live: `%APPDATA%\nazar\config.json` on Windows,
-/// `~/.config/nazar/config.json` elsewhere.
+/// Where the user's own settings live: `%APPDATA%\nazar` on Windows,
+/// `$XDG_CONFIG_HOME/nazar` or `~/.config/nazar` elsewhere.
 ///
 /// Separate from [`data_dir`] on purpose: settings are the user's, `~/.nazar` is ours.
+/// Two files sit here — [`config_path`], which the user edits, and [`alerts_path`], which
+/// only this application writes — and they share a directory because they share a lifetime:
+/// removing the settings should take the notification bookkeeping with it.
 ///
 /// `NAZAR_HOME` overrides both, and it is checked **first**. The variable exists so that
 /// a whole installation can be pointed at a throwaway directory; settings that stayed
 /// behind in the real `%APPDATA%` would make that promise only half true, and a test that
 /// turned the detailed-windows mode on would turn it on for the machine it ran on.
-pub fn config_path() -> Result<PathBuf> {
+pub fn settings_dir() -> Result<PathBuf> {
     if let Some(dir) = resolve_data_dir(std::env::var_os(NAZAR_HOME_VAR).as_deref()) {
-        return Ok(dir.join("config.json"));
+        return Ok(dir);
     }
-    let dir = if cfg!(windows) {
+    if cfg!(windows) {
         match std::env::var_os("APPDATA") {
-            Some(value) if !value.is_empty() => PathBuf::from(value).join("nazar"),
-            _ => data_dir()?,
+            Some(value) if !value.is_empty() => Ok(PathBuf::from(value).join("nazar")),
+            _ => data_dir(),
         }
     } else {
         match std::env::var_os("XDG_CONFIG_HOME") {
-            Some(value) if !value.is_empty() => PathBuf::from(value).join("nazar"),
-            _ => home_dir()?.join(".config").join("nazar"),
+            Some(value) if !value.is_empty() => Ok(PathBuf::from(value).join("nazar")),
+            _ => Ok(home_dir()?.join(".config").join("nazar")),
         }
-    };
-    Ok(dir.join("config.json"))
+    }
+}
+
+/// `<settings dir>/config.json` — the user's settings.
+pub fn config_path() -> Result<PathBuf> {
+    Ok(settings_dir()?.join("config.json"))
+}
+
+/// `<settings dir>/alerts.json` — which threshold notifications have already been shown.
+///
+/// Beside the settings rather than in `~/.nazar` because it is not part of the contract
+/// with Nazar: no consumer reads it, and a machine that has never crossed a threshold does
+/// not have one. What is in it, and why a restart must not re-fire a toast, is
+/// [`crate::alerts`].
+pub fn alerts_path() -> Result<PathBuf> {
+    Ok(settings_dir()?.join("alerts.json"))
 }
 
 /// `<CLAUDE_CONFIG_DIR or ~/.claude>` — Claude Code's own directory.
@@ -182,6 +199,21 @@ mod tests {
             statusline_dir().unwrap().parent().unwrap(),
             data_dir().unwrap()
         );
+    }
+
+    #[test]
+    fn the_settings_and_the_alert_log_share_a_directory() {
+        let Ok(dir) = settings_dir() else { return };
+        assert_eq!(config_path().unwrap(), dir.join("config.json"));
+        assert_eq!(alerts_path().unwrap(), dir.join("alerts.json"));
+        assert_eq!(
+            config_path().unwrap().parent(),
+            alerts_path().unwrap().parent(),
+            "removing the settings must take the notification bookkeeping with it"
+        );
+        if std::env::var_os(NAZAR_HOME_VAR).is_none_or(|value| value.is_empty()) {
+            assert!(dir.ends_with("nazar"), "got {}", dir.display());
+        }
     }
 
     #[test]

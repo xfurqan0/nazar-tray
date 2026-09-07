@@ -39,7 +39,7 @@ import {
   windowLabel,
   type Translate,
 } from "./format";
-import { createTranslator, detectLocale, isLocale, type Locale } from "./i18n";
+import { createTranslator, isLocale, type Locale } from "./i18n";
 import { catalogs } from "./locales";
 import {
   displayPercent,
@@ -48,6 +48,18 @@ import {
   type SnapshotView,
   type WindowView,
 } from "./snapshot";
+import {
+  DEFAULT_QUIET,
+  SYSTEM,
+  invalidKey,
+  languageKey,
+  toForm,
+  toValues,
+  validate,
+  type FormValues,
+  type Invalid,
+  type SettingsView,
+} from "./settings";
 import { THEMES, applyTheme } from "./theme";
 
 /** What `get_ui_state` returns: the choices, as against the measurements. */
@@ -55,9 +67,33 @@ interface UiState {
   readonly theme: string;
   readonly mode: string;
   readonly locale: string | null;
+  /**
+   * The language Rust decided on: the override, then the machine, then English.
+   *
+   * The panel used to guess this itself from `navigator.languages` while the tray fell
+   * back to English, so the two could disagree — WP4's open risk. There is one answer now
+   * and this is it.
+   */
+  readonly resolvedLocale: string;
   readonly hintDismissed: boolean;
   readonly demo: boolean;
+  /** `--view settings`: open on the settings page rather than on the numbers. */
+  readonly openSettings: boolean;
 }
+
+/**
+ * Where to go for the source and for the contract.
+ *
+ * Written here rather than in the locale files because an address is data, not a word:
+ * translating `github.com/xfurqan0/nazar-tray` would be translating a street name. They are
+ * shown as selectable text rather than as links — the panel's content security policy is
+ * `default-src 'self'`, and opening a browser from a webview needs a plugin and a permission
+ * this application does not have.
+ */
+const LINKS: Readonly<Record<string, string>> = {
+  repository: "github.com/xfurqan0/nazar-tray",
+  contract: "docs/limits-contract.md",
+};
 
 /** The provider badges, from `@lobehub/icons` (MIT — see assets/LICENSE-lobehub.txt). */
 const BADGES: Readonly<Record<string, string>> = {
@@ -76,13 +112,33 @@ const refreshButton = document.querySelector<HTMLButtonElement>("[data-refresh]"
 const dismissButton = document.querySelector<HTMLButtonElement>("[data-dismiss]");
 const versionLabel = document.querySelector<HTMLElement>("[data-version]");
 
+// The settings view. Every one of these is inside the same window as the quota view; see
+// index.html for why there is not a second window.
+const views = document.querySelectorAll<HTMLElement>("[data-view]");
+const settingsForm = document.querySelector<HTMLFormElement>("[data-settings]");
+const settingsErrors = document.querySelector<HTMLElement>("[data-settings-errors]");
+const settingsVersion = document.querySelector<HTMLElement>("[data-settings-version]");
+const readOnlyNote = document.querySelector<HTMLElement>("[data-read-only]");
+const savedNote = document.querySelector<HTMLElement>("[data-saved]");
+const quietTimes = document.querySelector<HTMLElement>("[data-quiet-times]");
+const autostartBox = document.querySelector<HTMLInputElement>("[data-autostart]");
+const autostartError = document.querySelector<HTMLElement>("[data-autostart-error]");
+const hintResetNote = document.querySelector<HTMLElement>("[data-hint-reset-note]");
+const suggestionBox = document.querySelector<HTMLElement>("[data-suggestion]");
+
 let ui: UiState = {
   theme: "nazar",
   mode: "system",
   locale: null,
+  resolvedLocale: "en",
   hintDismissed: true,
   demo: false,
+  openSettings: false,
 };
+
+/** The settings as `get_config` last reported them, and the form's own working copy. */
+let settings: SettingsView | undefined;
+let values: FormValues | undefined;
 let locale: Locale = "en";
 let t: Translate = createTranslator(catalogs, locale);
 
@@ -116,10 +172,17 @@ function applyLanguage(): void {
     .querySelector<SVGElement>("[data-bead] svg")
     ?.setAttribute("aria-label", t("panel.bead.alt"));
   if (versionLabel) versionLabel.textContent = __APP_VERSION__;
+  for (const node of document.querySelectorAll<HTMLElement>("[data-link]")) {
+    const key = node.dataset["link"];
+    if (key && LINKS[key]) node.textContent = LINKS[key];
+  }
   if (themeButton) {
     themeButton.setAttribute("aria-label", t("panel.action.theme"));
     themeButton.title = t("panel.action.theme");
   }
+  // The language picker's options are generated rather than written in the markup, so
+  // `[data-i18n]` cannot reach them; they are rebuilt in the language that was just chosen.
+  if (settings) paintForm();
 }
 
 /** Paint the panel in the chosen theme, following the system for light and dark. */
@@ -288,7 +351,9 @@ function draw(): void {
   if (demoPill) demoPill.hidden = !ui.demo;
 
   tick();
-  reportHeight();
+  // The settings page is measured by `showView`; a redraw behind it must not shrink the
+  // window to the size of a view nobody is looking at.
+  if (!settingsOpen()) reportHeight();
 }
 
 /** Rewrite the countdowns and the ages. Called every second; touches text, not structure. */
@@ -307,6 +372,153 @@ function reportHeight(): void {
   void invoke("set_panel_height", { height }).catch(() => {
     // Opened outside the tray (a browser on dist/index.html); there is no window to size.
   });
+}
+
+// ------------------------------------------------------------------- settings
+
+/** Show one of the two views and give the window a height that fits it. */
+function showView(name: "quota" | "settings"): void {
+  for (const view of views) view.hidden = view.dataset["view"] !== name;
+  // The window is measured from whatever is on screen, so switching views has to be
+  // followed by a measurement or the settings page opens inside a panel-sized window.
+  lastHeight = 0;
+  reportHeight();
+}
+
+/** Whether the settings view is the one showing. */
+function settingsOpen(): boolean {
+  return settingsForm?.hidden === false;
+}
+
+/** The control that holds one field of the form. */
+function field(name: string): HTMLInputElement | HTMLSelectElement | null {
+  return document.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-field="${name}"]`);
+}
+
+/** Every control the form owns. */
+function fields(): (HTMLInputElement | HTMLSelectElement)[] {
+  return [...document.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-field]")];
+}
+
+/** A text or select field's contents. */
+function text(name: string): string {
+  return field(name)?.value ?? "";
+}
+
+/** A checkbox's state. */
+function checked(name: string): boolean {
+  const control = field(name);
+  return control instanceof HTMLInputElement ? control.checked : false;
+}
+
+/** Put the working copy into the controls. */
+function paintForm(): void {
+  if (!values || !settings) return;
+
+  // The language picker is built from what Rust says this build can paint, so the day WP6
+  // fills a catalogue the option appears without either side being edited.
+  const picker = document.querySelector<HTMLSelectElement>('[data-field="locale"]');
+  if (picker) {
+    const options = [SYSTEM, ...settings.languages];
+    picker.replaceChildren(
+      ...options.map((tag) => {
+        const option = document.createElement("option");
+        option.value = tag;
+        option.textContent = tag === SYSTEM ? t("settings.language.system") : t(languageKey(tag));
+        return option;
+      }),
+    );
+  }
+
+  for (const control of fields()) {
+    const name = control.dataset["field"] as keyof FormValues | undefined;
+    if (!name) continue;
+    const value = values[name];
+    if (control instanceof HTMLInputElement && control.type === "checkbox") {
+      control.checked = Boolean(value);
+    } else {
+      control.value = String(value);
+    }
+    control.disabled = !settings.writable;
+  }
+
+  if (autostartBox) autostartBox.disabled = !settings.writable;
+  if (quietTimes) quietTimes.dataset["disabled"] = String(!values.quietHoursEnabled);
+  if (readOnlyNote) readOnlyNote.hidden = settings.writable;
+  if (settingsVersion) settingsVersion.textContent = settings.version;
+  for (const node of document.querySelectorAll<HTMLElement>("[data-path]")) {
+    const key = node.dataset["path"] as keyof SettingsView["paths"] | undefined;
+    if (key) node.textContent = settings.paths[key];
+  }
+  if (hintResetNote) hintResetNote.hidden = settings.firstRunHintDismissed;
+  showProblems(validate(values, settings.languages));
+}
+
+/**
+ * Read the controls back into the working copy.
+ *
+ * Written out field by field rather than looped over with an index signature: `FormValues`
+ * is thirteen named fields of two types, and a loop that assigned into it would have to be
+ * cast to something that no longer checks either.
+ */
+function readForm(): void {
+  if (!values) return;
+  values = {
+    locale: text("locale"),
+    theme: text("theme"),
+    themeMode: text("themeMode"),
+    notifications: checked("notifications"),
+    quietHoursEnabled: checked("quietHoursEnabled"),
+    quietFrom: text("quietFrom"),
+    quietTo: text("quietTo"),
+    warn: text("warn"),
+    critical: text("critical"),
+    exhausted: text("exhausted"),
+    claude: checked("claude"),
+    codex: checked("codex"),
+    detailedWindows: checked("detailedWindows"),
+  };
+  if (quietTimes) quietTimes.dataset["disabled"] = String(!values.quietHoursEnabled);
+}
+
+/** Say what is wrong, in one line, or nothing at all. */
+function showProblems(problems: readonly Invalid[]): void {
+  if (!settingsErrors) return;
+  settingsErrors.hidden = problems.length === 0;
+  settingsErrors.textContent = problems.map((problem) => t(invalidKey(problem))).join(" ");
+}
+
+/** Apply what `get_config` (or `set_config`) returned. */
+function useSettings(next: SettingsView): void {
+  settings = next;
+  values = toValues(next.form);
+  if (suggestionBox) suggestionBox.hidden = !next.suggestDetailed;
+  paintForm();
+}
+
+/** Read the settings and the autostart switch, which lives outside `config.json`. */
+async function loadSettings(): Promise<void> {
+  try {
+    useSettings(await invoke<SettingsView>("get_config"));
+  } catch {
+    // Opened outside the tray. The form stays as the markup left it.
+    return;
+  }
+  await loadAutostart();
+}
+
+/** Ask the plugin whether we start with Windows. */
+async function loadAutostart(): Promise<void> {
+  if (!autostartBox) return;
+  try {
+    autostartBox.checked = await invoke<boolean>("get_autostart");
+    if (autostartError) autostartError.hidden = true;
+  } catch {
+    // The registry could not be read. Saying so beats a switch that lies about the machine.
+    autostartBox.checked = false;
+    autostartBox.disabled = true;
+    if (autostartError) autostartError.hidden = false;
+  }
 }
 
 // ------------------------------------------------------------------ loading
@@ -332,14 +544,20 @@ async function load(): Promise<void> {
     // config.json to remember dismissing it in.
   }
 
-  const preferred =
-    ui.locale && isLocale(ui.locale) ? [ui.locale] : [...navigator.languages, navigator.language];
-  locale = detectLocale(preferred, catalogs);
+  // One answer, worked out in Rust, used by the panel and by the tray tooltip alike.
+  // `navigator.languages` was the panel's own guess in WP4 and could disagree with the
+  // tray's; it survives here only as the fallback for a page opened outside the tray.
+  locale = isLocale(ui.resolvedLocale) ? ui.resolvedLocale : "en";
   t = createTranslator(catalogs, locale);
 
   applyLanguage();
   applyChosenTheme();
+  await loadSettings();
   await refresh();
+  // A screenshot run has no user to click `Settings`. Read from the state rather than
+  // waited for as an event, because an event emitted while this file was still loading
+  // would have had nobody listening for it.
+  if (ui.openSettings) showView("settings");
 }
 
 // ------------------------------------------------------------------ actions
@@ -376,12 +594,117 @@ dismissButton?.addEventListener("click", () => {
   refreshButton?.focus();
 });
 
-// Esc closes the panel. Clicking elsewhere closes it too, but that is handled in Rust: the
-// window hides itself when it loses focus.
-window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    void getCurrentWindow().hide();
+// ------------------------------------------------------------- settings actions
+
+document.querySelector("[data-open-settings]")?.addEventListener("click", () => {
+  void loadSettings().then(() => showView("settings"));
+});
+
+document.querySelector("[data-settings-back]")?.addEventListener("click", () => {
+  showView("quota");
+});
+
+// Typing changes the working copy and re-judges it, so the user is told what is wrong while
+// they are still in the field rather than after a round trip.
+settingsForm?.addEventListener("input", () => {
+  readForm();
+  if (values?.quietHoursEnabled) {
+    // Ticking the box with empty fields is a request for quiet hours, not for a broken
+    // pair of times; the defaults are what the README documents.
+    if (!values.quietFrom) values.quietFrom = DEFAULT_QUIET.from;
+    if (!values.quietTo) values.quietTo = DEFAULT_QUIET.to;
+    const from = document.querySelector<HTMLInputElement>('[data-field="quietFrom"]');
+    const to = document.querySelector<HTMLInputElement>('[data-field="quietTo"]');
+    if (from && !from.value) from.value = values.quietFrom;
+    if (to && !to.value) to.value = values.quietTo;
   }
+  if (values && settings) showProblems(validate(values, settings.languages));
+  if (savedNote) savedNote.hidden = true;
+});
+
+settingsForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!values || !settings) return;
+  readForm();
+  const problems = validate(values, settings.languages);
+  showProblems(problems);
+  if (problems.length > 0) return;
+
+  void invoke<SettingsView>("set_config", { form: toForm(values) })
+    .then((next) => {
+      useSettings(next);
+      // The language may have changed, which changes every word on this page.
+      locale = isLocale(next.resolvedLocale) ? next.resolvedLocale : "en";
+      t = createTranslator(catalogs, locale);
+      ui = { ...ui, theme: next.form.theme, mode: next.form.themeMode };
+      applyLanguage();
+      applyChosenTheme();
+      draw();
+      if (savedNote) savedNote.hidden = false;
+    })
+    .catch((problems: unknown) => {
+      // Rust refused the whole document, so nothing was written. It has the last word: it
+      // validates keys this form does not own.
+      showProblems(Array.isArray(problems) ? (problems as Invalid[]) : []);
+    });
+});
+
+// The startup entry is not part of `config.json`, so it is saved the moment it is flipped
+// and the answer is read back from the plugin rather than assumed.
+autostartBox?.addEventListener("change", () => {
+  const wanted = autostartBox.checked;
+  void invoke<boolean>("set_autostart", { enabled: wanted })
+    .then((enabled) => {
+      autostartBox.checked = enabled;
+      if (autostartError) autostartError.hidden = true;
+    })
+    .catch(() => {
+      autostartBox.checked = !wanted;
+      if (autostartError) autostartError.hidden = false;
+    });
+});
+
+document.querySelector("[data-reset-hint]")?.addEventListener("click", () => {
+  void invoke<SettingsView>("reset_hint")
+    .then((next) => {
+      useSettings(next);
+      ui = { ...ui, hintDismissed: false };
+      if (hintResetNote) hintResetNote.hidden = false;
+    })
+    .catch(() => {});
+});
+
+// The one-time Max-plan offer. Both answers are final: it is asked once.
+document.querySelector("[data-suggestion-accept]")?.addEventListener("click", () => {
+  if (!values || !settings) return;
+  values = { ...values, detailedWindows: true };
+  void invoke<SettingsView>("set_config", { form: toForm(values) })
+    .then(useSettings)
+    .catch(() => {});
+  if (suggestionBox) suggestionBox.hidden = true;
+  reportHeight();
+});
+
+document.querySelector("[data-suggestion-dismiss]")?.addEventListener("click", () => {
+  void invoke<SettingsView>("dismiss_detailed_suggestion").then(useSettings).catch(() => {});
+  if (suggestionBox) suggestionBox.hidden = true;
+  reportHeight();
+});
+
+// The tray menu's `Settings` cannot open a view inside a webview, so it asks for one.
+void listen("open-settings", () => {
+  void loadSettings().then(() => showView("settings"));
+});
+
+// Esc closes the panel — except on the settings page, where it goes back one step first,
+// so a user who opened the settings by accident is not thrown out of the panel entirely.
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (settingsOpen()) {
+    showView("quota");
+    return;
+  }
+  void getCurrentWindow().hide();
 });
 
 // The loop tells the panel when the document moved; the panel counts the seconds itself.

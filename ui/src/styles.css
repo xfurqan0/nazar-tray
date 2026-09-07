@@ -380,8 +380,256 @@ body {
   text-align: right;
 }
 
+/*
+ * Save, and why it is not a filled button.
+ *
+ * A blue fill with the panel's own colour on top is 2.56:1 in light mode — the accent is a
+ * mid blue and the panel is white — and no amount of weight fixes a contrast ratio. So the
+ * emphasis is the outline and the weight instead, in the derived accent tone that survives
+ * both grounds: the same token, chosen for the same reason, as the meter fill.
+ */
+.button.primary {
+  color: var(--color-text, #eaf2ff);
+  border-color: var(--color-accent-text, #3fa9f5);
+  font-weight: var(--type-weight-strong, 680);
+}
+
+.button.primary:hover {
+  color: var(--color-text, #eaf2ff);
+  border-color: var(--color-accent-text, #3fa9f5);
+  background: var(--color-node-header, #14355f);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .button:active {
     transform: none;
   }
+}
+
+/* ---------------------------------------------------------------- settings
+ *
+ * The second view in the same window. It is a form rather than a page of switches that each
+ * save themselves: the thresholds have to be read together to be judged — they must ascend —
+ * and Rust accepts the whole document or none of it, so a Save button is honest about what
+ * is happening where a field that wrote itself the moment it was typed into would refuse
+ * half way through a legitimate edit.
+ *
+ * Everything below reuses the tokens the quota view already sets. There is no second
+ * palette: the settings page is the same panel with different content in it.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-title {
+  margin: 0;
+  font-size: var(--type-size-md, 13px);
+  font-weight: var(--type-weight-strong, 680);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--color-node-border, #1e4372);
+  border-radius: 9px;
+  background: var(--color-node, #102a4c);
+}
+
+.group > legend {
+  padding: 0 5px;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+  font-weight: var(--type-weight-medium, 560);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.row-label {
+  font-size: var(--type-size-sm, 11.5px);
+}
+
+/* A checkbox row is clickable along its whole width, so the target is the label rather
+   than a fourteen-pixel square. */
+.row.check {
+  cursor: pointer;
+}
+
+.row:not(.check) > .row-label {
+  color: var(--color-text-muted, #a8bfdc);
+}
+
+.control {
+  margin-left: auto;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--color-panel-border, #1d3e6b);
+  border-radius: 7px;
+  background: var(--color-node-header, #14355f);
+  color: var(--color-text, #eaf2ff);
+  font-family: inherit;
+  font-size: var(--type-size-sm, 11.5px);
+}
+
+.control:hover {
+  border-color: var(--color-accent, #3fa9f5);
+}
+
+.control.number {
+  width: 54px;
+  margin-left: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--color-accent, #3fa9f5);
+  cursor: pointer;
+}
+
+/* Three numbers on one line, each labelled with the colour it turns the bead. */
+.thresholds {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.threshold {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.thresholds .row-label {
+  width: 100%;
+  color: var(--color-text-muted, #a8bfdc);
+}
+
+.unit {
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+}
+
+.times {
+  gap: 12px;
+}
+
+.time {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.time .control {
+  margin-left: 0;
+}
+
+/* A control that the switch above it has turned off is dimmed rather than removed: the row
+   is what explains what the switch does. */
+[data-disabled="true"] {
+  opacity: 0.45;
+}
+
+.help {
+  margin: 1px 0 0;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.45;
+}
+
+.note {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--color-banner-border, #f2a93b);
+  border-radius: 8px;
+  background: var(--color-banner-bg, #3a2408);
+  color: var(--color-banner-text, #ffd79a);
+  font-size: var(--type-size-sm, 11.5px);
+  line-height: 1.4;
+}
+
+/* A rejected form is not a warning, it is a refusal: nothing at all was written. The red
+   is the border, not the text — the sentence inside already says what is wrong, and
+   `bannerText` on `bannerBg` is the pair `test/contrast.test.mjs` has measured. */
+.note-error {
+  border-color: var(--color-danger, #e2564a);
+}
+
+/* The one line that is coloured rather than boxed: the startup entry could not be read, and
+   there is no form to refuse. `dangerText` on the group's `node` background. */
+.help-error {
+  color: var(--color-danger-text, #ff8578);
+}
+
+.path {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+}
+
+/* The path is the one thing on this page worth copying, so it opts back in to selection —
+   the rest of the panel is deliberately not a document. `direction: rtl` keeps the file
+   name visible when the ellipsis has to eat something. */
+.path code {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--color-text-faint, #7d96b5);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  direction: rtl;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+  cursor: text;
+}
+
+.about {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+}
+
+.settings-foot {
+  gap: 10px;
+}
+
+.saved {
+  color: var(--color-accent-text, #3fa9f5);
+  font-size: var(--type-size-xs, 10px);
+}
+
+/* The one-time Max-plan offer sits where the first-run hint sits and looks the same: both
+   are the application saying something once and then never again. */
+.suggestion-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-self: center;
 }

@@ -118,7 +118,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP2b ✅ | **Detailed windows mode (opt-in)**: settings toggle, token read in memory only, official usage endpoint client with backoff and last-good cache, model-scoped windows merged into the state with `detailed:true`, Max-plan detection prompt | ~~Off by default; with the toggle on, the Fable weekly window appears and matches `/usage`; token never appears in any file, log, or error text (test asserts it); 429 leaves last value with a stale flag~~ — **landed 2026-09-07**. The UI half of the prompt is WP5's; the decision function and its `detailedSuggested` flag are here. |
 | WP3 ✅ | **State model**: binding window across passive + detailed windows, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | ~~Property tests on window selection and reset math across time zones~~ — **landed 2026-09-07**, and the refresh loop, the write-on-change rule and the advisory lock came with it |
 | WP4 ✅ | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | ~~Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur~~ — **landed 2026-09-07**. Screenshots taken at all three scales; the panel opens on a left click and from the menu's `Open` on a right click (see the log below), and closes on Esc and on blur. Quit came with it. |
-| WP5 | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | Toast appears exactly once when crossing 85 %; survives sleep/wake |
+| WP5 ✅ | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | ~~Toast appears exactly once when crossing 85 %; survives sleep/wake~~ — **landed 2026-09-07**. Verified live with `--demo-cross`: one toast at 60 % on arrival, one at 85 % for the crossing, **nothing** for the repeat, one more at 85 % after the reset. Sleep and wake are a test on an injected clock, and a restart on a real machine fired nothing the first run had already said. |
 | WP6 | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | Every UI string comes from locale files; no hard-coded text in code |
 | WP7 | **Distribution**: NSIS/MSI installer via Tauri bundler, winget manifest, SignPath Foundation application, README (EN) with GIF, CHANGELOG, first release checklist | Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files |
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
@@ -238,3 +238,101 @@ Going public happens after WP7, not before.
   real `%APPDATA%\nazar` still does not exist, and neither the screenshots nor the tests
   touched it.
 - 2026-09-07 — **WP2b landed: the detailed-windows mode, off by default.** `nazar-core::claude::detailed` reads four values out of `.credentials.json` — and only while the mode is on — holds the token in a wiping wrapper for one 20-second `GET` to `api.anthropic.com/api/oauth/usage`, and maps `limits[]` into `five_hour`, `seven_day` and `seven_day_<model>`. **61 new tests (249 in the workspace)** against a hand-rolled loopback HTTP server: every status code, the backoff schedule on an injected clock, last-good/stale semantics, both response shapes, plan normalisation, binding across scoped windows, settings round-trip, and four gates — a sentinel token that must appear in no file, no error and no `Debug`; a one-call-site grep on the method that exposes it; no printing macro anywhere in the module; and the credential gate grown into an allow-listed **directory** rather than a dropped needle. The mode is behind the `detailed-windows` cargo feature as well as the runtime flag, so `cargo tree -p nazar-statusline` still shows `serde` and `serde_json` and nothing else. HTTP client chosen by measurement: `ureq` + `rustls` adds **4** packages, `reqwest` with `blocking` adds **17** including `aws-lc-sys` and a `cmake` build. Three findings from the audit became behaviour: `Retry-After` is read (B07), a token whose stored expiry has passed costs no request and a rewritten sign-in file clears the backoff at once (B06), and a plan change drops the remembered numbers (B25). Verified live: **session 2 %, weekly 38 %, Fable weekly 30 %**, `plan: max_20x`, matching an independent reading of the same endpoint seven minutes earlier — and **nothing was written**: `~/.nazar` and `%APPDATA%\nazar` did not exist before or after, and `.credentials.json` kept its size and modification time. The live check also found that the endpoint spells `resets_at` as `2026-09-07T13:10:00.130195+00:00` where the status line writes Unix seconds; both are now rewritten into the contract's `…Z`. Written up in `docs/detailed-windows.md`; precedence in `docs/limits-contract.md`; both new formats pinned.
+- 2026-09-07 — **WP5 landed: it warns you, it starts with Windows, and it has settings.**
+  Three things, and the first is the reason section 1 says this is not the twentieth tray.
+  **(1) The warning, and the file that makes it bearable** (`nazar-core::alerts`,
+  `crates/nazar-tray/src/alerts.rs`). A crossing is **edge-triggered** — `previous < T ≤
+  current` — so a window sitting above a threshold says nothing for the rest of the week, and
+  the key `(provider, window, threshold, resetsAt)` is written to
+  `%APPDATA%\nazar\alerts.json` **before the toast is shown**, so a restart does not repeat
+  a warning the user has already had. Four rules fell out of writing it down and each is a
+  bug that would otherwise have shipped: *the first observation counts* (a tray started at
+  91 % has no previous reading, and waiting for a crossing that has already happened would be
+  silence when it matters most); *a reset clears the memory as well as the keys* (a window
+  that resets from 86 % straight back to 86 % has to warn again, which is exactly what
+  `--demo-cross`'s fourth step is); *unknown never notifies and forgets what it saw*, so the
+  reading after an unreadable one is a first observation rather than a continuation of a
+  number nobody can vouch for (finding B03 through a new door); and **one toast per crossing,
+  naming the most severe threshold reached** — a jump from 10 % to 91 % crosses 60 and 85
+  together, both are consumed, and one sentence that says 85 % is worth more than two stacked
+  on each other. Quiet hours and the notifications switch arrive at the state machine as the
+  same flag: the crossing still happens, is still recorded and still colours the icon, only
+  the interruption is withheld — which is what makes switching the notifications back on
+  quiet rather than a burst of catching up.
+  **(2) Autostart, read back from the machine.** `tauri-plugin-autostart` writes
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` with `--hidden` appended, and the
+  switch in the settings asks the plugin what the registry says rather than remembering an
+  answer of its own — so it agrees with Task Manager's Startup tab, which is where people
+  actually look. `--autostart on|off|status` does the same thing from a terminal, for a user
+  whose panel will not open and for anybody checking this package.
+  **(2b) The offer had to become a question.** §3 says the app "suggests the mode once when
+  it detects a Max plan", and WP2b built `should_suggest_detailed` to do exactly that — but
+  writing the UI half showed that it can never fire on the path it is for: WP2 derives **no
+  plan name at all** from the status-line payload, because the payload does not carry one, so
+  on a machine that has never turned the mode on `plan` is simply absent. The rule kept its
+  plan branch, for the case where the endpoint has already answered, and gained the branch
+  that actually matters: **Claude is set up, no plan is visible, and the numbers did not come
+  from the endpoint → ask, once.** It is not offered to somebody who has the mode on, has
+  already been asked, or does not use Claude Code.
+  **(3) Settings, and the WP4 mismatch they close.** A second view in the same window:
+  language, theme, light/dark, per-provider on/off, the three thresholds, quiet hours,
+  autostart, the detailed-windows switch with the plain-words explanation and its one-time
+  Max-plan offer, where every file lives with `~` collapsed, and a way to bring the first-run
+  tip back. **The language is now decided once, in Rust** — the override, then the operating
+  system's UI language, then English — and handed to the panel as well as used for the
+  tooltip; WP4 had the panel guessing from `navigator.languages` while the tray fell back to
+  English, and wrote that down as an open risk. Changing it **rebuilds the tray menu**, since
+  a menu item's text is fixed when the item is built. The form is validated before anything
+  is written and refused as a whole: `85 / 60 / 100` produces an error and the settings the
+  user had, not an error and a tray that has half changed.
+  **Two new dependencies, both first-party, both already declared in WP0**:
+  `tauri-plugin-notification` 2.4.0 and `tauri-plugin-autostart` 2.5.1 (MIT OR Apache-2.0,
+  and the licence gate passes). **The panel is granted neither.** Both are driven from Rust —
+  the toast comes from the refresh loop, the switch goes through this application's own
+  commands — so the webview never invokes a plugin command, and `capabilities/default.json`
+  stays at `core:default` plus `core:window:allow-hide`. The minimal grant for a plugin
+  nobody calls from the front end is no grant at all.
+  **What could not be done, and it is the plugin's limit rather than a decision:
+  clicking a toast cannot open the panel.** `tauri-plugin-notification` 2.4 builds the
+  notification, spawns `show()` onto the async runtime and drops the handle, so the
+  `on_activated` callback `notify-rust` does offer on Windows never reaches an application;
+  `action_type_id` is mobile-only. The tray icon a click away is the workaround, and the toast
+  names the window it is about so that click is an informed one.
+  **One deliberate deviation from `nazar-core`'s no-dependency rule**, written up in
+  `crates/nazar-tray/src/system.rs`: quiet hours are **wall-clock** hours, and the standard
+  library has no time-zone database. Rather than spend one of the two allowed dependencies on
+  a time crate — and `time::UtcOffset::current_local_offset` refuses to answer in a
+  multi-threaded process anyway — two calls into `kernel32` are declared by hand,
+  `GetLocalTime` and `GetUserDefaultLocaleName`, against an ABI that has not moved since
+  Windows 2000. Everywhere that is not Windows answers `None`, and every caller is written for
+  that: an unknown local time suppresses nothing, and an unknown language is English.
+  **A settings change reaches the readers.** Switching a provider off has to mean the reader
+  is *gone* rather than that its answer is discarded — nobody who does not use Codex should
+  have a program listing their session directory every five seconds — so the refresh loop
+  gained one command, `Reconfigure`, which replaces the readers and the watch list on the
+  thread that owns them and refreshes at once. And it gained one event, `Refreshed`, emitted
+  on **every** pass rather than only on a changed one: a tray started when the weekly window
+  is already at 91 % changes nothing, and that is the case where the user most needs telling.
+  **63 new tests in Rust (444 in the workspace) and 17 more in the panel (68)**, including
+  the whole state machine on an injected clock and a temporary `NAZAR_HOME` — edge crossing,
+  once per reset, reset clears, quiet hours, startup-above, **sleep-and-wake replay**, unknown
+  never fires — the settings validation, the form's round trip, a gate proving the panel's
+  validator and Rust's agree, and one proving `ui/src/i18n.ts` and `config.rs` list the same
+  languages.
+  **Verified live on the maintainer's machine.** `--demo-cross` produced exactly four
+  toasts across its four steps: `Codex · weekly window 60 %` on arrival, `Codex · weekly
+  window 85 %` for the crossing, **nothing at all** for the repeat, and one more
+  `85 %` after the reset with the body moving from *Resets in 11 h 25 m* to *Resets in 7 d
+  11 h*. Run again with `--locale tr` it produced the same three toasts in Turkish. A **real**
+  run under a throwaway `NAZAR_HOME`, against this machine's own Codex logs, fired one 60 %
+  toast and wrote `alerts.json` with `fired: [60.0]` against the real `resetsAt`; **a second
+  run fired nothing** and changed the file not at all — and it came out in Turkish with no
+  `--locale`, which is `GetUserDefaultLocaleName` working. The autostart round trip was run
+  on the real registry and **left off**: the `Run` value appeared as
+  `…\nazar-tray.exe --hidden` with the `StartupApproved` flag beside it, and disappeared
+  again. Two findings for WP7's uninstaller came out of that: the plugin's `disable` leaves
+  the `StartupApproved` value behind (inert, but residue — removed by hand here), and it
+  writes the `Run` value **unquoted**, which works only because Windows tries each
+  space-delimited prefix. **`%APPDATA%\nazar` still does not exist and `~/.nazar/limits.json`
+  has the same SHA it started with**: every live check ran under `--demo` or under a
+  throwaway `NAZAR_HOME`.

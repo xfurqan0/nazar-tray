@@ -23,21 +23,213 @@
         <span class="pill pill-demo" data-demo hidden data-i18n="panel.demo"></span>
       </header>
 
-      <!-- Shown once, on the first run, and dismissed for good. -->
-      <section class="hint" data-hint hidden>
-        <p class="hint-text" data-i18n="panel.hint.overflow"></p>
-        <button type="button" class="button" data-dismiss data-i18n="panel.hint.dismiss"></button>
-      </section>
+      <!--
+        Two views in one window. The quota view is what a click on the bead opens; the
+        settings view is what the tray menu's `Settings` asks for. One window rather than
+        two, because a second window would need its own placement, its own blur rules and
+        its own capability entry — and the panel already measures itself and asks Rust for
+        a height that fits whichever view is showing.
+      -->
+      <div class="view" data-view="quota">
+        <!-- Shown once, on the first run, and dismissed for good. -->
+        <section class="hint" data-hint hidden>
+          <p class="hint-text" data-i18n="panel.hint.overflow"></p>
+          <button type="button" class="button" data-dismiss data-i18n="panel.hint.dismiss"></button>
+        </section>
 
-      <ul class="providers" data-providers></ul>
+        <!-- The one-time Max-plan offer. WP2b decided it; this is where it is made. -->
+        <section class="hint suggestion" data-suggestion hidden>
+          <p class="hint-text" data-i18n="settings.detailed.suggestion"></p>
+          <span class="suggestion-actions">
+            <button
+              type="button"
+              class="button"
+              data-suggestion-accept
+              data-i18n="settings.detailed.suggestion.turnOn"
+            ></button>
+            <button
+              type="button"
+              class="button"
+              data-suggestion-dismiss
+              data-i18n="settings.detailed.suggestion.dismiss"
+            ></button>
+          </span>
+        </section>
 
-      <p class="empty" data-empty hidden data-i18n="panel.status.noData"></p>
+        <ul class="providers" data-providers></ul>
 
-      <footer class="foot">
-        <button type="button" class="button" data-refresh data-i18n="panel.action.refresh"></button>
-        <button type="button" class="button" data-theme></button>
-        <span class="esc" data-i18n="panel.hint.close"></span>
-      </footer>
+        <p class="empty" data-empty hidden data-i18n="panel.status.noData"></p>
+
+        <footer class="foot">
+          <button type="button" class="button" data-refresh data-i18n="panel.action.refresh"></button>
+          <button type="button" class="button" data-theme></button>
+          <button type="button" class="button" data-open-settings data-i18n="settings.title"></button>
+          <span class="esc" data-i18n="panel.hint.close"></span>
+        </footer>
+      </div>
+
+      <form class="view settings" data-view="settings" data-settings hidden>
+        <div class="settings-head">
+          <button type="button" class="button" data-settings-back data-i18n="settings.back"></button>
+          <h2 class="settings-title" data-i18n="settings.title"></h2>
+        </div>
+
+        <p class="note" data-read-only hidden data-i18n="settings.readOnly"></p>
+        <p class="note note-error" data-settings-errors hidden></p>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.appearance"></legend>
+
+          <label class="row">
+            <span class="row-label" data-i18n="settings.language"></span>
+            <select class="control" data-field="locale"></select>
+          </label>
+
+          <label class="row">
+            <span class="row-label" data-i18n="settings.theme"></span>
+            <select class="control" data-field="theme">
+              <option value="nazar" data-i18n="settings.theme.nazar"></option>
+              <option value="graphite" data-i18n="settings.theme.graphite"></option>
+            </select>
+          </label>
+
+          <label class="row">
+            <span class="row-label" data-i18n="settings.mode"></span>
+            <select class="control" data-field="themeMode">
+              <option value="system" data-i18n="settings.mode.system"></option>
+              <option value="light" data-i18n="settings.mode.light"></option>
+              <option value="dark" data-i18n="settings.mode.dark"></option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.providers"></legend>
+          <label class="row check">
+            <input type="checkbox" data-field="claude" />
+            <span class="row-label" data-i18n="panel.provider.claude"></span>
+          </label>
+          <label class="row check">
+            <input type="checkbox" data-field="codex" />
+            <span class="row-label" data-i18n="panel.provider.codex"></span>
+          </label>
+          <p class="help" data-i18n="settings.providers.help"></p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.notifications"></legend>
+          <label class="row check">
+            <input type="checkbox" data-field="notifications" />
+            <span class="row-label" data-i18n="settings.notifications.enable"></span>
+          </label>
+
+          <div class="row thresholds">
+            <span class="row-label" data-i18n="settings.thresholds"></span>
+            <span class="threshold">
+              <input type="number" class="control number" data-field="warn" min="1" max="100" />
+              <span class="unit" data-i18n="settings.thresholds.warn"></span>
+            </span>
+            <span class="threshold">
+              <input type="number" class="control number" data-field="critical" min="1" max="100" />
+              <span class="unit" data-i18n="settings.thresholds.critical"></span>
+            </span>
+            <span class="threshold">
+              <input type="number" class="control number" data-field="exhausted" min="1" max="100" />
+              <span class="unit" data-i18n="settings.thresholds.exhausted"></span>
+            </span>
+          </div>
+
+          <label class="row check">
+            <input type="checkbox" data-field="quietHoursEnabled" />
+            <span class="row-label" data-i18n="settings.quietHours.enable"></span>
+          </label>
+          <div class="row times" data-quiet-times>
+            <label class="time">
+              <span class="unit" data-i18n="settings.quietHours.from"></span>
+              <input type="time" class="control" data-field="quietFrom" />
+            </label>
+            <label class="time">
+              <span class="unit" data-i18n="settings.quietHours.to"></span>
+              <input type="time" class="control" data-field="quietTo" />
+            </label>
+          </div>
+          <p class="help" data-i18n="settings.quietHours.help"></p>
+          <p class="help" data-i18n="settings.notifications.help"></p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.startup"></legend>
+          <label class="row check">
+            <input type="checkbox" data-autostart />
+            <span class="row-label" data-i18n="settings.autostart"></span>
+          </label>
+          <p class="help" data-i18n="settings.autostart.help"></p>
+          <p
+            class="help help-error"
+            data-autostart-error
+            hidden
+            data-i18n="settings.autostart.unavailable"
+          ></p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.detailed"></legend>
+          <label class="row check">
+            <input type="checkbox" data-field="detailedWindows" />
+            <span class="row-label" data-i18n="settings.detailed.enable"></span>
+          </label>
+          <p class="help" data-i18n="settings.detailed.help"></p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.files"></legend>
+          <p class="path">
+            <span data-i18n="settings.files.limits"></span><code data-path="limits"></code>
+          </p>
+          <p class="path">
+            <span data-i18n="settings.files.captures"></span><code data-path="captures"></code>
+          </p>
+          <p class="path">
+            <span data-i18n="settings.files.config"></span><code data-path="config"></code>
+          </p>
+          <p class="path">
+            <span data-i18n="settings.files.alerts"></span><code data-path="alerts"></code>
+          </p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.about"></legend>
+          <div class="row">
+            <button type="button" class="button" data-reset-hint data-i18n="settings.hint.reset"></button>
+          </div>
+          <p class="help" data-hint-reset-note hidden data-i18n="settings.hint.willShow"></p>
+          <p class="about">
+            <span data-i18n="app.name"></span>
+            <span class="version" data-settings-version></span>
+          </p>
+          <!--
+            Addresses as selectable text rather than links. The panel's content security
+            policy is `default-src 'self'`, and opening a browser from a webview needs a
+            plugin and a permission this application does not have; a link that navigated
+            the panel to GitHub would replace the tray popup with a web page. So they are
+            written down, and the user copies them.
+          -->
+          <p class="path">
+            <span data-i18n="settings.link.repository"></span>
+            <code data-link="repository"></code>
+          </p>
+          <p class="path">
+            <span data-i18n="settings.link.contract"></span>
+            <code data-link="contract"></code>
+          </p>
+        </fieldset>
+
+        <footer class="foot settings-foot">
+          <button type="submit" class="button primary" data-settings-save data-i18n="settings.save"></button>
+          <span class="saved" data-saved hidden data-i18n="settings.saved"></span>
+          <span class="esc" data-i18n="panel.hint.close"></span>
+        </footer>
+      </form>
     </main>
     <script type="module" src="panel.js"></script>
   </body>

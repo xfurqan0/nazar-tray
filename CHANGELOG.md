@@ -10,12 +10,98 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader, the WP2
 Claude reader with its status-line wrapper, the WP2b detailed-windows mode, the WP3 state
-model, refresh loop and writer, and the WP4 icon and panel: it builds, it tests, and **the
-tray now works and has a face** — a bead that fills with the window constraining you, a
-designed popup, and a Quit that releases the lock. Notifications, autostart and settings are
-WP5.
+model, refresh loop and writer, the WP4 icon and panel, and the WP5 notifications, autostart
+and settings: it builds, it tests, and **it is now something you can leave running** — it
+warns you before you hit the wall, it can start with Windows, and everything about it can be
+changed from the panel. What is left before a release is the four machine-translated
+languages (WP6) and the installer (WP7).
 
 ### Added
+
+- **Threshold notifications** (`nazar-core::alerts`, `crates/nazar-tray/src/alerts.rs`). A
+  toast when a window crosses 60, 85 or 100 % — whatever the settings say — **once per
+  threshold per reset period**, keyed `(provider, window, threshold, resetsAt)` and written to
+  `%APPDATA%\nazar\alerts.json` **before** it is shown, so a restart does not repeat a
+  warning the user has already had. Crossing is **edge-triggered** (`previous < T ≤ current`),
+  so a window sitting above a threshold says nothing for the rest of the week; the **first**
+  observation counts, so a tray started at 91 % says so once rather than waiting for a
+  crossing that already happened; a **reset clears the memory as well as the keys**, so a
+  window that resets from 86 % straight back to 86 % warns again; and **a window nobody could
+  read never notifies and forgets what it last saw**, so the reading after it is a first
+  observation rather than a continuation of a number nobody can vouch for. A jump that crosses
+  two thresholds at once is **one** toast naming the more severe of them, with both consumed.
+  `Claude Code · weekly window 85 %` over `Resets in 2 h 10 m`, in the user's language.
+- **Quiet hours**, and a switch above them. `quietHours: {from, to}` in **local wall-clock**
+  time, wrapping midnight when `to` is earlier than `from`. A suppressed crossing still
+  happens, is still recorded and still colours the tray icon — only the interruption is
+  withheld, and it is not delivered late either. The same is true of turning the
+  notifications off, so turning them back on is quiet rather than a burst of catching up.
+- **Start with Windows** (`tauri-plugin-autostart`). Adds
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `nazar-tray` = the executable
+  plus `--hidden`. The switch **reads its state back from the registry** rather than
+  remembering an answer of its own, so it agrees with Task Manager's Startup tab. The same
+  thing from a terminal, for a user whose panel will not open:
+  `nazar-tray --autostart on|off|status`.
+- **A settings page**, as a second view in the same window and reachable from the tray menu.
+  Language, theme, light/dark, **per-provider on and off**, the three thresholds, quiet hours,
+  autostart, the detailed-windows switch with the plain-words explanation of what it reads,
+  where every file lives with the home directory collapsed to `~`, a way to bring the
+  first-run tip back, and the version. The form is **validated before anything is written and
+  refused as a whole**: `85 / 60 / 100` gets an error and the settings the user had, not an
+  error and a tray that has half changed.
+- **The one-time Max-plan offer** that WP2b decided and left to be asked. *On a Max plan?
+  Detailed windows shows model-specific weekly limits.* Shown once, in the panel, and answered
+  for good either way. It is phrased as a **question** because it has to be: the status-line
+  payload carries no plan name, so on the passive path there is nothing to detect — a rule
+  that only fired for a *known* Max plan would never fire at all. It is not offered to
+  somebody who has the mode on, has already been asked, or does not have Claude Code set up
+  on this machine.
+- **A provider you switch off is not read at all.** No reader is built for it, so its files
+  are never opened and its card is not drawn — which is a stronger promise than hiding it,
+  and it needed one new command in the refresh loop (`Reconfigure`) so the readers can be
+  replaced on the thread that owns them, and a refresh at once rather than at the next minute.
+- **One answer about the language, for the panel and the tray alike.** The override, then the
+  operating system's UI language, then English — decided in Rust, handed to the panel, and
+  used for the tooltip, the menu and the toasts. **This closes WP4's open risk**, where the
+  panel guessed from `navigator.languages` while the tray fell back to English and the two
+  could disagree. Changing it **rebuilds the tray menu**, because a menu item's text is fixed
+  when the item is built.
+- **`--hidden`** (what the startup entry passes: open no window, whatever else was asked for)
+  and **`--demo-cross`**, the acceptance run — `80 → 86 → 86 → reset → 86` on one window,
+  four seconds apart, which should produce one 60 % toast, one 85 % toast, **silence**, and
+  one more 85 % toast. It implies `--demo`, so it takes no lock and its notification log is in
+  memory: a demo run cannot consume the keys of a real crossing nobody has been shown yet.
+- **63 new tests in Rust (444 in the workspace) and 17 more in the panel (68).** The state
+  machine on an injected clock and a temporary `NAZAR_HOME` — edge crossing, once per reset,
+  reset clears, quiet hours, startup-above, **sleep-and-wake replay**, unknown never fires,
+  the log's round trip and its damaged-file behaviour — the settings validation, the form's
+  round trip, a gate proving the panel's validator and Rust's agree, and one proving
+  `ui/src/i18n.ts` and `nazar-core::config` list the same languages.
+
+### Changed
+
+- **The refresh loop announces every pass**, not only the ones that moved the numbers
+  (`Event::Refreshed`). A tray started when the weekly window is already at 91 % changes
+  nothing, and that is exactly the case where the user most needs telling.
+- **The whole settings document is the tray's state**, rather than the four panel keys WP4
+  kept beside it: the readers themselves now depend on the settings, and there is one place a
+  change is written and acted on.
+- `paths::settings_dir` joins `config.json` and `alerts.json`, which share a lifetime:
+  removing the settings should take the notification bookkeeping with it.
+
+### Known limits
+
+- **Clicking a toast cannot open the panel**, and it is the plugin rather than a decision:
+  `tauri-plugin-notification` 2.4 builds the notification, spawns `show()` onto the async
+  runtime and drops the handle, so the `on_activated` callback that `notify-rust` does offer
+  on Windows never reaches an application, and `action_type_id` is mobile-only. The tray icon
+  a click away is the workaround, and the toast names the window it is about.
+- **Disabling autostart leaves one registry value behind.** `auto-launch` removes the `Run`
+  value but not the matching `StartupApproved\Run` one. It is inert — Task Manager only lists
+  entries that exist in `Run` — but it is residue, and WP7's uninstaller should take it.
+- **The `Run` value is written unquoted.** `C:\Program Files\nazar-tray\nazar-tray.exe
+  --hidden` works because Windows tries each space-delimited prefix, but it does depend on
+  that.
 
 - **The tray bead, drawn at run time** (`crates/nazar-tray/src/icon.rs`, decision K3). One
   rasteriser, one drawing, three scales: 16 px at 100 %, 20 at 125 %, 24 at 150 %, 32 at

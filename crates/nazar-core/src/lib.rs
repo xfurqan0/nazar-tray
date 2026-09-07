@@ -24,8 +24,9 @@
 //! The moving parts, in the order data goes through them: the readers ([`codex`],
 //! [`claude`]) turn somebody else's files into provider blocks, [`refresh`] runs them on one
 //! thread and decides when, [`writer`] writes the result only when it differs from the last
-//! one, [`lock`] makes sure exactly one process is doing that, and [`state`] answers what any
-//! of it means right now.
+//! one, [`lock`] makes sure exactly one process is doing that, [`state`] answers what any of
+//! it means right now, and [`alerts`] decides which of those meanings is worth interrupting
+//! somebody about — once, and not again until the window resets.
 //!
 //! There is exactly one sanctioned exception to rule 3, and it is a switch the user turns:
 //! [`claude::detailed`], the opt-in detailed-windows mode, which reads Claude Code's OAuth
@@ -33,6 +34,7 @@
 //! it anywhere. It is off by default, it lives behind the `detailed-windows` cargo feature
 //! as well as the runtime flag, and `docs/detailed-windows.md` is the whole story.
 
+pub mod alerts;
 pub mod atomic;
 pub mod claude;
 pub mod clock;
@@ -50,6 +52,7 @@ pub mod writer;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+pub use alerts::{Alert, AlertLog, AlertRules, Alerts};
 pub use claude::ClaudeReader;
 #[cfg(feature = "detailed-windows")]
 pub use claude::detailed::{DetailedWindows, should_suggest_detailed};
@@ -57,7 +60,7 @@ pub use claude::detailed::{DetailedWindows, should_suggest_detailed};
 pub use claude::merge::merge as merge_claude;
 pub use clock::{Clock, SystemClock};
 pub use codex::CodexReader;
-pub use config::Config;
+pub use config::{Config, Invalid, ProviderSwitches, QuietHours};
 pub use error::{Error, Result};
 pub use limits::{
     Limits, Provider, Providers, SCHEMA_VERSION, Source, Window, WindowState, read_limits,

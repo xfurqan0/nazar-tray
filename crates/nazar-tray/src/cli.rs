@@ -44,12 +44,51 @@
 //! | `--theme graphite` | overrides the theme for this run without touching settings |
 //! | `--mode light` | overrides light/dark for this run without touching settings |
 //! | `--hint on\|off` | shows or hides the first-run overflow hint, which is otherwise a once-per-machine state |
+//! | `--offer on\|off` | the same, for the one-time Max-plan offer |
 //! | `--locale tr` | the panel and the tooltip in one language, whatever the machine's is |
 //! | `--icons <dir>` | rasterises the bead states into a strip and exits; nothing else happens |
+//! | `--view settings` | opens the panel on the settings page, which is otherwise a click away |
 //!
 //! `--demo` is the one that matters for safety: a screenshot session must not be able to
 //! overwrite the real `~/.nazar/limits.json` with invented numbers, so it never becomes the
-//! writer at all.
+//! writer at all. It also gets an **in-memory** notification log, so a demo run cannot
+//! consume the keys of a real crossing that has not been shown yet.
+//!
+//! ## `--hidden` and `--demo-cross`
+//!
+//! `--hidden` is what the autostart entry passes. An ordinary launch already shows no window
+//! — the panel is created invisible — so on its own the flag changes almost nothing, and that
+//! is rather the point: it is a promise rather than a behaviour. Explicitly, it means **no
+//! window opens at start-up for any reason**, including the one `--demo` would open.
+//!
+//! ## `--autostart on|off|status`
+//!
+//! The startup entry, from a terminal. It exists for two reasons and neither is a test:
+//!
+//! * **A user whose panel will not open** — a broken WebView2, a display that has gone away —
+//!   still has to be able to stop an application from starting with Windows, and telling
+//!   them to edit the registry is not an answer.
+//! * **It is checkable.** `docs/PROJECT.md` WP5 asks for the round trip to be verified on a
+//!   real machine and left off; the switch in the settings needs a person to click it, and a
+//!   flag that prints what the registry now says can be run and read.
+//!
+//! It goes through the plugin, so it is the same code path the settings switch uses, and it
+//! prints what the plugin reports **afterwards** rather than what was asked for. The process
+//! then exits without a tray icon, without a panel, and without taking the advisory lock.
+//!
+//! One cosmetic artefact, so that nobody reads it as a failure: the panel window is created
+//! by `tauri::Builder::build`, which runs before this does, so exiting here tears down a
+//! WebView2 that never appeared and a debug build prints
+//! `Failed to unregister class Chrome_WidgetWin_0` on standard error. The exit code is `0`
+//! and standard output carries the answer.
+//!
+//! ## `--demo-cross`
+//!
+//! `--demo-cross` is the acceptance run for the notifications. It steps the demo document
+//! through `80 → 86 → 86 → reset → 86` on the Codex weekly window, a few seconds apart, and
+//! the toasts that appear are the whole test: one at 60 % on arrival, one at 85 % for the
+//! crossing, **silence** for the repeat, and one more at 85 % after the reset. It implies
+//! `--demo`, so nothing it does reaches `~/.nazar` or `%APPDATA%\nazar`.
 
 use std::io::Write;
 
@@ -166,12 +205,95 @@ pub struct Options {
     /// The hint is shown once per machine and then never again, which makes it the one
     /// state a screenshot cannot reach twice. `None` means "whatever the settings say".
     pub hint: Option<bool>,
+    /// `--offer <on|off>`: show or hide the one-time Max-plan offer for this run only.
+    ///
+    /// The same problem `--hint` solves, for the other banner that is shown once per machine
+    /// and then never again. It is **off** in the documented screenshots: the offer is worth
+    /// a picture of its own, and worth not being in every other one.
+    pub offer: Option<bool>,
     /// `--locale <tag>`: one language for this run, panel and tooltip alike.
     ///
     /// The documentation is in English and the maintainer's machine is not, so without this
     /// every screenshot in the repository would be Turkish. It is also the quickest way to
     /// see whether a translation still fits the layout.
     pub locale: Option<String>,
+    /// `--hidden`: open no window at start-up, whatever else was asked for.
+    ///
+    /// What the autostart entry passes. A normal launch is already hidden, so this is a
+    /// promise rather than a behaviour — but it is a promise worth being able to make, and
+    /// it is the flag that keeps `--demo`'s automatic panel out of a start-up run.
+    pub hidden: bool,
+    /// `--view settings`: open the panel on the settings page rather than on the numbers.
+    ///
+    /// A screenshot flag like the others. The settings page is reached with a click, and a
+    /// script cannot click; without this there would be no picture of it in the
+    /// documentation, and no way to look at the whole form at three display scales.
+    pub view: Option<String>,
+    /// `--demo-cross`: step the demo numbers across the thresholds, for the acceptance run.
+    ///
+    /// Implies `--demo`. See the module note for the sequence and for what it proves.
+    pub demo_cross: bool,
+    /// `--autostart on|off|status`: read or change the startup entry, then exit.
+    pub autostart: Option<Autostart>,
+}
+
+/// What `--autostart` was asked to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Autostart {
+    /// Add the startup entry.
+    On,
+    /// Remove it.
+    Off,
+    /// Say what it is and change nothing.
+    Status,
+}
+
+impl Autostart {
+    /// Parse the word after the flag. Anything else is not an instruction.
+    #[must_use]
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "on" | "enable" | "true" => Some(Autostart::On),
+            "off" | "disable" | "false" => Some(Autostart::Off),
+            "status" | "show" => Some(Autostart::Status),
+            _ => None,
+        }
+    }
+}
+
+/// Do what `--autostart` asked, say what the machine now reports, and exit.
+///
+/// Called as the **first** thing in the application's setup, before the tray is built or any
+/// state is managed, so nothing appears on screen. It goes through the plugin rather than
+/// touching the registry directly, which is what makes it the same code path as the switch
+/// in the settings; and it reports what [`tauri_plugin_autostart`] says *afterwards* rather
+/// than what was asked for, because a write that failed must not be reported as a success.
+pub fn run_autostart(app: &tauri::AppHandle, action: Autostart) -> ! {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let manager = app.autolaunch();
+    let outcome = match action {
+        Autostart::On => manager.enable(),
+        Autostart::Off => manager.disable(),
+        Autostart::Status => Ok(()),
+    };
+    if let Err(error) = outcome {
+        eprintln!("nazar-tray: could not change the startup entry: {error}");
+        std::process::exit(1);
+    }
+    match manager.is_enabled() {
+        Ok(enabled) => {
+            println!(
+                "nazar-tray: start with Windows is {}",
+                if enabled { "on" } else { "off" }
+            );
+            std::process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("nazar-tray: could not read the startup entry: {error}");
+            std::process::exit(1);
+        }
+    }
 }
 
 impl Options {
@@ -184,7 +306,17 @@ impl Options {
             && self.theme.is_none()
             && self.mode.is_none()
             && self.hint.is_none()
+            && self.offer.is_none()
             && self.locale.is_none()
+    }
+}
+
+/// `on` or `off`, or nothing at all — which leaves the settings in charge.
+fn on_or_off(value: &str) -> Option<bool> {
+    match value {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -197,8 +329,13 @@ pub fn options() -> Options {
 /// The parser, kept apart from the environment so it can be tested.
 #[must_use]
 fn parse_options(arguments: &[String]) -> Options {
+    let asked = |flag: &str| arguments.iter().any(|argument| argument == flag);
+    let demo_cross = asked("--demo-cross");
     Options {
-        demo: arguments.iter().any(|argument| argument == "--demo"),
+        // The crossing run is a demo run: it must not take the writer's lock either.
+        demo: demo_cross || asked("--demo"),
+        demo_cross,
+        hidden: asked("--hidden"),
         // A scale that is not a number, or one outside what a display can be set to, is
         // ignored rather than clamped: it is a typo, and a 0.1× panel would look like a bug.
         scale: value_of(arguments, "--scale")
@@ -206,12 +343,13 @@ fn parse_options(arguments: &[String]) -> Options {
             .filter(|scale| (0.5..=4.0).contains(scale)),
         theme: value_of(arguments, "--theme"),
         mode: value_of(arguments, "--mode"),
-        hint: value_of(arguments, "--hint").and_then(|value| match value.as_str() {
-            "on" => Some(true),
-            "off" => Some(false),
-            _ => None,
-        }),
+        hint: value_of(arguments, "--hint").and_then(|value| on_or_off(&value)),
+        offer: value_of(arguments, "--offer").and_then(|value| on_or_off(&value)),
         locale: value_of(arguments, "--locale"),
+        view: value_of(arguments, "--view").filter(|name| name == "settings"),
+        autostart: value_of(arguments, "--autostart")
+            .as_deref()
+            .and_then(Autostart::parse),
     }
 }
 
@@ -406,6 +544,9 @@ mod tests {
         assert_eq!(options.mode.as_deref(), Some("light"));
         assert_eq!(options.hint, Some(true));
         assert_eq!(parse_options(&words("--hint off")).hint, Some(false));
+        assert_eq!(parse_options(&words("--offer on")).offer, Some(true));
+        assert_eq!(parse_options(&words("--offer off")).offer, Some(false));
+        assert_eq!(parse_options(&words("--offer maybe")).offer, None);
         assert_eq!(
             parse_options(&words("--hint maybe")).hint,
             None,
@@ -424,6 +565,7 @@ mod tests {
             "--theme graphite",
             "--mode dark",
             "--hint on",
+            "--offer on",
             "--locale tr",
         ] {
             assert!(
@@ -431,6 +573,70 @@ mod tests {
                 "{line} must leave config.json exactly as it found it"
             );
         }
+    }
+
+    #[test]
+    fn the_startup_flags_parse_and_default_to_off() {
+        let plain = parse_options(&[]);
+        assert!(!plain.hidden);
+        assert!(!plain.demo_cross);
+
+        let hidden = parse_options(&words("--hidden"));
+        assert!(hidden.hidden);
+        assert!(
+            !hidden.demo,
+            "a start-up launch is a real launch: it reads real files and writes limits.json"
+        );
+        assert!(
+            hidden.may_persist(),
+            "and it may still remember a theme the user picks"
+        );
+
+        assert_eq!(
+            parse_options(&words("--autostart on")).autostart,
+            Some(Autostart::On)
+        );
+        assert_eq!(
+            parse_options(&words("--autostart off")).autostart,
+            Some(Autostart::Off)
+        );
+        assert_eq!(
+            parse_options(&words("--autostart status")).autostart,
+            Some(Autostart::Status)
+        );
+        for line in ["--autostart", "--autostart maybe", "--autostart 1"] {
+            assert_eq!(
+                parse_options(&words(line)).autostart,
+                None,
+                "{line} is not an instruction, and a flag that guessed would be worse                  than one that did nothing"
+            );
+        }
+        assert!(
+            parse_options(&words("--autostart on")).may_persist(),
+            "the startup entry is not part of config.json, so it changes nothing there"
+        );
+
+        assert_eq!(
+            parse_options(&words("--view settings")).view.as_deref(),
+            Some("settings")
+        );
+        assert_eq!(
+            parse_options(&words("--view nonsense")).view,
+            None,
+            "a view nobody defined leaves the panel where it opens"
+        );
+        assert!(
+            parse_options(&words("--view settings")).may_persist(),
+            "opening a page is navigation, not a claim about what the settings are: a user              who is shown the form may still save from it"
+        );
+
+        let crossing = parse_options(&words("--demo-cross"));
+        assert!(crossing.demo_cross);
+        assert!(
+            crossing.demo,
+            "the crossing run must not be able to take the writer's lock, so it is a demo run"
+        );
+        assert!(!crossing.may_persist());
     }
 
     #[test]

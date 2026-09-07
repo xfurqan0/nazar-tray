@@ -4,14 +4,15 @@
 
 A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **WP4: icon and panel.** Both readers are done, the refresh loop runs inside the
-> tray process, `~/.nazar/limits.json` is written — atomically, by one process, and only when
-> the numbers have actually moved — and the tray now has a face: a bead that fills with the
-> window constraining you, a designed popup panel, and a Quit that releases the lock.
-> Notifications, autostart and settings are WP5. Not released, and not yet installable from
-> anywhere. Windows first; macOS and Linux builds later from the same codebase.
-> See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and [CHANGELOG.md](CHANGELOG.md)
-> for what has landed.
+> Status: **WP5: notifications, autostart and settings.** Both readers are done, the refresh
+> loop runs inside the tray process, `~/.nazar/limits.json` is written — atomically, by one
+> process, and only when the numbers have actually moved — the tray has a face, and it is now
+> something you can leave running: it warns you before you hit the wall, it can start with
+> Windows, and everything about it can be changed from the panel. What is left is the four
+> machine-translated languages (WP6) and the installer (WP7). Not released, and not yet
+> installable from anywhere. Windows first; macOS and Linux builds later from the same
+> codebase. See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and
+> [CHANGELOG.md](CHANGELOG.md) for what has landed.
 
 ![The nazar-tray panel: Claude Code and Codex, their windows, percentages and reset countdowns](docs/screenshots/wp4-100-nazar-dark.png)
 
@@ -33,7 +34,12 @@ Every other quota tool reads your OAuth token, or even your browser cookies, fro
 
 That is the whole default data path: two local files in, one local `limits.json` out. The same file feeds the quota strip on the Nazar canvas.
 
-**Detailed windows (opt-in).** Claude's status line only reports the 5-hour and the global weekly window. If you are on a Max plan, your real constraint may be a model-specific weekly window that only the official usage endpoint reports. Turn on *Detailed windows* in settings and nazar-tray will read the token Claude Code already stores, keep it in memory for a single request, and never write or log it. Off by default; the app asks once if it detects a Max plan.
+**Detailed windows (opt-in).** Claude's status line only reports the 5-hour and the global weekly window. If you are on a Max plan, your real constraint may be a model-specific weekly window that only the official usage endpoint reports. Turn on *Detailed windows* in settings and nazar-tray will read the token Claude Code already stores, keep it in memory for a single request, and never write or log it. Off by default, and **asked once**: the passive path carries no plan name at all, so nazar-tray cannot tell whether you are on Max — which is why the banner is a question rather than an announcement, and why answering it either way settles it for good.
+
+![The panel, with a banner reading "On a Max plan? Detailed windows shows model-specific weekly limits", and buttons to turn it on or decline](docs/screenshots/wp5-100-offer.png)
+
+<sub>Asked once, answered for good either way. In this picture the weekly window the account
+is actually constrained by is *Fable weekly, 88 %* — the one the passive path cannot see.</sub>
 
 With the mode **off** — which is how it ships — nothing in nazar-tray opens a credential file or a socket, and a test poisons that file to prove it. With it **on**, this is the whole of it: `claudeAiOauth.accessToken` is read out of `~/.claude/.credentials.json` (which is never written), held in a wrapper that wipes itself and prints `<redacted>`, and sent as one `Authorization` header on a single 20-second `GET` to `api.anthropic.com/api/oauth/usage` — the endpoint your own `/usage` command calls. The answer becomes your model-scoped weekly windows, marked `detailed` in `limits.json`. The token is never written to a file, never logged and never put in an error message, and no response body reaches one either; a test runs the entire flow with a sentinel in place of the token and fails if it turns up anywhere but that header. When the endpoint says no, the last known numbers stay with a *stale* flag and the next attempt backs off — 1 s, 2 s, 4 s and so on to half an hour, or whatever `Retry-After` asked for. Your `refreshToken` is never read: refreshing is Claude Code's job. `nazar-tray --print --detailed` runs the mode once without switching it on. The full account, including where this sits against Anthropic's terms and why it is your call rather than the default, is in [docs/detailed-windows.md](docs/detailed-windows.md).
 
@@ -45,6 +51,64 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)
 - `nazar-tray --print` for scripts and for Linux, and `--print --write` to refresh
   `~/.nazar/limits.json` once without a tray running
+
+## Notifications
+
+**The reason a quota tray exists is to warn you before you hit the wall**, and this is the
+one thing the two Windows leaders do not do at all.
+
+A toast when a window crosses 60 %, 85 % or 100 % — whatever you set the thresholds to —
+**once per window per reset period**:
+
+> **Claude Code · weekly window 85 %**
+> Resets in 2 h 10 m
+
+Five rules, so it is a warning rather than a nuisance:
+
+- **It fires on the crossing, not while you are above it.** A window that sits at 90 % for
+  four days says nothing more.
+- **A restart does not repeat it.** The key is written to `alerts.json` before the toast is
+  shown, so a tray that is closed and reopened stays quiet.
+- **Starting up already above a threshold says so once**, and then stops — waiting for a
+  crossing that has already happened would be silence exactly when it matters.
+- **A window nobody could read never notifies.** No number, no warning: the icon goes grey
+  and says so instead.
+- **One toast per crossing.** A jump from 10 % to 91 % passes two thresholds; you get one
+  sentence, and it says 85 %.
+
+**Quiet hours** stop the interruption without stopping the tray: the crossing is still
+recorded and the icon still changes colour, you just are not told about it at three in the
+morning. Times are your own wall clock, and the range may wrap midnight.
+
+**Clicking a toast does not open the panel.** Tauri's notification plugin does not hand an
+application the click, so there is nothing to hook — the toast names the window it is about,
+and the tray icon is one click away.
+
+## Settings
+
+![The settings page: language, theme, providers, notification thresholds and quiet hours](docs/screenshots/wp5-100-settings.png)
+
+In the panel, and from the tray menu's **Settings**:
+
+| | |
+|---|---|
+| **Language** | Follow the system, or pick one. Applies to the panel, the tray tooltip, the menu and the notifications **without a restart**. |
+| **Theme** | `nazar` or `graphite`, and light / dark / follow the system. |
+| **Providers** | Claude Code and Codex, each on or off. **A provider you switch off is not read at all** — its files are never opened and its card is not drawn. |
+| **Notifications** | On or off, the three thresholds, and quiet hours. |
+| **Start with Windows** | Adds a startup entry for your account; nazar-tray starts hidden in the tray. The switch reads the registry back, so it agrees with Task Manager's Startup tab. |
+| **Detailed windows** | The opt-in mode described above, off by default, with the whole of what it reads written out beside the switch. |
+| **Files** | Where `limits.json`, the status-line captures, your settings and the notification history live. |
+| **About** | The version, and a button that brings the first-run tray-icon tip back. |
+
+Everything is written to `%APPDATA%\nazar\config.json`, atomically, and **a form that does
+not make sense is refused as a whole** — thresholds that do not climb get an error and your
+old settings, not an error and a half-changed tray. Keys a newer version of nazar-tray wrote
+are preserved when an older one saves. There is no separate switch for the startup entry in
+that file: it lives in the registry, which is the thing that actually decides.
+
+`nazar-tray --autostart on|off|status` does the startup entry from a terminal, for when the
+panel will not open.
 
 Everything is read and written by **one process**: no scheduled task, no launch agent, no
 systemd timer, and no second copy of the app fighting the first one for the same file. The
@@ -140,8 +204,21 @@ Every picture in `docs/screenshots` comes from that one command. It runs the tra
 advisory lock and writes nothing** — so a screenshot session cannot overwrite the real
 `~/.nazar/limits.json` or change your settings. 150 % and 200 % are rendered at those scales
 rather than upscaled: WebView2 is passed `--force-device-scale-factor` and the window is
-multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`, `-Hint`,
-`-Locale` and `-Out` take one picture of one state.
+multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`, `-Hint`, `-Offer`,
+`-View`, `-Locale` and `-Out` take one picture of one state. `-Hint` and `-Offer` exist
+because the first-run tip and the Max-plan offer are each shown once per machine, which
+makes them the states a screenshot cannot otherwise reach twice.
+
+**Watching a threshold being crossed**
+
+```powershell
+cargo run -p nazar-tray -- --demo-cross
+```
+
+Steps one window through `80 → 86 → 86 → reset → 86` a few seconds apart. What should appear
+is one toast at 60 %, one at 85 %, **nothing** for the repeat, and one more at 85 % after the
+reset. It implies `--demo`: it takes no lock, writes nothing, and its notification history is
+in memory, so it cannot consume a real warning you have not been shown yet.
 
 ## Credits
 

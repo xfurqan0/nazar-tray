@@ -23,6 +23,8 @@ param(
     [ValidateSet('nazar', 'graphite')] [string] $Theme = 'nazar',
     [ValidateSet('light', 'dark')] [string] $Mode = 'dark',
     [ValidateSet('on', 'off')] [string] $Hint = 'off',
+    [ValidateSet('on', 'off')] [string] $Offer = 'off',
+    [ValidateSet('quota', 'settings')] [string] $View = 'quota',
     [string] $Locale = 'en',
     [string] $Out = '',
     # Where the cursor is put before the panel opens: the panel appears just above it, the
@@ -94,9 +96,10 @@ public class NazarShot {
 }
 
 function Capture-Panel {
-    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY)
+    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Offer, [string] $View, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY)
 
-    $arguments = @('--demo', '--theme', $Theme, '--mode', $Mode, '--hint', $Hint, '--locale', $Locale)
+    $arguments = @('--demo', '--theme', $Theme, '--mode', $Mode, '--hint', $Hint, '--offer', $Offer, '--locale', $Locale)
+    if ($View -eq 'settings') { $arguments += @('--view', 'settings') }
     if ($Scale -gt 0) { $arguments += @('--scale', $Scale.ToString([System.Globalization.CultureInfo]::InvariantCulture)) }
 
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -132,16 +135,16 @@ function Capture-Panel {
         Write-Output ("{0}  {1}x{2}" -f $Out, $width, $height)
     }
     finally {
-        # WP5 gives the tray a Quit item that a script could use; until then the process is
-        # stopped the blunt way. `--demo` never took the advisory lock, so there is nothing
-        # to leave behind.
+        # Stopped the blunt way, which is safe here for one reason: `--demo` never took the
+        # advisory lock, so there is nothing to leave behind. A real tray is quit through
+        # the tray menu, which releases it.
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 400
     }
 }
 
 if ($Out) {
-    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY
+    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Offer $Offer -View $View -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY
     return
 }
 
@@ -155,9 +158,13 @@ $shots = @(
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'light'; Hint = 'off'; Out = 'docs/screenshots/wp4-100-nazar-light.png' },
     @{ Scale = 1.0; Theme = 'graphite'; Mode = 'dark'; Hint = 'off'; Out = 'docs/screenshots/wp4-100-graphite-dark.png' },
     @{ Scale = 1.0; Theme = 'graphite'; Mode = 'light'; Hint = 'off'; Out = 'docs/screenshots/wp4-100-graphite-light.png' },
-    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'on'; Out = 'docs/screenshots/wp4-100-first-run.png' }
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'on'; Out = 'docs/screenshots/wp4-100-first-run.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Out = 'docs/screenshots/wp5-100-settings.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; Offer = 'on'; Out = 'docs/screenshots/wp5-100-offer.png' }
 )
 
 foreach ($shot in $shots) {
-    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Locale $Locale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY
+    $shotView = if ($shot.ContainsKey('View')) { $shot.View } else { 'quota' }
+    $shotOffer = if ($shot.ContainsKey('Offer')) { $shot.Offer } else { 'off' }
+    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $Locale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY
 }

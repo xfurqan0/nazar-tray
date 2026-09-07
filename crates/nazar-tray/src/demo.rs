@@ -76,9 +76,71 @@ pub fn snapshot(now: &str) -> Snapshot {
     Snapshot::new(limits)
 }
 
+/// How long each step of [`cross_sequence`] stays on screen.
+///
+/// Long enough to read a toast and watch the icon change colour, short enough that the whole
+/// run is over in under twenty seconds.
+pub const CROSS_STEP: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// The acceptance run for the notifications: `80 → 86 → 86 → reset → 86`.
+///
+/// One provider, one weekly window, four readings, and the toasts they produce are the test
+/// `docs/PROJECT.md` WP5 asks for:
+///
+/// | Step | Reading | What should appear |
+/// |---|---|---|
+/// | 1 | 80 %, week A | one toast, **60 %** — arriving above a threshold is worth saying once |
+/// | 2 | 86 %, week A | one toast, **85 %** — the crossing |
+/// | 3 | 86 %, week A | **nothing**: still above is not crossing again |
+/// | 4 | 86 %, week B | one toast, **85 %** — a new reset is a new week |
+///
+/// Codex rather than Claude because its weekly window is the one anybody can see on any
+/// machine, and one provider rather than two because the point of the run is to count toasts.
+#[must_use]
+pub fn cross_sequence(now: &str) -> Vec<Snapshot> {
+    let seconds = unix_seconds_from_rfc3339(now).unwrap_or(0);
+    let at = |offset: i64| rfc3339_from_unix_seconds(seconds + offset);
+    let week_a = at(11 * 3600 + 26 * 60);
+    let week_b = at(7 * 86400 + 11 * 3600 + 26 * 60);
+
+    [
+        (80.0, &week_a),
+        (86.0, &week_a),
+        (86.0, &week_a),
+        (86.0, &week_b),
+    ]
+    .into_iter()
+    .map(|(percent, resets_at)| {
+        let mut limits = Limits::new(now.to_owned());
+        let mut codex = Provider {
+            configured: true,
+            plan: Some("plus".to_owned()),
+            source: Some(Source::Rollout),
+            source_at: Some(at(-12)),
+            ..Provider::default()
+        };
+        codex.windows.insert(
+            "primary".to_owned(),
+            Window::ok(21.0)
+                .with_window_minutes(300)
+                .with_resets_at(at(2 * 3600)),
+        );
+        codex.windows.insert(
+            "secondary".to_owned(),
+            Window::ok(percent)
+                .with_window_minutes(10080)
+                .with_resets_at(resets_at.clone()),
+        );
+        limits.providers.codex = codex;
+        Snapshot::new(limits)
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nazar_core::alerts::{AlertRules, Alerts};
     use nazar_core::state::{Freshness, Rules, Severity};
 
     #[test]
@@ -129,6 +191,67 @@ mod tests {
             "a window in error carries no percentage — that is the whole point of it"
         );
         assert!(unknown.error.is_some());
+    }
+
+    #[test]
+    fn the_crossing_run_produces_exactly_the_toasts_the_acceptance_criterion_names() {
+        // The same assertion the core's own test makes, made here against the sequence the
+        // live run actually shows — so that a change to the demo numbers that quietly broke
+        // the acceptance run would fail the build rather than the maintainer's evening.
+        let now = "2026-09-07T12:00:00Z";
+        let rules = AlertRules::default();
+        let mut alerts = Alerts::in_memory();
+
+        let fired: Vec<Vec<f64>> = cross_sequence(now)
+            .iter()
+            .map(|snapshot| {
+                alerts
+                    .evaluate(&snapshot.view(now, &Rules::default()), &rules)
+                    .into_iter()
+                    .map(|alert| alert.threshold)
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            fired,
+            vec![vec![60.0], vec![85.0], vec![], vec![85.0]],
+            "one 60 % toast on arrival, one 85 % toast for the crossing, silence, and one \
+             more 85 % toast after the reset"
+        );
+        assert_eq!(CROSS_STEP.as_secs(), 4);
+    }
+
+    #[test]
+    fn the_crossing_run_only_moves_the_window_it_is_about() {
+        let now = "2026-09-07T12:00:00Z";
+        let steps = cross_sequence(now);
+        assert_eq!(steps.len(), 4);
+
+        let five_hour: Vec<Option<f64>> = steps
+            .iter()
+            .map(|snapshot| snapshot.providers().codex.windows["primary"].percent)
+            .collect();
+        assert_eq!(
+            five_hour,
+            vec![Some(21.0); 4],
+            "the five-hour window is scenery: a second window crossing at the same time \
+             would make the toasts impossible to count"
+        );
+
+        let resets: Vec<_> = steps
+            .iter()
+            .map(|snapshot| {
+                snapshot.providers().codex.windows["secondary"]
+                    .resets_at
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            resets[0], resets[2],
+            "the first three readings are one week"
+        );
+        assert_ne!(resets[2], resets[3], "and the fourth is the next one");
     }
 
     #[test]

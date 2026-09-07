@@ -25,22 +25,39 @@
 //! menu carries Quit, so the advisory lock is released on the way out instead of being left
 //! behind by a killed process.
 //!
+//! **WP5 makes it something you can leave running.** Three things, and the first is the
+//! reason a quota tray exists at all:
+//!
+//! 1. **It warns you before you hit the wall.** Every refresh is measured against the
+//!    thresholds; a window that crosses one produces a toast, once, and the key is written
+//!    to `alerts.json` so that a restart does not repeat it. [`nazar_core::alerts`] is the
+//!    rule and [`alerts`] is the sentence.
+//! 2. **It can start with Windows**, hidden, through `tauri-plugin-autostart` — and the
+//!    switch reads its state back from the registry rather than from our own settings file,
+//!    so it agrees with what Task Manager's Startup tab shows.
+//! 3. **It has settings**, in the panel: language, theme, thresholds, quiet hours, which
+//!    providers are read, the opt-in detailed mode and its one-time offer, and where every
+//!    file lives. Changing the language rebuilds the tray menu without a restart, which is
+//!    the open risk WP4 wrote down and left.
+//!
 //! What this binary deliberately does **not** do yet, and the package that will add it:
 //!
 //! | Behaviour | Package |
 //! |---|---|
-//! | Notifications, autostart, the settings panel, the Max-plan offer | WP5 |
-//! | The Windows UI language, and ZH/KO/RU/ES | WP5, WP6 |
+//! | ZH, KO, RU and ES | WP6 |
+//! | Installer, winget manifest, signed updates | WP7 |
 
 // A tray app has no console. Kept for debug builds so `cargo tauri dev` still prints.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alerts;
 mod cli;
 mod demo;
 mod i18n;
 mod icon;
 mod panel;
 mod state;
+mod system;
 mod tray;
 
 use std::sync::{Arc, Mutex};
@@ -51,9 +68,10 @@ use nazar_core::refresh::{self, Engine, Event, ReaderSet, Warnings};
 use nazar_core::{Config, paths};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
-use i18n::Catalog;
+use alerts::Notifier;
+use i18n::Strings;
 use panel::PanelState;
-use state::{AppState, SNAPSHOT_CHANGED, UiState};
+use state::{AppState, Overrides, SNAPSHOT_CHANGED};
 
 fn main() {
     // Checked before anything is created: `--print` and `--icons` must not open a window,
@@ -71,38 +89,33 @@ fn main() {
     // damaged `config.json` is not a reason to refuse to start, and certainly not a reason
     // to turn the opt-in mode on.
     let config = Config::load().unwrap_or_default();
-    // WP5 reads the Windows UI language; until then the settings file is the only opinion,
-    // `--locale` overrides it for one run, and English is the fallback. The panel makes the
-    // same choice from the same values, so the tooltip and the panel are never in two
-    // different languages.
-    let language = options
-        .locale
-        .clone()
-        .or_else(|| config.locale.clone())
-        .unwrap_or_else(|| "en".to_owned());
-    let strings = Arc::new(i18n::catalog(&language));
+    // One answer about the language, for the panel and the tray alike: the `--locale`
+    // override, then the settings, then the operating system's UI language, then English.
+    // WP4 had two answers and they could disagree; see `i18n::resolve`.
+    let language = i18n::resolve(
+        options.locale.as_deref().or(config.locale.as_deref()),
+        system::ui_language().as_deref(),
+    );
+    let strings = Arc::new(Strings::new(&language));
 
-    let mut ui = UiState::from_config(&config);
-    ui.demo = options.demo;
-    if let Some(theme) = options.theme.clone() {
-        ui.theme = theme;
-    }
-    if let Some(mode) = options.mode.clone() {
-        ui.mode = mode;
-    }
-    if let Some(hint) = options.hint {
-        ui.hint_dismissed = !hint;
-    }
-    if options.locale.is_some() {
-        ui.locale = options.locale.clone();
-    }
+    let overrides = Overrides {
+        demo: options.demo,
+        theme: options.theme.clone(),
+        mode: options.mode.clone(),
+        hint_dismissed: options.hint.map(|shown| !shown),
+        suggest: options.offer,
+        locale: options.locale.clone(),
+        open_settings: options.view.as_deref() == Some("settings"),
+    };
     // A run that was told what to look like does not get to remember it: the screenshot
     // flags must leave the maintainer's settings exactly as they found them.
     let persist = options.may_persist();
 
     // `--demo` never claims the lock, so a screenshot session cannot become the writer and
-    // cannot overwrite the real `~/.nazar/limits.json` with invented numbers.
-    let lock = if options.demo {
+    // cannot overwrite the real `~/.nazar/limits.json` with invented numbers. `--autostart`
+    // does not either: it changes one registry value and exits, and a tray that is already
+    // running must not be pushed aside by it.
+    let lock = if options.demo || options.autostart.is_some() {
         None
     } else {
         match claim_the_writer_role(&now) {
@@ -119,12 +132,24 @@ fn main() {
 
     let limits_path = paths::limits_path().unwrap_or_default();
     let request_path = paths::request_path().unwrap_or_default();
-    let readers = ReaderSet::discover(config.detailed_windows);
+    let readers = ReaderSet::discover(&config);
     let rules = config.rules();
 
     let setup_strings = Arc::clone(&strings);
     let event_strings = Arc::clone(&strings);
     let application = tauri::Builder::default()
+        // Both plugins are driven from Rust rather than from the panel: the toast is shown
+        // by the refresh loop, and the autostart switch goes through this application's own
+        // `get_autostart` / `set_autostart` commands. That is why `capabilities/default.json`
+        // grants the panel neither plugin's permissions — the webview never calls them.
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            // What the startup entry passes back to us. It means "open no window", and it is
+            // the difference between a tray that starts quietly and one that greets you with
+            // a popup every time you log in.
+            Some(vec!["--hidden"]),
+        ))
         .invoke_handler(tauri::generate_handler![
             state::get_snapshot,
             state::get_warnings,
@@ -134,10 +159,33 @@ fn main() {
             state::dismiss_hint,
             state::set_panel_height,
             state::open_panel,
+            state::open_settings,
+            state::get_config,
+            state::set_config,
+            state::reset_hint,
+            state::dismiss_detailed_suggestion,
+            state::get_autostart,
+            state::set_autostart,
             state::quit
         ])
         .setup(move |app| {
+            // First, before anything is created: `--autostart` reads or writes one registry
+            // value through the plugin and exits, with no tray icon and no window. The
+            // plugin's own setup has already run, which is why this cannot live in
+            // `cli::run_if_requested` beside `--print`.
+            if let Some(action) = options.autostart {
+                cli::run_autostart(app.handle(), action);
+            }
+
             app.manage(PanelState::new(options.scale, options.demo));
+            app.manage(Arc::clone(&setup_strings));
+            // A demo run remembers nothing: it must not write to `%APPDATA%\nazar`, and it
+            // must not consume the keys of a real crossing nobody has been shown yet.
+            app.manage(if options.demo {
+                Notifier::in_memory()
+            } else {
+                Notifier::persistent()
+            });
 
             // The state is managed before the tray is built, because the first thing the
             // tray does is ask it what to draw.
@@ -145,8 +193,8 @@ fn main() {
                 AppState::new(
                     Arc::new(Mutex::new(demo::snapshot(&now))),
                     Arc::new(Mutex::new(Warnings::default())),
-                    rules,
-                    ui,
+                    config,
+                    overrides,
                     persist,
                 )
             } else {
@@ -156,21 +204,30 @@ fn main() {
                     .with_request_file(request_path)
                     .on_event(move |event| on_loop_event(&handle, &loop_strings, event));
 
-                let shared =
-                    AppState::new(engine.snapshot(), engine.diagnostics(), rules, ui, persist);
+                let shared = AppState::new(
+                    engine.snapshot(),
+                    engine.diagnostics(),
+                    config,
+                    overrides,
+                    persist,
+                );
                 shared.attach(refresh::spawn(engine, Arc::new(SystemClock))?);
                 shared
             };
             app.manage(shared);
 
             tray::install(app.handle(), &setup_strings)?;
-            tray::refresh(app.handle(), &setup_strings);
+            tray::refresh(app.handle(), &setup_strings.catalog());
 
             if let Some(scale) = options.scale {
                 panel::apply_scale(app.handle(), scale);
             }
-            if options.demo {
-                // Nothing else would ever open it: a screenshot run has no user to click.
+            if options.demo_cross {
+                demo_cross(app.handle(), &now);
+            }
+            // Nothing else would ever open the panel on a screenshot run: it has no user to
+            // click. `--hidden` — what the startup entry passes — overrides even that.
+            if options.demo && !options.hidden {
                 panel::show(app.handle());
             }
             Ok(())
@@ -182,7 +239,7 @@ fn main() {
             // The bead is drawn for one scale factor. Moving the window to a display with
             // another one, or changing the display's scaling, makes that drawing wrong.
             WindowEvent::ScaleFactorChanged { .. } => {
-                tray::refresh(window.app_handle(), &event_strings);
+                tray::refresh(window.app_handle(), &event_strings.catalog());
             }
             _ => {}
         })
@@ -198,6 +255,32 @@ fn main() {
                 state.shutdown();
             }
         }
+    });
+}
+
+/// Step the demo numbers across the thresholds, for `--demo-cross`.
+///
+/// A thread rather than a timer, because there is nothing to co-ordinate: it replaces the
+/// snapshot, asks the notifications to look at it, redraws the icon and sleeps. What it
+/// shows, and what should appear, is [`demo::cross_sequence`] — the WP5 acceptance criterion
+/// (*"a toast appears exactly once when crossing 85 %"*) made visible on a real desktop.
+fn demo_cross(app: &tauri::AppHandle, now: &str) {
+    let app = app.clone();
+    let steps = demo::cross_sequence(now);
+    let strings = app.state::<Arc<Strings>>().inner().clone();
+    std::thread::spawn(move || {
+        for (index, snapshot) in steps.into_iter().enumerate() {
+            std::thread::sleep(demo::CROSS_STEP);
+            let Some(state) = app.try_state::<AppState>() else {
+                return;
+            };
+            state.set_snapshot(snapshot);
+            eprintln!("nazar-tray: demo-cross step {}", index + 1);
+            alerts::on_refresh(&app);
+            tray::refresh(&app, &strings.catalog());
+            let _ = app.emit(SNAPSHOT_CHANGED, ());
+        }
+        eprintln!("nazar-tray: demo-cross finished");
     });
 }
 
@@ -271,14 +354,18 @@ fn claim_the_writer_role(now: &str) -> Instance {
 }
 
 /// Hand a loop event to the window layer. Called on the loop's own thread.
-fn on_loop_event(app: &tauri::AppHandle, strings: &Catalog, event: Event) {
+fn on_loop_event(app: &tauri::AppHandle, strings: &Arc<Strings>, event: Event) {
     match event {
+        // Every pass, changed or not. The notifications have to see a reading that has not
+        // moved: a tray started when the weekly window is already at 91 % changes nothing,
+        // and that is exactly the case where the user most needs to be told.
+        Event::Refreshed => alerts::on_refresh(app),
         // The panel re-reads the snapshot; the payload would be stale by the time it drew.
         // The icon and the tooltip are redrawn here rather than in the panel, because they
         // have to be right whether or not anybody has opened it.
         Event::SnapshotChanged => {
             let _ = app.emit(SNAPSHOT_CHANGED, ());
-            tray::refresh(app, strings);
+            tray::refresh(app, &strings.catalog());
         }
         Event::ShowRequested => panel::show(app),
     }
