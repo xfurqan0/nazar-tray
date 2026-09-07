@@ -603,3 +603,34 @@ fn the_view_is_json_the_panel_can_read() {
     let round_tripped: SnapshotView = serde_json::from_str(&text).unwrap();
     assert_eq!(round_tripped, view);
 }
+
+#[test]
+fn a_window_nobody_could_read_carries_no_percentage_key_at_all() {
+    // Not `"percent": null`. A panel written in a language where `null` is a value turns
+    // that into `0` with one careless `Math.floor`, and the whole product is built on the
+    // difference between "nobody read this" and "you have used none of it" (finding B03).
+    let mut limits = Limits::new("2026-09-06T21:20:00Z");
+    limits.providers.codex.configured = true;
+    limits.providers.codex.windows.insert(
+        "primary".to_owned(),
+        Window::error("no quota line in the newest session log"),
+    );
+
+    let view = Snapshot::new(limits).view("2026-09-06T21:20:00Z", &rules());
+    let text = serde_json::to_string(&view).unwrap();
+
+    assert!(
+        !text.contains("null"),
+        "the view sends absent fields, not nulls: {text}"
+    );
+    assert!(!text.contains("\"percent\""), "got {text}");
+    assert!(
+        text.contains("\"error\""),
+        "the reason is still there: {text}"
+    );
+    assert_eq!(
+        serde_json::from_str::<SnapshotView>(&text).unwrap(),
+        view,
+        "a document with the empty fields left out still reads back as itself"
+    );
+}

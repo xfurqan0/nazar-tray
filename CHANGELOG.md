@@ -9,12 +9,77 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader, the WP2
-Claude reader with its status-line wrapper, the WP2b detailed-windows mode and the WP3 state
-model, refresh loop and writer: it builds, it tests, and **the tray now works** — it reads
-both providers on its own schedule and writes `~/.nazar/limits.json`. The panel prints the
-numbers as raw text; designing it is WP4.
+Claude reader with its status-line wrapper, the WP2b detailed-windows mode, the WP3 state
+model, refresh loop and writer, and the WP4 icon and panel: it builds, it tests, and **the
+tray now works and has a face** — a bead that fills with the window constraining you, a
+designed popup, and a Quit that releases the lock. Notifications, autostart and settings are
+WP5.
 
 ### Added
+
+- **The tray bead, drawn at run time** (`crates/nazar-tray/src/icon.rs`, decision K3). One
+  rasteriser, one drawing, three scales: 16 px at 100 %, 20 at 125 %, 24 at 150 %, 32 at
+  200 % — what `SM_CXSMICON` actually asks for, handed to the shell as raw RGBA with no PNG
+  anywhere in the path. A deep-blue rim, a **white chamber that is what "empty" looks like**,
+  and a fill rising from the bottom with the **binding window across both providers**: light
+  blue below 60 %, amber at 60, red at 85, and a black pupil at 100 so a spent window
+  survives a greyscale screenshot. **Unknown is a grey rim and a hollow ring and never a
+  fill** (finding B03), and freshness drains the colour, so an icon nobody has fed in an hour
+  does not look as confident as one from a second ago. The seven hexes are copied from
+  `ui/theme.nazar.json` and a test parses that file and fails if they drift.
+- **A tooltip that says something**: `Claude Fable week 88 % · Codex week 70 % (resets in
+  2 h 10 m)`, or `nazar-tray: no data`. Each provider's binding window, named by its length
+  rather than by its provider, with the model on a model-scoped weekly; the reset belongs to
+  the worst window; a provider nobody could read contributes nothing rather than a `0 %`.
+  Built from the same `ui/locales/*.json` the panel reads — the tray is UI too, and
+  `crates/nazar-tray/src/i18n.rs` is forty lines that make `no hard-coded text` true outside
+  the webview as well.
+- **The panel, designed** (`ui/src`). A card per provider on navy: the provider mark (from
+  `@lobehub/icons`, MIT, licence in `ui/assets/LICENSE-lobehub.txt`), the plan exactly as the
+  source spelled it, and a freshness sentence — *updated 12 s ago*, *stale · last data 2 h
+  ago*, *age unknown*. A row per window: its name from `windowMinutes` so no display needs to
+  know which provider it is looking at, a `detailed` mark on the windows only the opt-in mode
+  can produce, a bar in the bead's colours, the percentage floored, and a countdown the panel
+  computes itself every second — a clock below a day, `4 d 2 h` above it, plus the reset in
+  the reader's own time zone. **A window nobody could read gets the word, a hatched empty
+  track and the reader's own sentence — never a bar of zero length.**
+- **The first-run hint.** Windows 11 hides every new tray icon behind the `^` button, so the
+  panel says so once — *drag the bead onto the taskbar to pin it* — and remembers being
+  dismissed in `config.json`. The panel measures its own content after every render and asks
+  for a window that fits, which is what lets the hint appear and disappear without leaving a
+  gap.
+- **Themes, and light and dark.** The footer toggles `nazar` and `graphite` and the choice is
+  remembered; light and dark follow `prefers-color-scheme` unless the settings override it.
+  Four new settings keys — `theme`, `themeMode`, `firstRunHintDismissed`, `locale` — with the
+  same forward-compatible rules as the rest of the file.
+- **Contrast as a test, not an intention** (`ui/test/contrast.test.mjs`). Every foreground
+  the stylesheet puts on every background, in both themes and both modes, against WCAG AA
+  (4.5:1 for text, 3:1 for a graphic that carries meaning). Twenty-two pairs, all passing;
+  the meter fill moved from the raw accent to the derived `accentText` because `#3FA9F5` is
+  2.25:1 on a light track.
+- **A menu, and with it Quit** — `Open`, `Refresh now`, `Quit`. The reason it exists is the
+  lock: a tray that can only be killed leaves `~/.nazar/limits.lock` behind for its
+  five-minute grace period, and the next launch then starts as a reader and looks broken.
+  Every route out of the application now stops the refresh loop first, which releases the
+  lock. Verified by clicking it: the file is gone afterwards, where a kill leaves it.
+- **The overflow-flyout race, fixed.** Clicking a tray icon *inside* the Windows 11 overflow
+  shows the panel and then closes the flyout, which blurs the panel about 200 ms later and
+  hid it instantly. A blur within 300 ms of a tray-initiated open is now ignored **and the
+  focus is taken back**, so the next click elsewhere still closes the panel. Verified against
+  the real flyout: visible and focused at 250 ms, 1250 ms and 3250 ms.
+- **Screenshot flags, documented rather than hidden**: `--demo` (synthetic numbers, panel
+  open, **no lock and nothing written**), `--scale`, `--theme`, `--mode`, `--hint`,
+  `--locale`, and `--icons <dir>`. `scripts/screenshot.ps1` produces every picture in
+  `docs/screenshots` from them, so "how was this made" has an answer that is not a memory.
+  150 % and 200 % are genuinely rendered at those scales — WebView2 is given
+  `--force-device-scale-factor` and the window is multiplied to match — rather than being
+  upscaled screenshots.
+- **37 new tests in Rust (381 in the workspace) and 25 more in the panel (51).** The
+  rasteriser's are pixels: fill height per percentage, a colour per severity, no fill of any
+  kind for unknown, a pupil only when a window is spent, and pinned PNG bytes for three
+  cases. The panel's are pure functions — window names, durations, freshness sentences, the
+  theme toggle — plus the cross-language gate grown to cover the new commands and **every
+  message key either language names**, in either direction.
 
 - **State model** (`nazar-core::state`). `limits.json` stores what a source measured;
   everything a display wants is derived at read time and stored nowhere, because all of it
@@ -258,11 +323,26 @@ numbers as raw text; designing it is WP4.
   last wrote the file", and that is still exactly what it is — the writer only writes on a
   change. A consumer that was using it as a liveness signal for the tray should read
   `~/.nazar/limits.lock`'s `heartbeatAt` instead, which advances every minute regardless.
-- **A tray that is killed rather than quit keeps its lock for five minutes**, so a relaunch
-  inside that window defers to a process that is gone. There is no Quit command yet — the tray
-  has no menu by design and the panel is where every action will live (WP5) — so during
-  development every stop is a kill. Deleting `~/.nazar/limits.lock` by hand is the escape and
-  is safe when no tray is running.
+- **A tray that is killed rather than quit still keeps its lock for five minutes.** WP4's
+  menu means it need not be killed: `Quit` stops the loop, which releases the lock. Deleting
+  `~/.nazar/limits.lock` by hand remains the escape after a crash, and is safe when no tray
+  is running.
+- **The right button opens the menu, not the panel.** `docs/PROJECT.md` section 7 asks for
+  "panel opens on left/right click"; with a native menu attached, the right button belongs to
+  the shell. The panel opens on a left click and from the menu's first item, `Open`. Showing
+  both at once was tried: the menu takes the focus, the panel blurs behind it, and the
+  blur-suppression that keeps it alive then leaves a panel nobody can dismiss.
+- **WP4 added no dependencies either.** `Cargo.lock` and `ui/package-lock.json` are byte
+  for byte what they were before it. `tiny-skia` was
+  pre-approved for the icon and was not needed — the picture is four circles and a horizontal
+  cut — and the PNG writer behind `--icons` is a fixed-Huffman deflate in eighty lines, which
+  puts the documentation strip at 15 KB rather than the 130 KB uncompressed blocks would have
+  cost. `ui/test/icon-strip.test.mjs` inflates the committed file with Node's own zlib, so
+  that encoder is checked by a decoder nobody in this repository wrote.
+- **The derived view now leaves empty fields out rather than sending `null`.** `SnapshotView`
+  is the panel's wire shape and nothing else reads it; `"percent": null` becomes `0` after
+  one careless `Math.floor`, which is finding B03 arriving through the back door. The panel
+  is defensive about it as well.
 - **The detailed-windows mode is behind a cargo feature as well as the runtime flag.**
   `nazar-core`'s `detailed-windows` feature is on by default, because the shipped tray
   offers the toggle; `nazar-statusline` depends on `nazar-core` with

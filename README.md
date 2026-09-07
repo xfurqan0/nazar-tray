@@ -4,14 +4,21 @@
 
 A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **works, and looks like nothing (WP0–WP3).** Both readers are done, the refresh
-> loop runs inside the tray process, and `~/.nazar/limits.json` is written — atomically,
-> by one process, and only when the numbers have actually moved. The panel prints those
-> numbers as raw text: **the design is WP4**, and notifications, autostart and settings are
-> WP5. Not released, and not yet installable from anywhere.
-> Windows first; macOS and Linux builds later from the same codebase.
+> Status: **WP4: icon and panel.** Both readers are done, the refresh loop runs inside the
+> tray process, `~/.nazar/limits.json` is written — atomically, by one process, and only when
+> the numbers have actually moved — and the tray now has a face: a bead that fills with the
+> window constraining you, a designed popup panel, and a Quit that releases the lock.
+> Notifications, autostart and settings are WP5. Not released, and not yet installable from
+> anywhere. Windows first; macOS and Linux builds later from the same codebase.
 > See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and [CHANGELOG.md](CHANGELOG.md)
 > for what has landed.
+
+![The nazar-tray panel: Claude Code and Codex, their windows, percentages and reset countdowns](docs/screenshots/wp4-100-nazar-dark.png)
+
+<sub>Demo data, so the picture shows the states that are hard to arrange on purpose: a window
+over the amber threshold, one over the red threshold that only the opt-in detailed mode can
+see, and one nobody could read — which says so rather than showing a reassuring zero. The
+bead states at every scale: [docs/screenshots/wp4-icons.png](docs/screenshots/wp4-icons.png).</sub>
 
 ## Why another quota tray
 
@@ -74,8 +81,8 @@ crates/nazar-core    the limits.json contract, its writer and reader. No Tauri.
 crates/nazar-tray    the Tauri v2 app: tray icon, panel window. Windows first.
 ui/                  the panel: plain TypeScript, HTML and CSS, bundled by esbuild
 fixtures/            limits.sample.json, the file consumers copy into their tests
-scripts/             licence gate and the bead rasteriser
-docs/                the plan, and the limits.json contract
+scripts/             licence gate, the bead rasteriser, and the screenshot runner
+docs/                the plan, the limits.json contract, and docs/screenshots
 ```
 
 **Everyday commands**
@@ -111,6 +118,30 @@ cargo tauri dev            # or: cargo tauri build --debug
 node scripts/render-bead-png.mjs
 cargo tauri icon ui/assets/bead-1024.png -o crates/nazar-tray/icons
 ```
+
+That is the **application** icon: the installer, the taskbar, the Store logos. The **tray**
+icon is not a file at all — it is drawn at run time by `crates/nazar-tray/src/icon.rs` for
+the current scale factor, from the hexes in `ui/theme.nazar.json`. The strip in the
+documentation comes from the same code:
+
+```powershell
+cargo run -p nazar-tray -- --icons docs/screenshots
+```
+
+**Regenerating the screenshots**
+
+```powershell
+cargo build -p nazar-tray
+powershell -File scripts/screenshot.ps1
+```
+
+Every picture in `docs/screenshots` comes from that one command. It runs the tray with
+`--demo`, which uses synthetic numbers, opens the panel at start-up, **never takes the
+advisory lock and writes nothing** — so a screenshot session cannot overwrite the real
+`~/.nazar/limits.json` or change your settings. 150 % and 200 % are rendered at those scales
+rather than upscaled: WebView2 is passed `--force-device-scale-factor` and the window is
+multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`, `-Hint`,
+`-Locale` and `-Out` take one picture of one state.
 
 ## Credits
 

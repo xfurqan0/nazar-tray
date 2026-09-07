@@ -1,17 +1,41 @@
 /*
- * Every colour, font and size here comes from a custom property that src/theme.ts sets
- * from the theme JSON. Nothing is written twice: change the theme file, not this one.
- * The fallbacks after each `var()` are what the panel looks like in the split second
- * before the script runs, and in a browser opened straight on dist/index.html.
+ * The popup panel.
+ *
+ * Every colour, font and size comes from a custom property that src/theme.ts sets from the
+ * theme JSON. Nothing is written twice: change the theme file, not this one. The fallbacks
+ * after each `var()` are what the panel looks like in the split second before the script
+ * runs, and in a browser opened straight on dist/index.html.
+ *
+ * Three things this file is careful about, in the order they matter:
+ *
+ * 1. **A state is a colour and a word.** Every bar has its percentage beside it in text and
+ *    every provider its freshness in a sentence, because colour alone fails on a greyscale
+ *    screenshot and on a reader who cannot tell amber from red. The same rule Nazar's
+ *    canvas is written to.
+ * 2. **An unknown window is not an empty one.** `.severity-unknown` draws a hatched track
+ *    with no fill at all, which cannot be mistaken for 0 %.
+ * 3. **The panel is measured, not fixed.** Nothing here sets a height; main.ts measures the
+ *    content and asks the Rust side for a window that fits it. That is what lets the
+ *    first-run hint appear and disappear without leaving a gap.
  */
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+/*
+ * The `hidden` attribute is how main.ts shows and hides the first-run hint, the demo badge
+ * and the empty-state line. The browser's own rule for it is weaker than any class here, so
+ * `.hint { display: flex }` would quietly win and the hint would never go away.
+ */
+[hidden] {
+  display: none !important;
 }
 
 html,
 body {
-  height: 100%;
   margin: 0;
 }
 
@@ -21,137 +45,343 @@ body {
   font-family: var(--type-font-family, system-ui, sans-serif);
   font-size: var(--type-size-md, 13px);
   font-weight: var(--type-weight-regular, 450);
-  /* A tray popup is not a document: no text selection, no drag-select, no context menu
-     feel. WP4 will make individual numbers selectable if that turns out to matter. */
+  -webkit-font-smoothing: antialiased;
+  /* A tray popup is not a document: no drag-select, no I-beam. The numbers are the one
+     thing worth copying, and `.window-percent` opts back in below. */
   user-select: none;
   cursor: default;
-  overflow: hidden;
+  overflow-x: hidden;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring, #ffffff);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .panel {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 14px;
-  height: 100%;
-  padding: 20px 18px 16px;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px 10px;
   border: 1px solid var(--color-panel-border, #1d3e6b);
-  border-radius: 10px;
 }
 
-.bead {
-  width: 72px;
-  height: 72px;
-  flex: none;
+/* ------------------------------------------------------------------ header */
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.bead svg {
+.mark {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.mark svg {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.headline {
+.title {
   margin: 0;
   font-size: var(--type-size-lg, 15px);
   font-weight: var(--type-weight-strong, 680);
-  text-align: center;
-  line-height: 1.35;
+  letter-spacing: 0.01em;
 }
 
+.version {
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  font-variant-numeric: tabular-nums;
+}
+
+.pill {
+  padding: 2px 7px;
+  border: 1px solid var(--color-panel-border, #1d3e6b);
+  border-radius: 999px;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+  font-weight: var(--type-weight-medium, 560);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+  white-space: nowrap;
+}
+
+/* The numbers on screen are synthetic. Say so, loudly enough that a screenshot cannot be
+   mistaken for a real reading. */
+.pill-demo {
+  margin-left: auto;
+  border-color: var(--color-warn, #f2a93b);
+  color: var(--color-warn-text, #f2a93b);
+  text-transform: uppercase;
+}
+
+/* -------------------------------------------------------------------- hint */
+
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--color-banner-border, #f2a93b);
+  border-radius: 8px;
+  background: var(--color-banner-bg, #3a2408);
+}
+
+.hint-text {
+  margin: 0;
+  color: var(--color-banner-text, #ffd79a);
+  font-size: var(--type-size-sm, 11.5px);
+  line-height: 1.4;
+}
+
+.hint .button {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+/* --------------------------------------------------------------- providers */
+
 .providers {
-  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 .provider {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
+  padding: 9px 10px 10px;
   border: 1px solid var(--color-node-border, #1e4372);
-  border-radius: 7px;
+  border-radius: 9px;
   background: var(--color-node, #102a4c);
 }
 
-.provider-heading {
+.provider-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.provider-name {
-  color: var(--color-text, #eaf2ff);
-  font-weight: var(--type-weight-medium, 560);
-}
-
-.provider-age {
-  color: var(--color-text-faint, #7d96b5);
-  font-size: var(--type-size-xs, 10px);
-  letter-spacing: var(--type-tracking-wide, 0.07em);
+  align-items: center;
+  gap: 7px;
 }
 
 /*
- * WP3 shows the raw values and nothing else: one row per window, the key on the left and
- * the numbers on the right. WP4 replaces all of this with the designed panel, which is why
- * there is no bar, no bead fill and no colour beyond the severity class.
+ * The provider marks are drawn for a light background — Codex's is nearly black — so they
+ * get a light chip of their own rather than disappearing into the navy.
  */
-.windows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.badge {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  padding: 1px;
+  border-radius: 4px;
+  background: var(--bead-white, #ffffff);
 }
 
-.window {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  font-family: var(--type-mono-family, ui-monospace, monospace);
-  font-size: var(--type-size-sm, 11.5px);
+.provider-name {
+  font-weight: var(--type-weight-medium, 560);
 }
 
-.window-key {
-  color: var(--color-text-faint, #7d96b5);
+.plan {
+  font-variant-numeric: tabular-nums;
 }
 
-/* The binding window is the one that constrains you. It is the only thing given weight. */
-.window.binding .window-key,
-.window.binding .window-value {
-  font-weight: var(--type-weight-strong, 680);
-}
-
-/* Grey, never green and never a number: an unread window is unknown, not zero. */
-.window-value {
-  color: var(--color-unknown-grey-text, #a3b2c4);
-  letter-spacing: var(--type-tracking-wide, 0.07em);
-}
-
-.window.severity-ok .window-value {
-  color: var(--color-text, #eaf2ff);
-}
-
-.window.severity-warn .window-value {
-  color: var(--color-warn, #f2a93b);
-}
-
-.window.severity-critical .window-value,
-.window.severity-exhausted .window-value {
-  color: var(--color-danger, #e2564a);
-}
-
-.hint {
-  margin: auto 0 0;
+.age {
+  margin-left: auto;
+  overflow: hidden;
   color: var(--color-text-faint, #7d96b5);
   font-size: var(--type-size-xs, 10px);
   letter-spacing: var(--type-tracking-wide, 0.07em);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* An old reading is not a wrong one, but it must not look as confident as a fresh one —
+   the same signal the tray icon gives by draining its colour. */
+.age-stale,
+.age-unknown {
+  color: var(--color-warn-text, #f2a93b);
+}
+
+.not-configured {
+  margin: 6px 0 0;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-sm, 11.5px);
+}
+
+/* ------------------------------------------------------------------ window */
+
+.windows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.window-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.window-label {
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-sm, 11.5px);
+}
+
+/* The binding window is the one that constrains you. It is the only thing given weight,
+   and it is the number the tray icon is showing. */
+.window.binding .window-label,
+.window.binding .window-percent {
+  color: var(--color-text, #eaf2ff);
+  font-weight: var(--type-weight-strong, 680);
+}
+
+.detailed {
+  padding: 1px 5px;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.window-percent {
+  margin-left: auto;
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-sm, 11.5px);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.meter {
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--color-node-header, #14355f);
+  overflow: hidden;
+}
+
+/*
+ * The bead's light blue, in the tone that survives its background: `accentText` is
+ * `#3FA9F5` on navy and the derived `#0F6FB8` on white. The raw accent on a light track is
+ * 2.25:1 — legible, but under the 3:1 that WCAG asks of a graphic, and this bar is the one
+ * thing on the card that has to be readable at a glance.
+ */
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent-text, #3fa9f5);
+}
+
+.window.severity-warn .meter-fill {
+  background: var(--color-warn, #f2a93b);
+}
+
+.window.severity-critical .meter-fill,
+.window.severity-exhausted .meter-fill {
+  background: var(--color-danger, #e2564a);
+}
+
+.window.severity-warn .window-percent {
+  color: var(--color-warn-text, #f2a93b);
+}
+
+.window.severity-critical .window-percent,
+.window.severity-exhausted .window-percent {
+  color: var(--color-danger-text, #ff8578);
+}
+
+/*
+ * Unknown: a hatched track and no fill whatsoever. A bar of zero length and a bar nobody
+ * could measure look identical, and one of them is a lie — finding B03 of the audit.
+ */
+.window.severity-unknown .window-percent {
+  color: var(--color-unknown-grey-text, #a3b2c4);
+}
+
+.window.severity-unknown .meter {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--color-unknown-grey, #8a97a8) 0 2px,
+    transparent 2px 5px
+  );
+  opacity: 0.55;
+}
+
+.window-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  font-variant-numeric: tabular-nums;
+}
+
+.reset-at {
+  margin-left: auto;
+}
+
+/* The reader's own words for why a window could not be read. Short, and never file
+   contents: see nazar-core's error module. */
+.window-error {
+  margin-top: 3px;
+  color: var(--color-unknown-grey-text, #a3b2c4);
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.35;
+}
+
+.empty {
+  margin: 4px 2px;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-sm, 11.5px);
+  line-height: 1.45;
+}
+
+/* ------------------------------------------------------------------ footer */
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.button {
+  font-family: inherit;
+  font-size: var(--type-size-sm, 11.5px);
+  font-weight: var(--type-weight-medium, 560);
+  color: var(--color-text-muted, #a8bfdc);
+  background: transparent;
+  border: 1px solid var(--color-panel-border, #1d3e6b);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.button:hover {
+  color: var(--color-text, #eaf2ff);
+  border-color: var(--color-accent, #3fa9f5);
+}
+
+.button:active {
+  transform: translateY(1px);
+}
+
+.esc {
+  margin-left: auto;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button:active {
+    transform: none;
+  }
 }

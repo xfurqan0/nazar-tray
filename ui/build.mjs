@@ -44,6 +44,7 @@ await build({
     resolve(SRC, "theme.ts"),
     resolve(SRC, "locales.ts"),
     resolve(SRC, "snapshot.ts"),
+    resolve(SRC, "format.ts"),
   ],
   outdir: resolve(DIST, "lib"),
   outExtension: { ".js": ".mjs" },
@@ -57,5 +58,13 @@ if (!html.includes("<!--BEAD_SVG-->")) {
 writeFileSync(resolve(DIST, "index.html"), html.replace("<!--BEAD_SVG-->", bead));
 
 cpSync(resolve(SRC, "styles.css"), resolve(DIST, "styles.css"));
+
+// The provider badges, and the licence that comes with them. Copied rather than inlined as
+// data URIs: two PNGs the panel loads from its own origin are simpler to audit than nine
+// kilobytes of base64 in a stylesheet, and the content security policy allows `self`.
+mkdirSync(resolve(DIST, "assets"), { recursive: true });
+for (const asset of ["claudecode-color.png", "codex-color.png", "LICENSE-lobehub.txt"]) {
+  cpSync(resolve(HERE, "assets", asset), resolve(DIST, "assets", asset));
+}
 
 process.stdout.write(`built panel ${pkg.version} into ${DIST}\n`);

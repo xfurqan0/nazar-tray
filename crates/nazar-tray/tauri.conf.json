@@ -14,8 +14,8 @@
       {
         "label": "panel",
         "title": "nazar-tray",
-        "width": 340,
-        "height": 300,
+        "width": 360,
+        "height": 420,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,

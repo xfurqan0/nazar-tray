@@ -296,14 +296,19 @@ pub struct ProviderView {
     /// `false` when the provider's files are not on this machine.
     pub configured: bool,
     /// Plan name, as the source reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     /// Where the numbers came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// When the source produced them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_at: Option<String>,
     /// Key of the binding window: the highest percentage of this provider's windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<String>,
     /// Milliseconds between `sourceAt` and `now`. Negative when the source is ahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<i64>,
     /// [`age_ms`](ProviderView::age_ms) classified.
     pub freshness: Freshness,
@@ -320,20 +325,31 @@ pub struct WindowView {
     /// Window key: `five_hour`, `seven_day`, `seven_day_fable`, `primary`, `secondary`, …
     pub key: String,
     /// Percentage used, unrounded and as reported. **Absent when it is unknown.**
+    ///
+    /// Absent, not `null`: every optional field of the view is skipped when it is empty, so
+    /// a panel written in a language where `null` is a value cannot mistake "nobody read
+    /// this" for a number. A `JSON.parse` of `"percent": null` is `0` after one careless
+    /// `Math.floor`, which is finding B03 arriving through the back door.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f64>,
     /// Window length in minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_minutes: Option<u32>,
     /// When the window resets, RFC 3339 in UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
     /// Milliseconds until the reset. **Negative when the reset is already due**, which is
     /// what a reading taken before a long sleep looks like; the retired prototype printed
     /// "now" for ever instead (finding S7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining_ms: Option<i64>,
     /// `ok`, `stale`, `error`, or whatever a newer writer put there.
     pub state: String,
     /// Short reason the window is stale or in error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Model a weekly window is scoped to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Whether the window came from the opt-in detailed-windows mode.
     pub detailed: bool,

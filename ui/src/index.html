@@ -11,17 +11,33 @@
       Every visible string is empty here and filled by main.ts from the locale files.
       An English word typed into this file would be a string that no translation can
       reach, which is the failure mode docs/PROJECT.md WP6 exists to prevent.
+
+      The structure is fixed and the provider cards are built at run time: a card drawn
+      before the first `get_snapshot` would be a card asserting something nobody has read.
     -->
-    <main class="panel">
-      <div class="bead" data-bead><!--BEAD_SVG--></div>
-      <h1 class="headline" data-headline></h1>
-      <!--
-        Filled from the derived snapshot by main.ts. Empty here rather than seeded with
-        two rows, because a row drawn before the first `get_snapshot` would be a row
-        asserting something nobody has read yet.
-      -->
+    <main class="panel" data-panel>
+      <header class="head">
+        <span class="mark" data-bead><!--BEAD_SVG--></span>
+        <h1 class="title" data-i18n="app.name"></h1>
+        <span class="version" data-version></span>
+        <span class="pill pill-demo" data-demo hidden data-i18n="panel.demo"></span>
+      </header>
+
+      <!-- Shown once, on the first run, and dismissed for good. -->
+      <section class="hint" data-hint hidden>
+        <p class="hint-text" data-i18n="panel.hint.overflow"></p>
+        <button type="button" class="button" data-dismiss data-i18n="panel.hint.dismiss"></button>
+      </section>
+
       <ul class="providers" data-providers></ul>
-      <p class="hint" data-i18n="panel.hint.close"></p>
+
+      <p class="empty" data-empty hidden data-i18n="panel.status.noData"></p>
+
+      <footer class="foot">
+        <button type="button" class="button" data-refresh data-i18n="panel.action.refresh"></button>
+        <button type="button" class="button" data-theme></button>
+        <span class="esc" data-i18n="panel.hint.close"></span>
+      </footer>
     </main>
     <script type="module" src="panel.js"></script>
   </body>

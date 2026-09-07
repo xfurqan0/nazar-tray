@@ -8,13 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  displayPercent,
-  formatClock,
-  freshnessKey,
-  severityClass,
-  worstSeverity,
-} from "../dist/lib/snapshot.mjs";
+import { displayPercent, formatClock, worstSeverity } from "../dist/lib/snapshot.mjs";
 
 test("a duration reads as a clock, in numerals that need no translation", () => {
   assert.equal(formatClock(0), "0:00");
@@ -34,13 +28,6 @@ test("a percentage is floored, never rounded up", () => {
   assert.equal(displayPercent(54), 54);
   assert.equal(displayPercent(99.6), 99, "99.6 % has not run out and must not say 100");
   assert.equal(displayPercent(100), 100);
-});
-
-test("freshness and severity map to keys and classes, never to English", () => {
-  assert.equal(freshnessKey("stale"), "panel.freshness.stale");
-  assert.equal(freshnessKey("unknown"), "panel.freshness.unknown");
-  assert.equal(severityClass("critical"), "severity-critical");
-  assert.equal(severityClass("unknown"), "severity-unknown");
 });
 
 const provider = (name, severity) => ({

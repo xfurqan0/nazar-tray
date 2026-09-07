@@ -58,13 +58,46 @@ pub struct Config {
     /// When a reading stops being fresh and starts being stale. `5` and `45` minutes.
     #[serde(default)]
     pub freshness: FreshnessRules,
+    /// Which theme the panel paints itself in: `nazar` (default) or `graphite`.
+    ///
+    /// A free string rather than an enum: the themes are data files, and a settings file
+    /// naming one this build has never heard of is a thing to survive — by falling back to
+    /// `nazar` — rather than a reason to refuse to start.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// `system` (follow `prefers-color-scheme`), `light`, or `dark`.
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
+    /// Whether the first-run "the icon is in the overflow" hint has been dismissed.
+    ///
+    /// Windows 11 hides every new tray icon behind the `^` button, and an application whose
+    /// icon nobody can find looks broken rather than hidden (`docs/PROJECT.md` section 5).
+    /// The hint is shown once, in the panel, and dismissed for good here.
+    #[serde(default)]
+    pub first_run_hint_dismissed: bool,
+    /// Language override, e.g. `tr`. `None` means "follow the system", which WP5 wires up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
     /// Keys a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+/// The theme a machine that has never been configured paints itself in.
+pub const DEFAULT_THEME: &str = "nazar";
+/// The default light/dark behaviour: whatever the operating system says.
+pub const DEFAULT_THEME_MODE: &str = "system";
+
 fn default_schema_version() -> u32 {
     CONFIG_SCHEMA_VERSION
+}
+
+fn default_theme() -> String {
+    DEFAULT_THEME.to_owned()
+}
+
+fn default_theme_mode() -> String {
+    DEFAULT_THEME_MODE.to_owned()
 }
 
 impl Default for Config {
@@ -76,6 +109,10 @@ impl Default for Config {
             detailed_suggested: false,
             thresholds: Thresholds::default(),
             freshness: FreshnessRules::default(),
+            theme: default_theme(),
+            theme_mode: default_theme_mode(),
+            first_run_hint_dismissed: false,
+            locale: None,
             extra: Map::new(),
         }
     }
@@ -194,7 +231,10 @@ mod tests {
 }"#;
         let config = Config::from_json(newer).unwrap();
         assert!(config.detailed_windows);
-        assert_eq!(config.extra["theme"], Value::from("graphite"));
+        // `theme` is a key this build knows about; `quietHours` is not, and is the one
+        // that has to survive being read and written by a build that cannot use it.
+        assert_eq!(config.theme, "graphite");
+        assert_eq!(config.extra["quietHours"], Value::from(vec![22, 7]));
 
         let written = Config::from_json(&config.to_json().unwrap()).unwrap();
         assert_eq!(
@@ -253,6 +293,53 @@ mod tests {
     #[test]
     fn an_empty_object_is_the_defaults() {
         assert_eq!(Config::from_json("{}").unwrap(), Config::default());
+    }
+
+    #[test]
+    fn the_panel_settings_have_the_documented_defaults_and_round_trip() {
+        let fresh = Config::default();
+        assert_eq!(fresh.theme, DEFAULT_THEME);
+        assert_eq!(fresh.theme_mode, DEFAULT_THEME_MODE);
+        assert!(
+            !fresh.first_run_hint_dismissed,
+            "the overflow hint is shown once, so a fresh machine has not dismissed it"
+        );
+        assert_eq!(
+            fresh.locale, None,
+            "no language is chosen until one is chosen"
+        );
+
+        let dir = TempDir::new("config-panel");
+        let path = dir.join("config.json");
+        let chosen = Config {
+            theme: "graphite".to_owned(),
+            theme_mode: "dark".to_owned(),
+            first_run_hint_dismissed: true,
+            locale: Some("tr".to_owned()),
+            ..Config::default()
+        };
+        chosen.write(&path).unwrap();
+        assert_eq!(Config::read(&path).unwrap(), chosen);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"theme\": \"graphite\""), "got {text}");
+        assert!(
+            text.contains("\"firstRunHintDismissed\": true"),
+            "got {text}"
+        );
+        assert!(text.contains("\"locale\": \"tr\""), "got {text}");
+    }
+
+    #[test]
+    fn a_settings_file_from_before_the_panel_settings_still_reads() {
+        // What WP3 wrote. An older file must not lose the user their settings, and must
+        // not arrive with an empty theme name that the panel would then have to guess at.
+        let older = r#"{ "schemaVersion": 1, "detailedWindows": true }"#;
+        let config = Config::from_json(older).unwrap();
+        assert!(config.detailed_windows);
+        assert_eq!(config.theme, DEFAULT_THEME);
+        assert_eq!(config.theme_mode, DEFAULT_THEME_MODE);
+        assert!(!config.first_run_hint_dismissed);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The popup panel. It reads the in-memory snapshot through this application's own commands, listens for one event (core:default already allows that), and closes itself; it opens no dialogs, runs no shell commands and reaches no network. Commands the application defines itself need no entry here, so the list stays the core defaults plus the one window permission the panel uses to hide itself. Every permission beyond that is listed with the reason it is needed.",
+  "description": "The popup panel. It reads the in-memory snapshot, changes its own settings and asks for a window that fits its content through this application's own commands, listens for one event (core:default already allows that), and hides itself on Esc; it opens no dialogs, runs no shell commands and reaches no network. Commands the application defines itself need no entry here — WP4's set is get_ui_state, set_theme, dismiss_hint, set_panel_height, open_panel and quit — so the list stays the core defaults plus the one window permission the panel uses to hide itself. Resizing goes through set_panel_height rather than core:window:allow-set-size, so the webview cannot resize its window except by asking, and the Rust side clamps what it asks for. Every permission beyond that is listed with the reason it is needed.",
   "windows": ["panel"],
   "permissions": [
     "core:default",

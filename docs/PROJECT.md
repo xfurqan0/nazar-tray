@@ -117,7 +117,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP2 ✅ | **Claude reader**: `nazar-statusline` wrapper (records `rate_limits`, chains to existing command, < 50 ms), installer merges into `~/.claude/settings.json` without clobbering | ~~Works with no status line, with ccstatusline, with the maintainer's custom script; uninstall restores the previous command exactly~~ — **landed 2026-09-07**, all three round-trip byte for byte |
 | WP2b ✅ | **Detailed windows mode (opt-in)**: settings toggle, token read in memory only, official usage endpoint client with backoff and last-good cache, model-scoped windows merged into the state with `detailed:true`, Max-plan detection prompt | ~~Off by default; with the toggle on, the Fable weekly window appears and matches `/usage`; token never appears in any file, log, or error text (test asserts it); 429 leaves last value with a stale flag~~ — **landed 2026-09-07**. The UI half of the prompt is WP5's; the decision function and its `detailedSuggested` flag are here. |
 | WP3 ✅ | **State model**: binding window across passive + detailed windows, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | ~~Property tests on window selection and reset math across time zones~~ — **landed 2026-09-07**, and the refresh loop, the write-on-change rule and the advisory lock came with it |
-| WP4 | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur |
+| WP4 ✅ | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | ~~Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur~~ — **landed 2026-09-07**. Screenshots taken at all three scales; the panel opens on a left click and from the menu's `Open` on a right click (see the log below), and closes on Esc and on blur. Quit came with it. |
 | WP5 | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | Toast appears exactly once when crossing 85 %; survives sleep/wake |
 | WP6 | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | Every UI string comes from locale files; no hard-coded text in code |
 | WP7 | **Distribution**: NSIS/MSI installer via Tauri bundler, winget manifest, SignPath Foundation application, README (EN) with GIF, CHANGELOG, first release checklist | Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files |
@@ -128,7 +128,7 @@ Going public happens after WP7, not before.
 ## 8. Open decisions
 - ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
 - ~~Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework~~ → **closed 2026-09-07 in WP0: plain TypeScript, HTML and CSS, bundled by esbuild, no framework** (decision K2). The panel's only runtime dependency is `@tauri-apps/api`; `ui/` has two dev dependencies, esbuild and TypeScript.
-- Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing. Leaning: runtime in Rust (`tiny-skia`), one source of truth for themes.
+- ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set is one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is four circles and a horizontal cut, which is a hundred lines of arithmetic and no dependency. `crates/nazar-tray/src/icon.rs`.
 - Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
 
 ## 9. Log
@@ -182,4 +182,59 @@ Going public happens after WP7, not before.
   heartbeat kept advancing; `--print --write` while the tray was running printed the tray's
   document, said so, and changed nothing; and a second launch exited with one process still on
   the tray. `~/.claude/settings.json` was not touched — same SHA-256 before and after.
+- 2026-09-07 — **WP4 landed: the bead, the panel and the way out.** Three things, and the
+  third is the one that mattered most.
+  **(1) The icon is drawn, not shipped** (decision K3, `icon.rs`). A bead rendered in Rust
+  for the current scale factor — 16 px at 100 %, 24 at 150 %, 32 at 200 %, which is what
+  `SM_CXSMICON` asks for — with a deep-blue rim, a white chamber that *is* what empty looks
+  like, and a fill rising from the bottom with the **binding window across both providers**.
+  Light blue, amber, red by severity; a black pupil when a window is spent, so the state
+  survives a greyscale screenshot; a **grey rim and a hollow ring when nothing could be read
+  — never a fill** (finding B03); and the colour drained by freshness, so an icon nobody has
+  fed in an hour does not look as confident as one from a second ago. `tiny-skia` was the
+  leaning in section 8 and was not needed: the picture is four circles and a cut, the hexes
+  come from `ui/theme.nazar.json` (a test parses that file and fails on drift), and the
+  tooltip — `Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)` — is built from
+  the same locale files the panel reads, because the tray is UI too.
+  **(2) The panel is designed.** A card per provider on navy: the lobehub mark (MIT, licence
+  in `ui/assets/`), the plan as the source spelled it, and a freshness sentence. A row per
+  window: its name taken from `windowMinutes` rather than from the provider, a `detailed`
+  mark on the model-scoped weeklies, a bar in the bead's colours, and a countdown the panel
+  computes itself every second — a clock below a day, `4 d 2 h` above it. **An unknown window
+  gets the word, a hatched empty track and the reader's own sentence, never a bar of zero
+  length.** The first-run hint about the Windows 11 overflow appears once and is dismissed
+  for good in `config.json`; the footer refreshes, toggles the theme and says that Esc
+  closes. The panel measures itself and asks Rust for a window that fits, so the hint can
+  come and go without leaving a gap. Every text pair clears **WCAG AA in both themes and
+  both modes**, which is a test rather than an intention (`ui/test/contrast.test.mjs`); the
+  meter fill moved to the derived accent tone because the raw one is 2.25:1 on a light track.
+  **(3) Quit, which is a bug fix.** WP3's note that the tray deliberately had no menu was
+  written before it had a lock: a killed process leaves `~/.nazar/limits.lock` behind for its
+  five-minute grace period, and the next launch then starts as a reader and looks broken. The
+  tray now has the Windows-native menu — `Open`, `Refresh now`, `Quit` — and every way out
+  goes through the loop's shutdown first. **The cost, and it is a real deviation from this
+  section's WP4 row:** with a menu attached, the right button belongs to the shell, so the
+  panel opens on a left click and from the menu's first item on a right click. Both at once
+  was tried and is worse than either — the menu takes the focus, the panel blurs behind it,
+  and the suppression below then leaves a panel nobody can dismiss.
+  **The overflow race, fixed and measured.** A click on a tray icon *inside* the Windows 11
+  overflow flyout shows the panel and then closes the flyout, which blurs the panel about
+  200 ms later and hid it instantly. The panel now ignores a blur for 300 ms after a
+  tray-initiated open **and takes the focus back**, so the next click elsewhere still closes
+  it. Verified by driving the real flyout: the panel was still visible and focused at 250 ms,
+  1250 ms and 3250 ms.
+  **No new dependencies.** `Cargo.lock` and `ui/package-lock.json` are byte for byte what
+  they were before this package. `tiny-skia` was pre-approved and not needed; the PNG writer behind `--icons` is a fixed-Huffman deflate in
+  eighty lines (the documentation strip is 15 KB rather than the 130 KB stored blocks would
+  have cost), and `ui/test/icon-strip.test.mjs` inflates the committed file with Node's own
+  zlib, so the encoder is checked by a decoder nobody here wrote.
+  **37 new tests in Rust (381 in the workspace) and 25 more in the panel (51).**
+  **Verified live on the maintainer's machine**: the bead appeared in the overflow with the
+  tooltip `Codex week 70 % (resets in 1 h 56 m)`; clicking it from the flyout opened the
+  panel and it stayed; Esc closed it; the right button showed `Open / Refresh now / Quit`;
+  **Quit ended the process and removed `~/.nazar/limits.lock`, where a kill left it behind.**
+  A second run under a throwaway `NAZAR_HOME` clicked *Got it* and the theme toggle and found
+  `firstRunHintDismissed: true` and `theme: "graphite"` in the settings it wrote — so the
+  real `%APPDATA%\nazar` still does not exist, and neither the screenshots nor the tests
+  touched it.
 - 2026-09-07 — **WP2b landed: the detailed-windows mode, off by default.** `nazar-core::claude::detailed` reads four values out of `.credentials.json` — and only while the mode is on — holds the token in a wiping wrapper for one 20-second `GET` to `api.anthropic.com/api/oauth/usage`, and maps `limits[]` into `five_hour`, `seven_day` and `seven_day_<model>`. **61 new tests (249 in the workspace)** against a hand-rolled loopback HTTP server: every status code, the backoff schedule on an injected clock, last-good/stale semantics, both response shapes, plan normalisation, binding across scoped windows, settings round-trip, and four gates — a sentinel token that must appear in no file, no error and no `Debug`; a one-call-site grep on the method that exposes it; no printing macro anywhere in the module; and the credential gate grown into an allow-listed **directory** rather than a dropped needle. The mode is behind the `detailed-windows` cargo feature as well as the runtime flag, so `cargo tree -p nazar-statusline` still shows `serde` and `serde_json` and nothing else. HTTP client chosen by measurement: `ureq` + `rustls` adds **4** packages, `reqwest` with `blocking` adds **17** including `aws-lc-sys` and a `cmake` build. Three findings from the audit became behaviour: `Retry-After` is read (B07), a token whose stored expiry has passed costs no request and a rewritten sign-in file clears the backoff at once (B06), and a plan change drops the remembered numbers (B25). Verified live: **session 2 %, weekly 38 %, Fable weekly 30 %**, `plan: max_20x`, matching an independent reading of the same endpoint seven minutes earlier — and **nothing was written**: `~/.nazar` and `%APPDATA%\nazar` did not exist before or after, and `.credentials.json` kept its size and modification time. The live check also found that the endpoint spells `resets_at` as `2026-09-07T13:10:00.130195+00:00` where the status line writes Unix seconds; both are now rewritten into the contract's `…Z`. Written up in `docs/detailed-windows.md`; precedence in `docs/limits-contract.md`; both new formats pinned.
