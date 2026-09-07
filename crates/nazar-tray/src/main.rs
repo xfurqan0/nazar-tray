@@ -57,6 +57,7 @@ mod i18n;
 mod icon;
 mod panel;
 mod state;
+mod statusline;
 mod system;
 mod tray;
 
@@ -166,6 +167,9 @@ fn main() {
             state::dismiss_detailed_suggestion,
             state::get_autostart,
             state::set_autostart,
+            statusline::statusline_status,
+            statusline::statusline_preview,
+            statusline::statusline_apply,
             state::quit
         ])
         .setup(move |app| {

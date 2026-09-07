@@ -53,7 +53,8 @@ What the research found that nobody ships:
 - The status-line payload carries only the 5-hour and the global 7-day window (documented; verified live). Model-scoped weekly windows come only from the official usage endpoint, so they need the opt-in **detailed windows** mode. In that mode the token is read from `~/.claude/.credentials.json`, held in memory for one request, never written or logged; the README states this in plain words, and the mode is off by default. The endpoint is undocumented and rate-limited (429); detailed mode keeps last-good values and backs off.
 - Users who already run a custom status line keep it: the wrapper chains to it. Users without one get a minimal default. Contract, files, permissions and the by-hand uninstall: `docs/statusline-wrapper.md`.
 - Codex log format is not a documented contract; the reader is defensive (schema-tolerant, keeps last good value, reports "unknown" rather than guessing).
-- Unsigned until SignPath approval; SmartScreen will warn. winget install avoids the browser download warning.
+- Unsigned until SignPath approval; SmartScreen will warn. winget install avoids the browser download warning. The application itself waits until after the first release, because SignPath Foundation asks that a project already be released and be actively maintained — `docs/CODE_SIGNING.md` has the whole plan and the CI job that is written and switched off.
+- Uninstalling keeps two directories on purpose. `~/.nazar` holds `limits.json`, which Nazar reads and which may outlive this tray, plus the status-line captures and the record of what the wrapper replaced; **no path through the uninstaller touches it.** `%APPDATA%\nazar` holds the settings and the notification history and goes only when the user ticks *delete application data*, which a silent uninstall never asks. Both are named in the README and in `docs/RELEASE.md`.
 
 ## 5. What the audit said to keep and to fix
 
@@ -120,10 +121,13 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP4 ✅ | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | ~~Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur~~ — **landed 2026-09-07**. Screenshots taken at all three scales; the panel opens on a left click and from the menu's `Open` on a right click (see the log below), and closes on Esc and on blur. Quit came with it. |
 | WP5 ✅ | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | ~~Toast appears exactly once when crossing 85 %; survives sleep/wake~~ — **landed 2026-09-07**. Verified live with `--demo-cross`: one toast at 60 % on arrival, one at 85 % for the crossing, **nothing** for the repeat, one more at 85 % after the reset. Sleep and wake are a test on an injected clock, and a restart on a real machine fired nothing the first run had already said. |
 | WP6 ✅ | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | ~~Every UI string comes from locale files; no hard-coded text in code~~ — **landed 2026-09-07**, and the criterion is now two tests that grep the sources rather than a promise |
-| WP7 | **Distribution**: NSIS/MSI installer via Tauri bundler, winget manifest, SignPath Foundation application, README (EN) with GIF, CHANGELOG, first release checklist | Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files |
+| WP7 ✅ | **Distribution**: NSIS installer via the Tauri bundler, winget manifests, SignPath preparation, README (EN), CHANGELOG, first release checklist | ~~Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files~~ — **landed 2026-09-07**. Measured on the maintainer's machine rather than a VM (see the log): silent install → **tray up in 4.4 s**, Start Menu entry, no elevation; silent uninstall → nothing left but the two directories that are kept on purpose and named in the README. MSI **builds cleanly** (2.70 MB, WiX downloaded by the bundler) but is **not shipped** — see the log. |
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
 
-Going public happens after WP7, not before.
+Going public happens after WP7, not before. **WP7 does not include going public**: the tag,
+the GitHub Release, the winget pull request, the SignPath application and the repository's
+visibility are five one-way doors, and every one of them is a command in `docs/RELEASE.md`
+for the maintainer to run. Nothing in this repository runs them.
 
 ## 8. Open decisions
 - ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
@@ -408,3 +412,61 @@ Going public happens after WP7, not before.
   two CSS rules, a plural helper and one localised label in TypeScript, and the tests that
   hold all of it. **Four new tests in Rust (448 in the workspace, and three existing ones grew
   from two languages to six) and 7 more in the panel (75).**
+- 2026-09-07 — **WP7 landed: the installer, and the last mile that is not a release.** One
+  NSIS package, **2.0 MB**, per user, no elevation, carrying four files and nothing else:
+  `nazar-tray.exe`, `nazar-statusline.exe`, `LICENSE.txt`, `THIRD-PARTY-NOTICES.md`. The
+  release profile is worth the link time — against Cargo's stock release settings on the same
+  source, the tray binary went **11.95 → 4.79 MB**, the wrapper **497 → 335 KB** and the
+  installer **3.06 → 1.99 MB**. Four things were decided rather than inherited.
+
+  **The bundle ships the wrapper and installs nothing.** `bundle.externalBin` puts
+  `nazar-statusline.exe` beside the tray; Claude Code's `settings.json` is not touched by any
+  installer path. What was missing until now is the way a person without a terminal asks for
+  it, so the settings page grew a status-line section that **asks twice** — the first button
+  runs `install --dry-run` and prints the wrapper's own diff, and only the button that appears
+  underneath it writes, on top of the backup the installer takes anyway. The three commands
+  behind it run the binary beside them rather than reimplementing the edit: there is one
+  implementation of "change `settings.json`", it is the one the command line runs, and it is
+  the one the tests cover.
+
+  **The uninstaller takes what Tauri's template cannot know about** (`nsis/hooks.nsh`): it
+  asks the wrapper to undo its own installation *before* deleting it, so a status line
+  pointing at a file that is about to vanish is restored rather than left dangling; it removes
+  the `StartupApproved\Run` value Windows keeps beside the `Run` one, which is the residue
+  WP5 found and could only write down; and it removes `HKCU\Software\qarpus\nazar-tray`,
+  the key holding the last install location, which the stock template only removes when the
+  *delete application data* box is ticked — so a silent uninstall was leaving a registry key
+  pointing at a directory that no longer existed. That last one was **found by measurement**:
+  it was the one thing still on the machine after the first acceptance run, and the second run
+  came back clean.
+
+  **Acceptance, on this machine rather than a VM** (which is the honest caveat — a VM would
+  also prove the WebView2 bootstrapper path, and this machine already had the runtime).
+  Silent install: **tray running 4.4 s** after the installer started, Start Menu entry
+  present, no elevation prompt, five files in `%LOCALAPPDATA%\nazar-tray`. Silent uninstall,
+  with the tray running and both startup values planted: install directory, Start Menu
+  shortcut, desktop shortcut, `Run`, `StartupApproved\Run`, the Add/Remove entry and the
+  manufacturer key **all gone**. What remains is `~/.nazar` and `%APPDATA%\nazar`, both by
+  decision and both written down. The maintainer's own `~/.claude/settings.json` was
+  SHA-256-identical before and after the whole exercise; the wrapper's install, status and
+  uninstall were exercised end to end against a **copy in a temporary directory**, and came
+  back byte for byte.
+
+  **MSI was built and then not shipped.** `cargo tauri build --bundles msi` works: the
+  bundler downloads WiX itself and produces a 2.70 MB package with no complaint. It is left
+  out because Tauri's WiX target has no `installMode`, so an MSI is per-machine and needs
+  administrator rights, and because `nsis.installerHooks` has no WiX equivalent — the MSI
+  could not restore the status line, remove the `StartupApproved` value or take the
+  manufacturer key. A second installer that uninstalls worse than the first is not a choice
+  worth offering; NSIS is the winget artefact and the only one.
+
+  Also: `winget` manifests that `winget validate` accepts, with `/S /R` as the silent switch
+  because the template only launches the app on `/R` and a tray that is installed but not
+  running looks exactly like a broken install; a release workflow on tag `v*` that drafts
+  rather than publishes and attests the build provenance; the `bundle` CI job promoted from
+  `continue-on-error` to a gate, now that the installer is the product rather than a
+  by-product; `THIRD-PARTY-NOTICES.md` generated from the lock file for the 310 packages that
+  are actually in the binaries, with a `--check` that fails CI when it goes stale;
+  `docs/CODE_SIGNING.md`, `docs/RELEASE.md`, `SECURITY.md` and `CONTRIBUTING.md`. **No tag, no
+  release, no winget submission, no SignPath application, no visibility change** — the five
+  one-way doors are commands in `docs/RELEASE.md` and nothing here runs them.

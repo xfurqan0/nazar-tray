@@ -272,6 +272,19 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether this run may change anything on the machine.
+    ///
+    /// Read by [`crate::statusline`] as well as by the settings form. A `--demo` run says on
+    /// screen that it will not write the user's settings, and the status-line section is the
+    /// one control on that page whose button would write somebody *else's* file — so it is
+    /// refused here rather than merely hidden, and a screenshot run cannot edit
+    /// `~/.claude/settings.json` even if something clicks it.
+    pub fn writes_allowed(&self) -> bool {
+        self.persist
+    }
+}
+
+impl AppState {
     /// Wrap the handles the engine handed out.
     pub fn new(
         snapshot: Arc<Mutex<Snapshot>>,
@@ -602,9 +615,18 @@ fn settings_paths() -> SettingsPaths {
 /// documentation, and a user name is the sort of thing that should not be in one by
 /// accident.
 fn collapse(path: Option<PathBuf>) -> String {
-    let Some(path) = path else {
-        return String::new();
-    };
+    match path {
+        Some(path) => collapse_home(&path),
+        None => String::new(),
+    }
+}
+
+/// [`collapse`] for a path that is definitely there.
+///
+/// Shared with [`crate::statusline`], which puts the wrapper's own location on the same
+/// page. Two paths on one screen, one of them with a user name still in it, would be a
+/// strange thing to ship after taking the trouble to hide the other.
+pub(crate) fn collapse_home(path: &std::path::Path) -> String {
     let Ok(home) = paths::home_dir() else {
         return path.display().to_string();
     };

@@ -1,0 +1,245 @@
+name: Release
+
+# Runs on a tag, produces a **draft** release, and stops.
+#
+# Everything that is one-way is a person's job: pushing the tag, reading the draft, and
+# pressing publish. The workflow's contribution is that the artefact attached to that draft
+# was built by a machine, from a commit, in public, with the tests green — and that its
+# provenance can be checked by anyone who downloads it.
+#
+# `workflow_dispatch` is here for rehearsals: it builds and uploads the same artefact to the
+# run, without creating or touching a release. Use it to prove the pipeline before tagging.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Sign the installer with SignPath (not yet available — see docs/CODE_SIGNING.md)"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The same gate CI runs. A tag does not get a shortcut: if the tests would fail on the
+  # commit, the release does not get built from it.
+  verify:
+    name: Lint and test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build the panel
+        run: npm run build
+        working-directory: ui
+
+      # `bundle.externalBin` is checked by tauri-build, so the sidecar has to exist before
+      # anything compiles the tray crate — clippy and cargo test included.
+      - name: Prepare the status-line sidecar
+        run: node scripts/sidecar.mjs --debug
+
+      - name: Check dependency licences
+        run: node scripts/check-licenses.mjs
+
+      - name: Check the third-party notices are current
+        run: node scripts/third-party-notices.mjs --check
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Type-check the panel
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: Test the panel
+        working-directory: ui
+        run: npm test
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
+      - name: Test nazar-core with the opt-in mode compiled out
+        run: cargo test -p nazar-core --no-default-features
+
+  build:
+    name: Build the installer
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # Panel, notices, sidecar, bundler — in that order, which is why it is one script and
+      # not four steps. The NSIS toolchain is downloaded by the bundler on first use.
+      - name: Build
+        run: node scripts/build-installer.mjs
+
+      # The version in the tag and the version in the tree must be the same thing. A tag that
+      # says v0.1.1 over a tree that says 0.1.0 produces a release whose file names do not
+      # match its own name, and nobody notices until somebody downloads it.
+      - name: Check the tag against the manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $manifest = (Get-Content crates/nazar-tray/tauri.conf.json | ConvertFrom-Json).version
+          if ($tag -ne $manifest) {
+            throw "tag $tag does not match tauri.conf.json $manifest"
+          }
+
+      - name: Collect the artefacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/bundle/nsis/*-setup.exe dist/
+          Get-ChildItem dist |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding utf8 dist/SHA256SUMS
+          Get-Content dist/SHA256SUMS
+
+      # Signed by GitHub, not by us: it records which workflow run, from which commit, built
+      # this exact file. Until SignPath approves a certificate this is the strongest thing a
+      # downloader can check, and `docs/CODE_SIGNING.md` tells them how.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*-setup.exe
+
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: nazar-tray-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # Written, reviewed, and switched off. `docs/CODE_SIGNING.md` explains the whole plan; the
+  # short version is that SignPath Foundation asks a project to be released and maintained
+  # before it applies, so the first release ships unsigned and this job waits.
+  #
+  # Turning it on is: delete `if: false`, add the four repository secrets, and change the
+  # README's "unsigned" paragraph. Three lines, reviewed on their own, rather than a new file
+  # written on release day.
+  sign:
+    name: Sign with SignPath (not enabled)
+    needs: build
+    if: false
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nazar-tray-windows
+          path: dist
+
+      # Submits the installer to SignPath, waits for a human to approve the signing request
+      # in their interface, and downloads the signed file back in its place. The approval is
+      # deliberately not automatable: it is the step that makes a signature mean somebody
+      # decided, rather than that a token existed.
+      - name: Submit for signing
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nazar-tray-windows-signed
+          path: dist-signed/*
+          if-no-files-found: error
+
+  # A draft. Not a release: the notes are read by a person, and publishing is their click.
+  draft:
+    name: Draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nazar-tray-windows
+          path: dist
+
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="docs/release-notes-${version}.md"
+          if [ ! -f "$notes" ]; then
+            echo "$notes is missing. docs/RELEASE.md step 5 writes it, before the tag." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "nazar-tray $version" \
+            --notes-file "$notes" \
+            dist/*

@@ -16,10 +16,17 @@ something reads badly to you, that is not a nuisance — it is the thing this ta
 |---|---|---|---|
 | `en.json` | English | maintainer | — (source language) |
 | `tr.json` | Türkçe | maintainer | maintainer (native) |
-| `zh.json` | 中文 (简体) | machine-translated, WP6 | not yet |
-| `ko.json` | 한국어 | machine-translated, WP6 | not yet |
-| `ru.json` | Русский | machine-translated, WP6 | not yet |
-| `es.json` | Español | machine-translated, WP6 | not yet |
+| `zh.json` | 中文 (简体) | machine-translated, WP6 and WP7 | not yet |
+| `ko.json` | 한국어 | machine-translated, WP6 and WP7 | not yet |
+| `ru.json` | Русский | machine-translated, WP6 and WP7 | not yet |
+| `es.json` | Español | machine-translated, WP6 and WP7 | not yet |
+
+**120 keys per file.** WP7 added thirteen: the settings page's status-line section, all under
+`settings.statusline.*`. They are the longest sentences in the product — the section has to
+say that installing nazar-tray does *not* touch Claude Code's settings and that this button
+does — so they are the first place a translation reads badly. The wrapper's own output shown
+underneath them is deliberately **not** translated: it is a unified diff of a JSON file and a
+path to a backup, and a translated diff is a picture of a diff.
 
 The status lives in this table rather than in a `_meta` key inside the files, and that is a
 finding rather than a preference. `crates/nazar-tray/src/i18n.rs` parses each file as

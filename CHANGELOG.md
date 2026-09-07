@@ -6,17 +6,117 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
-## [Unreleased]
+## [0.1.0] — unreleased
 
-Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader, the WP2
+The first release, and everything in it: the WP0 skeleton, the WP1 Codex reader, the WP2
 Claude reader with its status-line wrapper, the WP2b detailed-windows mode, the WP3 state
 model, refresh loop and writer, the WP4 icon and panel, the WP5 notifications, autostart and
-settings, and the WP6 translations: it builds, it tests, and **it is now something you can
-leave running** — it warns you before you hit the wall, it can start with Windows, everything
-about it can be changed from the panel, and it speaks six languages. What is left before a
-release is the installer (WP7).
+settings, the WP6 translations, and now the WP7 installer. It builds, it tests, **it is
+something you can leave running**, and it is now something you can hand to somebody else: a
+per-user NSIS package with no administrator prompt, winget manifests, a release workflow that
+drafts rather than publishes, and an uninstaller that takes the residue with it.
+
+**Not published.** No tag, no GitHub Release, no winget submission, no code-signing
+application — all four are a person's job and all four are written down in
+[docs/RELEASE.md](docs/RELEASE.md). The version stays `unreleased` in this file until that
+person moves it.
 
 ### Added
+
+- **The installer** (`node scripts/build-installer.mjs`). One NSIS package, **2.0 MB**, that
+  installs **per user** into `%LOCALAPPDATA%\nazar-tray` and asks for **no elevation** — a
+  tray application that watches one account's files has no business writing to Program Files
+  or to HKLM, and a package that needs a UAC prompt is a package many people never install.
+  It carries exactly four files: `nazar-tray.exe`, `nazar-statusline.exe`, `LICENSE.txt` and
+  `THIRD-PARTY-NOTICES.md`. No fixtures, no screenshots, no documentation, no debug symbols.
+  WebView2 is **not** bundled: `downloadBootstrapper` adds 0 MB and fetches Microsoft's own
+  installer only on a machine that does not already have the runtime, which is every Windows
+  10 1803 or newer.
+- **No MSI, and it was tried rather than assumed.** `cargo tauri build --bundles msi` works —
+  the bundler downloads WiX itself and produces a 2.70 MB package with no complaint. It is
+  left out because Tauri's WiX target has no `installMode`, so an MSI installs per machine
+  and needs administrator rights, and because `nsis.installerHooks` has no WiX equivalent:
+  the MSI could not restore the status line, remove the `StartupApproved` value, or take the
+  manufacturer key with it. A second installer that uninstalls worse than the first is not a
+  choice worth offering.
+- **The release profile is worth its build time.** `opt-level = "s"`, `lto = true`,
+  `codegen-units = 1`, `strip = true`, `panic = "abort"`, measured against Cargo's stock
+  release settings on the same source: the tray binary **11.95 MB → 4.79 MB**, the wrapper
+  **497 KB → 335 KB**, the installer **3.06 MB → 1.99 MB**. A third off the download for four
+  minutes of link time.
+- **The build is one script, because the order of four things matters** and three of them are
+  easy to forget: the panel (`generate_context!` reads `ui/dist` at compile time),
+  `THIRD-PARTY-NOTICES.md` (regenerated from the lock file, so the attribution cannot describe
+  a different dependency set from the one built), the sidecar, then the bundler. It prints the
+  artefacts with their sizes and SHA-256 at the end, because those are the numbers the release
+  checklist asks for and computing them by hand is how they end up wrong.
+- **The status-line wrapper ships beside the tray and installs nothing.**
+  `bundle.externalBin` puts `nazar-statusline.exe` next to `nazar-tray.exe`, and that is where
+  the installer stops. Claude Code's `settings.json` belongs to Claude Code and to its user;
+  an installer that edited it would be editing a file the user never mentioned, on a machine
+  where a broken `statusLine` is a broken prompt. Instead the settings page grew a section
+  that **asks twice**: the first button runs `install --dry-run` and prints the diff the
+  wrapper would make, and only the button that appears underneath it writes — on top of the
+  whole-file backup the installer takes anyway. Three commands (`statusline_status`,
+  `statusline_preview`, `statusline_apply`) which do nothing but run the binary beside them,
+  because there is one implementation of that edit, it is the one the command line runs, and
+  it is the one the tests cover.
+- **The uninstaller takes the residue with it.** Three things Tauri's own template cannot know
+  about, in `crates/nazar-tray/nsis/hooks.nsh`:
+  - it asks the wrapper to undo its own installation **before** deleting it, so a status line
+    pointing at a file that is about to vanish is restored rather than left dangling;
+  - it removes the `StartupApproved\Run` value Windows keeps beside the `Run` one — the
+    residue WP5 found and could only write down. It is inert, but it is a row carrying this
+    application's name in a list a person reads, left behind by an uninstall that claims to
+    leave nothing;
+  - it removes `%APPDATA%\nazar` when *delete application data* is ticked, which the stock
+    template could not do: it only knows the bundle identifier, and this application's
+    settings are not under it.
+
+  `~/.nazar` is never touched by any path through that file. Nazar reads `limits.json`, a user
+  may be running Nazar without ever having had this tray, and `chain.json` is the only
+  machine-readable record of the status line the wrapper replaced.
+- **`THIRD-PARTY-NOTICES.md`, generated** (`scripts/third-party-notices.mjs`) and shipped
+  inside the installer. 310 packages: the **normal** dependencies of the two binaries that
+  ship, resolved for the build target — build and dev dependencies are excluded because none
+  of their code is distributed. Where a crate offers a choice it names the one taken, and it
+  carries each licence's text once plus every crate's own copyright line, which is the part a
+  permissive licence actually asks to be kept and the part a generated notice most often
+  loses. `--check` fails CI when a dependency was added and the notices were not regenerated.
+  Written rather than installing `cargo about`, for the same reason
+  `scripts/check-licenses.mjs` exists: the file has to be regeneratable by anyone who can
+  build the product, with nothing beyond the toolchain the repository already needs.
+- **winget manifests** (`packaging/winget/`), which `winget validate` accepts:
+  `xfurqan0.nazar-tray`, installer type `nullsoft`, `Scope: user`, silent switches `/S` and
+  `/P`, `MinimumOSVersion` 10.0.17763.0, MIT, twelve tags and a release-notes URL.
+  `InstallerSha256` is sixty-four zeros until the release exists — it is the hash of a file
+  that gets uploaded in the step before, and `docs/RELEASE.md` step 6 is where the real one
+  goes in. winget is the install path this project points people at while it is unsigned: it
+  does not go through the browser, so it does not raise the warning a browser download does.
+- **`.github/workflows/release.yml`**, on tag `v*`. It re-runs the whole gate — a tag gets no
+  shortcut — builds the installer on a GitHub runner, checks the tag against the version in
+  the tree, writes `SHA256SUMS`, **attests the build provenance** with GitHub's own signature,
+  and creates a **draft** release. It does not publish and it does not tag: both are one-way
+  doors and both belong to a person. `workflow_dispatch` runs everything except the draft, for
+  rehearsing the pipeline before a tag exists.
+- **`docs/CODE_SIGNING.md`**, and the signing job that is written and switched off. SignPath
+  Foundation asks that a project already be released and be actively maintained, so the order
+  is release first, apply second: the first version ships unsigned and this page ships in
+  place of a certificate — what SmartScreen will say, what `winget install` avoids, and the
+  two things a downloader can check today. The job sits in the release workflow behind
+  `if: false` so the shape of the pipeline is reviewable now and turning it on is one reviewed
+  line rather than a new file written on release day. Azure Trusted Signing is recorded as the
+  one hard blocker: individuals are United States and Canada only, and the organisation list
+  does not include Türkiye.
+- **`docs/RELEASE.md`, `SECURITY.md`, `CONTRIBUTING.md`.** The first is the checklist, every
+  command in it for the maintainer and none of it run by CI or by anything else; it marks
+  where reversible stops. `SECURITY.md` is the file-by-file inventory — what is read, what is
+  never read, what is written, and the one key in another program's configuration this product
+  will ever touch, only when asked.
+- **A README that can be read by somebody who has never seen this repository**: how to install
+  it, what the status-line wrapper does and how to undo it by hand, and a **Known limits**
+  section that writes down the nine things this design cannot do, each one a consequence of a
+  decision explained somewhere in the repository rather than a surprise.
 
 - **Six languages: English, Türkçe, 中文, 한국어, Русский, Español** (`ui/locales/*.json`).
   Chinese, Korean, Russian and Spanish were **machine-translated first**, as planned; English
@@ -153,9 +253,11 @@ release is the installer (WP7).
   runtime and drops the handle, so the `on_activated` callback that `notify-rust` does offer
   on Windows never reaches an application, and `action_type_id` is mobile-only. The tray icon
   a click away is the workaround, and the toast names the window it is about.
-- **Disabling autostart leaves one registry value behind.** `auto-launch` removes the `Run`
-  value but not the matching `StartupApproved\Run` one. It is inert — Task Manager only lists
-  entries that exist in `Run` — but it is residue, and WP7's uninstaller should take it.
+- ~~**Disabling autostart leaves one registry value behind.**~~ **The uninstaller takes it.**
+  `auto-launch` removes the `Run` value but not the matching `StartupApproved\Run` one; the
+  NSIS uninstall hook now removes it. Turning the switch off *inside a running tray* still
+  leaves it — that is `auto-launch`'s behaviour, and it is inert, since Task Manager only
+  lists entries that exist in `Run`.
 - **The `Run` value is written unquoted.** `C:\Program Files\nazar-tray\nazar-tray.exe
   --hidden` works because Windows tries each space-delimited prefix, but it does depend on
   that.

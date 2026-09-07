@@ -42,13 +42,27 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "copyright": "Copyright (c) 2026 nazar-tray contributors",
+    "publisher": "qarpus",
+    "copyright": "Copyright (c) 2026 qarpus",
+    "licenseFile": "../../LICENSE",
     "category": "DeveloperTool",
     "shortDescription": "Claude Code and Codex quota in the system tray.",
     "longDescription": "A bead in your tray fills up as you burn through your 5-hour and weekly windows. Reads local files only: no credentials, no network by default.",
+    "externalBin": ["binaries/nazar-statusline"],
+    "resources": {
+      "../../LICENSE": "LICENSE.txt",
+      "../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "nsis/hooks.nsh",
+        "compression": "lzma",
+        "displayLanguageSelector": false,
+        "languages": ["English", "Turkish", "SimpChinese", "Korean", "Russian", "Spanish"]
       }
     }
   }

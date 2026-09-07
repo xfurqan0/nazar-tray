@@ -126,6 +126,15 @@ const autostartError = document.querySelector<HTMLElement>("[data-autostart-erro
 const hintResetNote = document.querySelector<HTMLElement>("[data-hint-reset-note]");
 const suggestionBox = document.querySelector<HTMLElement>("[data-suggestion]");
 
+// The status-line section. The only control on this page that changes a file belonging to
+// another program, which is why it is three buttons rather than a checkbox.
+const statuslineState = document.querySelector<HTMLElement>("[data-statusline-state]");
+const statuslinePreview = document.querySelector<HTMLButtonElement>("[data-statusline-preview]");
+const statuslineApply = document.querySelector<HTMLButtonElement>("[data-statusline-apply]");
+const statuslineCancel = document.querySelector<HTMLButtonElement>("[data-statusline-cancel]");
+const statuslineNote = document.querySelector<HTMLElement>("[data-statusline-note]");
+const statuslineOutput = document.querySelector<HTMLElement>("[data-statusline-output]");
+
 let ui: UiState = {
   theme: "nazar",
   mode: "system",
@@ -135,6 +144,20 @@ let ui: UiState = {
   demo: false,
   openSettings: false,
 };
+
+/**
+ * One run of `nazar-statusline`, as `crates/nazar-tray/src/statusline.rs` reports it.
+ *
+ * `outcome` is a key rather than a sentence, so the words on the page are translated like
+ * every other word; `output` is the wrapper's own bytes — a unified diff and a backup path
+ * — and is shown verbatim.
+ */
+interface StatuslineOutcome {
+  readonly outcome: "ok" | "missing" | "failed" | "readOnly";
+  readonly installed: boolean | null;
+  readonly output: string;
+  readonly program: string;
+}
 
 /** The settings as `get_config` last reported them, and the form's own working copy. */
 let settings: SettingsView | undefined;
@@ -183,6 +206,9 @@ function applyLanguage(): void {
   // The language picker's options are generated rather than written in the markup, so
   // `[data-i18n]` cannot reach them; they are rebuilt in the language that was just chosen.
   if (settings) paintForm();
+  // Same reason: the status-line section's state line and its first button say different
+  // things depending on the machine, so neither can carry a `data-i18n` attribute.
+  if (statusline) paintStatusline();
 }
 
 /** Paint the panel in the chosen theme, following the system for light and dark. */
@@ -509,6 +535,7 @@ async function loadSettings(): Promise<void> {
     return;
   }
   await loadAutostart();
+  await loadStatusline();
 }
 
 /** Ask the plugin whether we start with Windows. */
@@ -523,6 +550,83 @@ async function loadAutostart(): Promise<void> {
     autostartBox.disabled = true;
     if (autostartError) autostartError.hidden = false;
   }
+}
+
+// ------------------------------------------------------- the status-line wrapper
+
+/** What the machine last said, and whether a preview is waiting for a second click. */
+let statusline: StatuslineOutcome | undefined;
+let statuslinePending: "install" | "remove" | undefined;
+
+/** Draw the section from `statusline` and `statuslinePending`, in the current language. */
+function paintStatusline(): void {
+  if (!statuslineState || !statuslinePreview) return;
+
+  const missing = !statusline || statusline.outcome === "missing";
+  const installed = statusline?.installed ?? null;
+  // A run that was told what to look like says so on this page already, and the Rust side
+  // refuses the write in any case. Here it means: do not offer the button.
+  const readOnly = settings?.writable === false;
+
+  statuslineState.textContent = missing
+    ? t("settings.statusline.missing")
+    : installed === null
+      ? t("settings.statusline.unreadable")
+      : installed
+        ? t("settings.statusline.installed")
+        : t("settings.statusline.notInstalled");
+
+  // A machine with no wrapper beside the tray has nothing to offer: the button that would
+  // install it needs the very binary that is missing.
+  statuslinePreview.hidden = missing || readOnly || statuslinePending !== undefined;
+  statuslinePreview.textContent = installed
+    ? t("settings.statusline.remove")
+    : t("settings.statusline.install");
+
+  if (statuslineApply) {
+    statuslineApply.hidden = statuslinePending === undefined;
+    statuslineApply.textContent = t("settings.statusline.apply");
+  }
+  if (statuslineCancel) statuslineCancel.hidden = statuslinePending === undefined;
+
+  if (statuslineNote) {
+    const note =
+      statuslinePending !== undefined
+        ? "settings.statusline.preview"
+        : statusline?.outcome === "failed"
+          ? "settings.statusline.failed"
+          : readOnly && !missing
+            ? "settings.readOnly"
+            : undefined;
+    statuslineNote.hidden = note === undefined;
+    statuslineNote.textContent = note ? t(note) : "";
+    statuslineNote.classList.toggle("help-error", statusline?.outcome === "failed");
+  }
+
+  if (statuslineOutput) {
+    // `status` prints three or four lines of its own on every load, and showing them
+    // permanently would make the section a wall of text. The output is shown when it is
+    // the answer to something the user just pressed.
+    const interesting =
+      statuslinePending !== undefined || statusline?.outcome === "failed";
+    const text = interesting ? (statusline?.output.trimEnd() ?? "") : "";
+    statuslineOutput.hidden = text === "";
+    statuslineOutput.textContent = text;
+  }
+  reportHeight();
+}
+
+/** Ask the machine what Claude Code's status line is now. */
+async function loadStatusline(): Promise<void> {
+  if (!statuslineState) return;
+  try {
+    statusline = await invoke<StatuslineOutcome>("statusline_status");
+  } catch {
+    // Opened outside the tray, where the command does not exist.
+    return;
+  }
+  statuslinePending = undefined;
+  paintStatusline();
 }
 
 // ------------------------------------------------------------------ loading
@@ -666,6 +770,45 @@ autostartBox?.addEventListener("change", () => {
       autostartBox.checked = !wanted;
       if (autostartError) autostartError.hidden = false;
     });
+});
+
+// The status-line wrapper asks twice. The first press writes nothing and prints the diff;
+// the second is the one that edits Claude Code's settings file, and it only exists on the
+// page while a preview is on screen.
+statuslinePreview?.addEventListener("click", () => {
+  const remove = statusline?.installed === true;
+  statuslinePreview.disabled = true;
+  void invoke<StatuslineOutcome>("statusline_preview", { remove })
+    .then((outcome) => {
+      statusline = outcome;
+      // A dry run that failed changed nothing either, so there is nothing to confirm.
+      statuslinePending = outcome.outcome === "ok" ? (remove ? "remove" : "install") : undefined;
+    })
+    .catch(() => {})
+    .finally(() => {
+      statuslinePreview.disabled = false;
+      paintStatusline();
+    });
+});
+
+statuslineApply?.addEventListener("click", () => {
+  const remove = statuslinePending === "remove";
+  statuslineApply.disabled = true;
+  void invoke<StatuslineOutcome>("statusline_apply", { remove })
+    .then((outcome) => {
+      statusline = outcome;
+      statuslinePending = undefined;
+    })
+    .catch(() => {})
+    .finally(() => {
+      statuslineApply.disabled = false;
+      paintStatusline();
+    });
+});
+
+statuslineCancel?.addEventListener("click", () => {
+  statuslinePending = undefined;
+  void loadStatusline();
 });
 
 document.querySelector("[data-reset-hint]")?.addEventListener("click", () => {

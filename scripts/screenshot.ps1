@@ -14,6 +14,7 @@
 #
 #   powershell -File scripts/screenshot.ps1                      # every documented shot
 #   powershell -File scripts/screenshot.ps1 -Scale 2 -Theme nazar -Mode dark -Out x.png
+#   powershell -File scripts/screenshot.ps1 -View settings -Scroll 6 -Out x.png
 #
 # Requires the debug or release binary to have been built already.
 
@@ -25,6 +26,7 @@ param(
     [ValidateSet('on', 'off')] [string] $Hint = 'off',
     [ValidateSet('on', 'off')] [string] $Offer = 'off',
     [ValidateSet('quota', 'settings')] [string] $View = 'quota',
+    [int] $Scroll = 0,
     [string] $Locale = 'en',
     [string] $Out = '',
     # Where the cursor is put before the panel opens: the panel appears just above it, the
@@ -57,6 +59,18 @@ public class NazarShot {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, IntPtr extra);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+
+    /// One notch of the wheel, downwards, wherever the pointer is. The settings page is
+    /// taller than the panel window it lives in, so a section near its end cannot be
+    /// photographed without scrolling to it.
+    public static void WheelDown(int notches) {
+        for (int i = 0; i < notches; i++) {
+            mouse_event(0x0800, 0, 0, -120, IntPtr.Zero);
+            System.Threading.Thread.Sleep(60);
+        }
+    }
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out RECT value, int size);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -96,7 +110,7 @@ public class NazarShot {
 }
 
 function Capture-Panel {
-    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Offer, [string] $View, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY)
+    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Offer, [string] $View, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY, [int] $Scroll = 0)
 
     $arguments = @('--demo', '--theme', $Theme, '--mode', $Mode, '--hint', $Hint, '--offer', $Offer, '--locale', $Locale)
     if ($View -eq 'settings') { $arguments += @('--view', 'settings') }
@@ -123,6 +137,19 @@ function Capture-Panel {
         $width = $rect.Right - $rect.Left
         $height = $rect.Bottom - $rect.Top
 
+        # The settings page is taller than the window, so a section near its end needs the
+        # wheel. The pointer is parked over the middle of the panel for the duration and put
+        # back afterwards, because where it is decides which element receives the scroll.
+        if ($Scroll -gt 0) {
+            [void][NazarShot]::SetCursorPos(($rect.Left + [int]($width / 2)), ($rect.Top + [int]($height / 2)))
+            [void][NazarShot]::SetForegroundWindow($window)
+            Start-Sleep -Milliseconds 200
+            [NazarShot]::WheelDown($Scroll)
+            Start-Sleep -Milliseconds 500
+            [void][NazarShot]::SetCursorPos($CursorX, $CursorY)
+            Start-Sleep -Milliseconds 200
+        }
+
         $bitmap = New-Object System.Drawing.Bitmap $width, $height
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
@@ -144,7 +171,7 @@ function Capture-Panel {
 }
 
 if ($Out) {
-    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Offer $Offer -View $View -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY
+    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Offer $Offer -View $View -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY -Scroll $Scroll
     return
 }
 
@@ -160,7 +187,9 @@ $shots = @(
     @{ Scale = 1.0; Theme = 'graphite'; Mode = 'light'; Hint = 'off'; Out = 'docs/screenshots/wp4-100-graphite-light.png' },
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'on'; Out = 'docs/screenshots/wp4-100-first-run.png' },
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Out = 'docs/screenshots/wp5-100-settings.png' },
-    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; Offer = 'on'; Out = 'docs/screenshots/wp5-100-offer.png' }
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; Offer = 'on'; Out = 'docs/screenshots/wp5-100-offer.png' },
+    # WP7: the status-line section, which sits below the fold of the settings page.
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Scroll = 6; Out = 'docs/screenshots/wp7-100-statusline.png' }
 )
 
 # WP6: the same panel in all six languages. The point of the set is the *width* — the panel
@@ -181,5 +210,6 @@ foreach ($shot in $shots) {
     $shotView = if ($shot.ContainsKey('View')) { $shot.View } else { 'quota' }
     $shotOffer = if ($shot.ContainsKey('Offer')) { $shot.Offer } else { 'off' }
     $shotLocale = if ($shot.ContainsKey('Locale')) { $shot.Locale } else { $Locale }
-    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $shotLocale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY
+    $shotScroll = if ($shot.ContainsKey('Scroll')) { $shot.Scroll } else { 0 }
+    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $shotLocale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY -Scroll $shotScroll
 }

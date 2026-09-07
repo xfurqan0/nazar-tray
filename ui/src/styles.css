@@ -649,6 +649,37 @@ input[type="checkbox"] {
   cursor: text;
 }
 
+/* Whether the status-line wrapper is installed. A sentence rather than a checkbox: the
+   answer has three values — yes, no, and "the settings file would not parse" — and a
+   checkbox can only show two of them. */
+.statusline-state {
+  display: block;
+  margin: 2px 0 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.45;
+}
+
+/* The wrapper's own output: a unified diff of a JSON file, and the path of the backup it
+   took. Monospaced because a diff is columns, scrollable because a settings file can hold a
+   long command, and selectable because copying it into an issue is the point. */
+.console {
+  max-height: 132px;
+  margin: 2px 0 0;
+  padding: 7px 9px;
+  overflow: auto;
+  border: 1px solid var(--color-node-border, #24405f);
+  border-radius: 8px;
+  background: var(--color-node, #0f2138);
+  color: var(--color-text-muted, #a8bfdc);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.4;
+  white-space: pre;
+  user-select: text;
+  cursor: text;
+}
+
 .about {
   display: flex;
   align-items: baseline;

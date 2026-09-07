@@ -6,6 +6,11 @@
 crates/nazar-tray/gen/
 src-tauri/gen/
 
+# The sidecar the bundler picks up: a copy of target/release/nazar-statusline.exe under the
+# target-triple name Tauri's externalBin expects. Built by scripts/build-installer.mjs, and a
+# build artefact like everything else in target/.
+crates/nazar-tray/binaries/
+
 # Node and the built panel
 node_modules/
 dist/

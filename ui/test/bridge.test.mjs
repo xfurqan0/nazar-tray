@@ -20,16 +20,31 @@ const rustMain = read("crates/nazar-tray/src/main.rs");
 const rustState = read("crates/nazar-tray/src/state.rs");
 const panel = read("ui/src/main.ts");
 
-/** Every `#[tauri::command]` the Rust side defines. */
-const defined = [...rustState.matchAll(/#\[tauri::command\]\s*\npub fn (\w+)/g)].map((m) => m[1]);
+/**
+ * Every module that may define a command, and the reason this is a written list.
+ *
+ * The registered commands are the front end's whole surface: they are what a webview can
+ * ask this process to do. Finding them by walking `src/` would let the surface grow without
+ * anyone noticing, so a new command module is a line here as well as a line in `main.rs`.
+ * WP5 had one, the settings and the snapshot. WP7 added the second: the status-line wrapper,
+ * the only part of this product that edits a file belonging to another program.
+ */
+const COMMAND_MODULES = ["state.rs", "statusline.rs"];
 
-/** Every command named in `generate_handler!`. */
+/** Every `#[tauri::command]` the Rust side defines. */
+const defined = COMMAND_MODULES.flatMap((file) =>
+  [...read(`crates/nazar-tray/src/${file}`).matchAll(/#\[tauri::command\]\s*\npub fn (\w+)/g)].map(
+    (match) => match[1],
+  ),
+);
+
+/** Every command named in `generate_handler!`, with the module path taken off. */
 const registered = (() => {
   const block = /generate_handler!\[([\s\S]*?)\]/.exec(rustMain);
   assert.ok(block, "main.rs has no generate_handler! block");
   return block[1]
     .split(",")
-    .map((name) => name.trim().replace(/^state::/, ""))
+    .map((name) => name.trim().replace(/^\w+::/, ""))
     .filter(Boolean);
 })();
 

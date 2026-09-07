@@ -172,6 +172,32 @@
           ></p>
         </fieldset>
 
+        <!--
+          The status-line wrapper. This is the only place in the product that offers to
+          edit a file belonging to another program, which is why it asks twice: the first
+          button runs `nazar-statusline install --dry-run` and prints the diff, and only the
+          button that appears underneath it writes anything. The installer takes its own
+          backup on top of that. Installing nazar-tray does none of this.
+        -->
+        <fieldset class="group">
+          <legend data-i18n="settings.section.statusline"></legend>
+          <p class="help" data-i18n="settings.statusline.help"></p>
+          <p class="row statusline-state" data-statusline-state></p>
+          <div class="row">
+            <button type="button" class="button" data-statusline-preview></button>
+            <button type="button" class="button primary" data-statusline-apply hidden></button>
+            <button
+              type="button"
+              class="button"
+              data-statusline-cancel
+              hidden
+              data-i18n="settings.statusline.cancel"
+            ></button>
+          </div>
+          <p class="help" data-statusline-note hidden></p>
+          <pre class="console" data-statusline-output hidden></pre>
+        </fieldset>
+
         <fieldset class="group">
           <legend data-i18n="settings.section.detailed"></legend>
           <label class="row check">
