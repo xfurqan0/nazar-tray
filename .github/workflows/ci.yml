@@ -41,6 +41,12 @@ jobs:
         working-directory: ui
         run: npm ci
 
+      # tauri::generate_context! reads frontendDist at compile time, so the panel
+      # must be built before clippy or cargo test can even expand the macro.
+      - name: Build the panel
+        working-directory: ui
+        run: npm run build
+
       - name: Check dependency licences
         run: node scripts/check-licenses.mjs
 
