@@ -1,24 +1,26 @@
 //! nazar-tray — the system-tray face of Nazar.
 //!
-//! WP0 wires the shell and nothing else: a tray icon, a frameless popup panel that opens
-//! near the cursor on either mouse button, and a panel that closes itself on Esc or when
-//! it loses focus. There is no reader, no state model and no writer yet; the panel says
-//! so in as many words.
+//! WP0 wired the shell: a tray icon, a frameless popup panel that opens near the cursor
+//! on either mouse button, and a panel that closes itself on Esc or when it loses focus.
+//! WP1 adds the first reader — Codex's quota, taken from its own session logs — and a
+//! `--print` flag that dumps the `limits.json` document it produces. The tray itself
+//! still shows a static bead; wiring the reader into the icon and the panel is WP3 and
+//! WP4.
 //!
-//! What this binary deliberately does **not** do, and the package that will add it:
+//! What this binary deliberately does **not** do yet, and the package that will add it:
 //!
 //! | Behaviour | Package |
 //! |---|---|
-//! | Read Codex `rollout-*.jsonl` | WP1 |
 //! | Read Claude's status-line capture | WP2 |
 //! | Detailed windows from the usage endpoint (opt-in) | WP2b |
-//! | Binding window, staleness, `limits.json` writing | WP3 |
+//! | Staleness, local countdown, writing `~/.nazar/limits.json` | WP3 |
 //! | Bead drawn per scale factor, real panel contents | WP4 |
 //! | Notifications, autostart, settings | WP5 |
 
 // A tray app has no console. Kept for debug builds so `cargo tauri dev` still prints.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cli;
 mod panel;
 mod tray;
 
@@ -27,6 +29,12 @@ use tauri::{Manager, WindowEvent};
 use panel::PanelState;
 
 fn main() {
+    // Checked before anything is created: `--print` must not open a window, touch the
+    // tray, or leave a process behind.
+    if cli::run_if_requested() {
+        return;
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             app.manage(PanelState::default());
