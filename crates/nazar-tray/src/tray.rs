@@ -329,6 +329,61 @@ mod tests {
     }
 
     #[test]
+    fn the_tooltip_reads_as_a_sentence_in_all_six_languages() {
+        // One picture of the tooltip per language, written down rather than described.
+        // The tooltip is the one piece of this product's text nobody can screenshot — the
+        // shell draws it, and it appears on hover — so this test is its documentation as
+        // well as its regression guard.
+        //
+        // Three things are being checked at once: the units come from the locale file
+        // (`h` is not `ч`), the percent sign sits where the language puts it (Turkish
+        // writes `%88`, Chinese writes `88%` with no space), and the whole thing still
+        // fits in the 127 characters Windows will show.
+        let mut scoped = window("seven_day_fable", Some(88.4), 10080, true);
+        scoped.model = Some("Fable".to_owned());
+        scoped.detailed = true;
+        let view = view(vec![
+            provider("claude", vec![scoped]),
+            provider("codex", vec![window("secondary", Some(70.0), 10080, true)]),
+        ]);
+
+        for (locale, expected) in [
+            (
+                "en",
+                "Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)",
+            ),
+            (
+                "tr",
+                "Claude Fable hafta %88 · Codex hafta %70 (2 sa 10 dk sonra sıfırlanır)",
+            ),
+            (
+                "zh",
+                "Claude Fable 周 88% · Codex 周 70% （2 小时 10 分后重置）",
+            ),
+            (
+                "ko",
+                "Claude Fable 주 88% · Codex 주 70% (2시간 10분 후 초기화)",
+            ),
+            (
+                "ru",
+                "Claude Fable нед. 88 % · Codex нед. 70 % (сброс через 2 ч 10 мин)",
+            ),
+            (
+                "es",
+                "Claude Fable sem. 88 % · Codex sem. 70 % (se restablece en 2 h 10 min)",
+            ),
+        ] {
+            let text = tooltip(&view, &i18n::catalog(locale));
+            assert_eq!(text, expected, "the {locale} tooltip");
+            assert!(
+                text.chars().count() <= TOOLTIP_LIMIT,
+                "the {locale} tooltip is {} characters, and Windows shows {TOOLTIP_LIMIT}",
+                text.chars().count()
+            );
+        }
+    }
+
+    #[test]
     fn the_tooltip_names_each_providers_binding_window_and_the_worst_reset() {
         let catalog = i18n::catalog("en");
         let text = tooltip(

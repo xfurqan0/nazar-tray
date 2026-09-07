@@ -39,6 +39,20 @@ body {
   margin: 0;
 }
 
+/*
+ * Korean breaks at spaces, not between syllables.
+ *
+ * CSS's default `word-break` treats Hangul the way it treats Chinese, and for Chinese that
+ * is right — it has no spaces to break at, so a paragraph with breaking suppressed would
+ * have nowhere to wrap and would overflow the panel. Korean does have spaces, and the
+ * default was splitting `않습니다` across two lines in the settings help text. `keep-all` is
+ * the fix, and it is scoped to the language for the reason above. `main.ts` sets
+ * `root.lang` from the resolved locale, which is what this selector reads.
+ */
+:root[lang="ko"] {
+  word-break: keep-all;
+}
+
 body {
   background: var(--color-panel, #0e2340);
   color: var(--color-text, #eaf2ff);
@@ -163,10 +177,21 @@ body {
   background: var(--color-node, #102a4c);
 }
 
+/*
+ * The card's first line: mark, name, plan, and how old the reading is.
+ *
+ * It wraps, and that is a WP6 fix rather than a decoration. English fits
+ * "stale · last data 1 h 10 m ago" beside "Codex plus"; Russian's
+ * "устарело · последние данные 1 ч 10 мин назад" does not, and before this it was cut off
+ * with an ellipsis — a translation clipping itself, which is the failure the language
+ * screenshots exist to catch. Wrapping lets the freshness drop to a line of its own, and
+ * because the panel measures itself after every render the window grows to match.
+ */
 .provider-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
+  gap: 3px 7px;
 }
 
 /*
@@ -190,14 +215,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Pushed to the right of the line it shares, and allowed on to a line of its own when the
+ * language needs one. `white-space: nowrap` stays: the sentence is short enough that
+ * breaking it mid-phrase would read worse than moving the whole thing down.
+ */
 .age {
   margin-left: auto;
-  overflow: hidden;
   color: var(--color-text-faint, #7d96b5);
   font-size: var(--type-size-xs, 10px);
   letter-spacing: var(--type-tracking-wide, 0.07em);
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* An old reading is not a wrong one, but it must not look as confident as a fresh one —
@@ -345,11 +373,25 @@ body {
 
 /* ------------------------------------------------------------------ footer */
 
+/*
+ * The row of actions, and one more WP6 fix.
+ *
+ * It wraps, and the buttons in it do not. Korean and Russian labels are wider than their
+ * English originals, and a flex row that could only shrink was breaking `설정` across two
+ * lines — mid-word, because the default `word-break` treats Hangul the way it treats
+ * Chinese. A whole button moving to a second row is the right answer to a row that has run
+ * out of width; splitting a two-syllable word down the middle never is.
+ */
 .foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding-top: 2px;
+}
+
+.foot .button {
+  white-space: nowrap;
 }
 
 .button {

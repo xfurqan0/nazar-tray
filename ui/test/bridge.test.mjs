@@ -209,8 +209,18 @@ test("the panel asks for the fields the derived view actually carries", () => {
 /** Message keys look like `panel.window.weekly`: a namespace and at least one dot. */
 const KEY = /"((?:app|panel|tray|time|window|alert|settings)\.[A-Za-z0-9_.]+)"/g;
 
-test("every message key either side names is in the locale files", () => {
-  const english = JSON.parse(read("ui/locales/en.json"));
+test("every message key either side names is in all six locale files", () => {
+  // Since WP6 the six catalogues are level, so a key is checked against every one of them
+  // rather than against English alone: a key the tray draws and Korean lacks would be an
+  // English word in an otherwise Korean tray, which is the half-translated state WP6 rules
+  // out. The Rust half is checked here *and* in `i18n.rs`, from opposite directions — this
+  // reads the keys out of the sources, that one reads them out of the compiled catalogues.
+  const catalogs = Object.fromEntries(
+    ["en", "tr", "zh", "ko", "ru", "es"].map((locale) => [
+      locale,
+      JSON.parse(read(`ui/locales/${locale}.json`)),
+    ]),
+  );
 
   const sources = [
     ...readdirSync(resolve(REPO, "ui/src"))
@@ -222,13 +232,15 @@ test("every message key either side names is in the locale files", () => {
     "crates/nazar-tray/src/alerts.rs",
   ];
 
+  const named = new Set();
   for (const source of sources) {
     const text = read(source);
     const keys = source.endsWith(".html")
       ? [...text.matchAll(/data-i18n="([^"]+)"/g)].map((match) => match[1])
       : [...text.matchAll(KEY)].map((match) => match[1]);
     for (const key of keys) {
-      assert.ok(key in english, `${source} names ${key}, which en.json does not have`);
+      assert.ok(key in catalogs.en, `${source} names ${key}, which en.json does not have`);
+      named.add(key);
     }
   }
 
@@ -239,7 +251,13 @@ test("every message key either side names is in the locale files", () => {
     "tray.provider.claude",
     "tray.provider.codex",
   ]) {
-    assert.ok(key in english, `${key} is built at run time and must exist`);
+    assert.ok(key in catalogs.en, `${key} is built at run time and must exist`);
+    named.add(key);
+  }
+
+  for (const [locale, catalog] of Object.entries(catalogs)) {
+    const missing = [...named].filter((key) => !(key in catalog)).sort();
+    assert.deepEqual(missing, [], `${locale}.json does not translate keys the code draws`);
   }
 });
 

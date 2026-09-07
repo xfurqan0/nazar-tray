@@ -4,12 +4,12 @@
 
 A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **WP5: notifications, autostart and settings.** Both readers are done, the refresh
-> loop runs inside the tray process, `~/.nazar/limits.json` is written — atomically, by one
-> process, and only when the numbers have actually moved — the tray has a face, and it is now
-> something you can leave running: it warns you before you hit the wall, it can start with
-> Windows, and everything about it can be changed from the panel. What is left is the four
-> machine-translated languages (WP6) and the installer (WP7). Not released, and not yet
+> Status: **WP6: six languages.** Both readers are done, the refresh loop runs inside the
+> tray process, `~/.nazar/limits.json` is written — atomically, by one process, and only when
+> the numbers have actually moved — the tray has a face, it warns you before you hit the wall,
+> it can start with Windows, everything about it can be changed from the panel, and it now
+> speaks **English, Türkçe, 中文, 한국어, Русский and Español**, switchable without a restart.
+> All that is left before a release is the installer (WP7). Not released, and not yet
 > installable from anywhere. Windows first; macOS and Linux builds later from the same
 > codebase. See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and
 > [CHANGELOG.md](CHANGELOG.md) for what has landed.
@@ -116,6 +116,27 @@ tray refreshes itself every minute, notices a new reading within five seconds, n
 your laptop has been asleep, and writes the file only when something changed — so a consumer
 watching it is woken by news rather than by a timer.
 
+## Languages
+
+**English · Türkçe · 中文 · 한국어 · Русский · Español.** nazar-tray follows your Windows
+display language on the first run and can be set to any of the six in the settings — the
+panel, the tray tooltip, the context menu and the notifications all change **without a
+restart**.
+
+![The same panel in Russian, Korean and Chinese](docs/screenshots/wp6-100-ru.png)
+
+<sub>The panel measures itself after every render and asks for a window that fits, so a
+translation longer than the English original moves the layout rather than clipping it. One
+picture per language: [`docs/screenshots/wp6-100-*.png`](docs/screenshots).</sub>
+
+**Corrections are welcome as pull requests.** English and Turkish were written by hand;
+Chinese, Korean, Russian and Spanish were **machine-translated first** and none has been
+reviewed by a native speaker yet. Every string in the product lives in one flat JSON file per
+language under [`ui/locales/`](ui/locales/README.md) — the panel bundles them and the Rust
+side compiles the same files in, so there is no second copy of a word to keep in step. That
+README has the review table, the rules a locale file has to keep, and what is deliberately
+left in English.
+
 ## Roadmap
 
 - v1: Windows (winget + GitHub Releases), Claude Code + Codex
@@ -207,7 +228,9 @@ rather than upscaled: WebView2 is passed `--force-device-scale-factor` and the w
 multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`, `-Hint`, `-Offer`,
 `-View`, `-Locale` and `-Out` take one picture of one state. `-Hint` and `-Offer` exist
 because the first-run tip and the Max-plan offer are each shown once per machine, which
-makes them the states a screenshot cannot otherwise reach twice.
+makes them the states a screenshot cannot otherwise reach twice. The documented set ends with
+the same panel in all six languages (`wp6-100-*.png`), which is how a translation that no
+longer fits the layout gets noticed.
 
 **Watching a threshold being crossed**
 

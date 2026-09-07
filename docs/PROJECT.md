@@ -119,7 +119,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP3 ✅ | **State model**: binding window across passive + detailed windows, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | ~~Property tests on window selection and reset math across time zones~~ — **landed 2026-09-07**, and the refresh loop, the write-on-change rule and the advisory lock came with it |
 | WP4 ✅ | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | ~~Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur~~ — **landed 2026-09-07**. Screenshots taken at all three scales; the panel opens on a left click and from the menu's `Open` on a right click (see the log below), and closes on Esc and on blur. Quit came with it. |
 | WP5 ✅ | **Notifications, autostart, settings**: thresholds 60/85/100 once per window per reset, autostart toggle, language override, theme, per-provider enable | ~~Toast appears exactly once when crossing 85 %; survives sleep/wake~~ — **landed 2026-09-07**. Verified live with `--demo-cross`: one toast at 60 % on arrival, one at 85 % for the crossing, **nothing** for the repeat, one more at 85 % after the reset. Sleep and wake are a test on an injected clock, and a restart on a real machine fired nothing the first run had already said. |
-| WP6 | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | Every UI string comes from locale files; no hard-coded text in code |
+| WP6 ✅ | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | ~~Every UI string comes from locale files; no hard-coded text in code~~ — **landed 2026-09-07**, and the criterion is now two tests that grep the sources rather than a promise |
 | WP7 | **Distribution**: NSIS/MSI installer via Tauri bundler, winget manifest, SignPath Foundation application, README (EN) with GIF, CHANGELOG, first release checklist | Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files |
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
 
@@ -336,3 +336,75 @@ Going public happens after WP7, not before.
   space-delimited prefix. **`%APPDATA%\nazar` still does not exist and `~/.nazar/limits.json`
   has the same SHA it started with**: every live check ran under `--demo` or under a
   throwaway `NAZAR_HOME`.
+- 2026-09-07 — **WP6 landed: six languages, and a criterion that is now a test.**
+  **(1) The translations.** ZH, KO, RU and ES filled in, **107 keys each**, machine-translated
+  first exactly as section 3 says, with the review status and the correction route in
+  `ui/locales/README.md` and a paragraph in the README pointing at it. Placeholders are
+  identical per key across all six and free to be reordered; product names — `nazar-tray`,
+  `Claude Code`, `Codex`, `Nazar` — are untranslated everywhere; and each language's own
+  conventions are kept rather than English's, which is most visible on the percent sign
+  (`88 %` in English, Russian and Spanish, `%88` in Turkish, `88%` in Chinese and Korean) and
+  on the unit abbreviations the countdowns are built from.
+  **(2) The `_meta` idea was tried and rejected, with evidence.** A `{"language": …,
+  "machineTranslated": true}` object inside each file would have been convenient. It is also
+  a **silent catastrophe**: `crates/nazar-tray/src/i18n.rs` parses each file as
+  `BTreeMap<String, String>` and turns a parse failure into an *empty* catalogue — the right
+  behaviour, since a damaged translation must not stop the tray from starting — so adding it
+  to `zh.json` dropped Chinese out of `available()` altogether and everybody who had chosen it
+  would have got English with no error anywhere. Watched happen, reverted, and now a test
+  fails on a key beginning with `_` and on any value that is not a string. The metadata is a
+  table in `ui/locales/README.md`, where nothing has to parse it.
+  **(3) No plural forms, by construction rather than by luck.** Every counted string in this
+  product renders its number beside a unit **abbreviation** — `4 d 2 h`, `2 sa 10 dk`,
+  `2 小时 10 分`, `2시간 10분`, `2 ч 10 мин`, `2 h 10 min` — and an abbreviation is the same
+  word after 1 as after 5, which is what carries Russian's three forms (1, then 2–4, then 5 and
+  up, with 11–14 in neither of the first two) on a single template. `pluralCategory` and
+  `plural` in `ui/src/i18n.ts` implement that rule for the first counted *word* anybody
+  writes, and a test **freezes the seven keys that carry a count**, so an eighth fails the
+  suite until somebody chooses between an abbreviation and the helper. **RTL is out of scope
+  and written down as owed work**: all six languages are left to right, the panel sets
+  `<html lang>` and never `dir`, and a test fails if an RTL tag is added to `LOCALES` before
+  `styles.css` — still full of physical `margin-left` and `text-align: right` — has been
+  audited.
+  **(4) One source for the Rust side, which it already was.** WP5's `include_str!` of the same
+  six `ui/locales/*.json` needed no refactor: there has never been a Rust translation table.
+  What is new is the proof — a test **scans this crate's own sources** for every
+  `catalog.text(…)` and `catalog.format(…)`, expands the two keys built from a provider's
+  name, and asserts each exists in all six catalogues. The tooltip and the toast are then
+  written out per language as assertions, because they are the two pieces of this product's
+  text nobody can screenshot: the shell draws the tooltip on hover and Windows owns the toast.
+  **(5) The acceptance criterion, as two greps.** *"Every UI string comes from locale files;
+  no hard-coded text in code"* is now `ui/test/i18n.test.mjs`, which strips comments, Rust
+  `#[cfg(test)]` modules and `*/tests.rs` files, blanks the argument of every `eprintln!`,
+  `println!`, `panic!` and `.expect(…)`, and fails on any remaining literal that looks like a
+  sentence. **The allow-list is three entries and each has a reason**: `"pill detailed"` and
+  `"pill plan"` are CSS class names, and `"no quota line in the newest session log"` is the
+  demo's stand-in for a reader's own error sentence — the one thing the panel prints verbatim,
+  because it says which file said what and no translation can know that in advance. The
+  command line stays English deliberately: `--print` emits JSON a script parses and
+  `--autostart` answers a maintainer's question; there is no `--help` in this build, and when
+  WP8 adds one it stays English for the same reason.
+  **(6) Three layout bugs the six pictures found, all real.** Russian's
+  *"устарело · последние данные 1 ч 10 мин назад"* was being **cut off with an ellipsis** in
+  the provider card's first line, where English fits; that line now wraps, so the freshness
+  drops to a line of its own and the panel — which measures itself after every render — grows
+  to match. Korean's footer was breaking `설정` **down the middle**, so the footer now wraps
+  whole buttons. And the settings help text was breaking `않습니다` the same way, because CSS's
+  default `word-break` treats Hangul as it treats Chinese — correct for Chinese, which has no
+  spaces to break at and would otherwise have nowhere to wrap, and wrong for Korean, which
+  does; `word-break: keep-all` is now set on `:root[lang="ko"]` and nowhere else. **Not one of
+  the three was findable in English or Turkish**, which is the argument for taking the
+  pictures rather than trusting the parity tests. `docs/screenshots/wp6-100-{en,tr,zh,ko,ru,es}.png`,
+  all 362 px wide and 443–480 px tall, all from `scripts/screenshot.ps1`'s documented set.
+  **(7) The WP2b flake, fixed at the cause.** `MockServer` recorded a request **after**
+  answering it, so a test that read `requests()` the moment `refresh()` returned could beat
+  the worker thread to the push — about one full-suite run in ten on this machine, and it hit
+  whichever of the four tests that inspect requests happened to lose. The record is now taken
+  **before the response is written**, while the client is still blocked on `read`, so a client
+  that has an answer is a client whose request is already visible. Ordering, not a `sleep`: a
+  wait would only have widened the window on a fast machine and still lost on a loaded one.
+  Measured either side — **4 failures in 40 runs before, 0 in 30 after**.
+  **No new dependencies, and not one line of new behaviour in Rust**: WP6 is six JSON files,
+  two CSS rules, a plural helper and one localised label in TypeScript, and the tests that
+  hold all of it. **Four new tests in Rust (448 in the workspace, and three existing ones grew
+  from two languages to six) and 7 more in the panel (75).**

@@ -140,8 +140,17 @@ test("a language the build cannot paint is refused rather than quietly ignored",
   assert.deepEqual(
     validate({ ...base, locale: "ko" }, LANGUAGES),
     ["locale"],
-    "a WP6 language whose catalogue is still empty is not offered, so it is not accepted",
+    "the list Rust sends is the whole rule: a language it did not offer is refused, whatever \
+     catalogues this build happens to carry",
   );
+  // And the six it does offer are all accepted, which is what changed in WP6.
+  for (const locale of ["en", "tr", "zh", "ko", "ru", "es"]) {
+    assert.deepEqual(
+      validate({ ...base, locale }, ["en", "tr", "zh", "ko", "ru", "es"]),
+      [],
+      `${locale} is a language v1 ships and the form must accept it`,
+    );
+  }
 });
 
 test("quiet hours need two times, and a typo is a refusal rather than silence", () => {

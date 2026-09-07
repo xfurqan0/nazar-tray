@@ -228,6 +228,39 @@ mod tests {
     }
 
     #[test]
+    fn and_in_the_four_languages_wp6_translated() {
+        // The toast is two sentences assembled from four keys — the title, the window's
+        // name, the percentage's place, and the duration's units — so a language that had
+        // three of them would produce a sentence half in English. Both lines are written
+        // out per language for the same reason the tooltip's are: a notification cannot be
+        // screenshotted after the fact.
+        for (locale, title, body) in [
+            ("zh", "Claude Code · 每周窗口 85%", "2 小时 10 分后重置"),
+            ("ko", "Claude Code · 주간 구간 85%", "2시간 10분 후 초기화"),
+            (
+                "ru",
+                "Claude Code · недельное окно 85 %",
+                "Сброс через 2 ч 10 мин",
+            ),
+            (
+                "es",
+                "Claude Code · ventana semanal 85 %",
+                "Se restablece en 2 h 10 min",
+            ),
+        ] {
+            let said = toast(
+                &i18n::catalog(locale),
+                &alert("seven_day", Some(10080), 85.0, Some(7_800_000)),
+            );
+            assert_eq!(
+                said,
+                (title.to_owned(), body.to_owned()),
+                "the {locale} toast"
+            );
+        }
+    }
+
+    #[test]
     fn a_five_hour_window_and_a_model_scoped_one_are_named_differently() {
         let catalog = i18n::catalog("en");
         let (title, _) = toast(&catalog, &alert("five_hour", Some(300), 60.0, None));

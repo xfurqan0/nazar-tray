@@ -10,14 +10,42 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader, the WP2
 Claude reader with its status-line wrapper, the WP2b detailed-windows mode, the WP3 state
-model, refresh loop and writer, the WP4 icon and panel, and the WP5 notifications, autostart
-and settings: it builds, it tests, and **it is now something you can leave running** — it
-warns you before you hit the wall, it can start with Windows, and everything about it can be
-changed from the panel. What is left before a release is the four machine-translated
-languages (WP6) and the installer (WP7).
+model, refresh loop and writer, the WP4 icon and panel, the WP5 notifications, autostart and
+settings, and the WP6 translations: it builds, it tests, and **it is now something you can
+leave running** — it warns you before you hit the wall, it can start with Windows, everything
+about it can be changed from the panel, and it speaks six languages. What is left before a
+release is the installer (WP7).
 
 ### Added
 
+- **Six languages: English, Türkçe, 中文, 한국어, Русский, Español** (`ui/locales/*.json`).
+  Chinese, Korean, Russian and Spanish were **machine-translated first**, as planned; English
+  and Turkish were written by hand. **107 keys in every file**, and the panel, the tray
+  tooltip, the context menu and the Windows notifications all read the same six files — the
+  panel bundles them, the Rust side compiles the same paths in with `include_str!`, and there
+  is no translation table anywhere in the Rust sources. Changing the language applies
+  **without a restart**. Each language keeps its own conventions rather than English's: the
+  percent sign sits where the language puts it (`88 %`, `%88`, `88%`) and the countdowns are
+  built from each language's own unit abbreviations. **Corrections are welcome as pull
+  requests** — the review table and the rules a locale file has to keep are in
+  [`ui/locales/README.md`](ui/locales/README.md).
+- **No plural machinery, and that is deliberate.** Every counted string renders its number
+  beside a unit *abbreviation*, which is the same word after 1 as after 5 in all six — the
+  reason Russian's three forms (1, then 2–4, then 5 and up) never come up. `pluralCategory`
+  and `plural` in `ui/src/i18n.ts` implement that rule for the first counted *word* anybody
+  writes, and a test freezes the seven keys that carry a count so an eighth is a decision
+  rather than an accident. No right-to-left language is in scope; a test fails if one is added
+  to `LOCALES` before `styles.css` has been audited for physical `left`/`right` properties.
+- **"No hard-coded text" is now two tests rather than a promise** (`ui/test/i18n.test.mjs`).
+  They read `ui/src` and `crates/nazar-tray/src`, throw away comments, Rust test modules and
+  the argument of every `eprintln!`/`println!`/`panic!`/`.expect(…)`, and fail on any
+  remaining literal that reads like a sentence. The allow-list is three entries: two CSS class
+  names, and the demo's stand-in for a reader's own error sentence — the one string the panel
+  prints verbatim, because it says which file said what. Command-line output stays English on
+  purpose.
+- **A picture of the panel in each of the six languages**, `docs/screenshots/wp6-100-*.png`,
+  produced by `scripts/screenshot.ps1`'s documented set like every other picture in the
+  repository.
 - **Threshold notifications** (`nazar-core::alerts`, `crates/nazar-tray/src/alerts.rs`). A
   toast when a window crosses 60, 85 or 100 % — whatever the settings say — **once per
   threshold per reset period**, keyed `(provider, window, threshold, resetsAt)` and written to
@@ -80,6 +108,24 @@ languages (WP6) and the installer (WP7).
 
 ### Changed
 
+- **Three layout fixes for text that only a translation could produce.** A provider card's
+  first line **wraps**, because Russian's *"устарело · последние данные 1 ч 10 мин назад"* was
+  being cut off with an ellipsis where the English fits. The footer **wraps whole buttons**
+  rather than squeezing them. And Korean gets `word-break: keep-all`, scoped to `lang="ko"`,
+  because CSS's default treats Hangul the way it treats Chinese and was splitting `설정` and
+  `않습니다` down the middle — right for Chinese, which has no spaces to break at, and wrong
+  for Korean, which does. The panel measures itself after every render, so a line that moves
+  makes the window grow rather than the text vanish.
+- **The theme toggle names the theme through a message key** rather than through the theme
+  file's own English `label`, so the footer no longer says "Graphite" beneath a dropdown that
+  says "Grafit".
+- **The metadata that was going to live in each locale file lives in
+  `ui/locales/README.md` instead.** A `_meta` object in the JSON is not a harmless extra key:
+  the Rust side parses these files as `BTreeMap<String, String>`, a nested value makes the
+  whole file fail to parse, and a file that fails to parse becomes an *empty* catalogue —
+  correct, because a damaged translation must not stop the tray from starting, but silent.
+  Adding one to `zh.json` removed Chinese from the settings with no error anywhere. A test now
+  fails on a key beginning with `_` and on any value that is not a string.
 - **The refresh loop announces every pass**, not only the ones that moved the numbers
   (`Event::Refreshed`). A tray started when the weekly window is already at 91 % changes
   nothing, and that is exactly the case where the user most needs telling.
@@ -88,6 +134,17 @@ languages (WP6) and the installer (WP7).
   change is written and acted on.
 - `paths::settings_dir` joins `config.json` and `alerts.json`, which share a lifetime:
   removing the settings should take the notification bookkeeping with it.
+
+### Fixed
+
+- **A flaky test in the detailed-windows suite**, at the cause rather than with a wait.
+  `MockServer` recorded a request **after** answering it, so a test that read `requests()` the
+  moment `refresh()` returned could beat the worker thread to the push — about one full-suite
+  run in ten, hitting whichever of the four request-inspecting tests happened to lose. The
+  record is now taken **before the response is written**, while the client is still blocked on
+  `read`, so a client that has an answer is a client whose request is already visible.
+  Measured either side: 4 failures in 40 runs before, 0 in 30 after. A `sleep` would have
+  widened the window on a fast machine and still lost on a loaded one.
 
 ### Known limits
 

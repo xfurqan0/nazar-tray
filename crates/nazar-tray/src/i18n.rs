@@ -14,10 +14,24 @@
 //! it behind a lock so that changing the language in the settings rebuilds the tray menu and
 //! rewrites the tooltip without a restart.
 //!
-//! All six catalogues are compiled in, including the four WP6 has not written yet. An empty
-//! catalogue is **not offered** — [`available`] leaves it out of the settings list — and if
-//! one were selected anyway it would fall through to English rather than show message keys.
-//! That way the day a translation lands is the day it appears, with no code change here.
+//! All six catalogues are compiled in. An empty catalogue is **not offered** — [`available`]
+//! leaves it out of the settings list — and if one were selected anyway it would fall through
+//! to English rather than show message keys. That is what made WP6 a change to six JSON files
+//! and none at all to this one: the day the translations landed is the day the four new
+//! languages appeared in the settings, with no code change here.
+//!
+//! **Every value in a locale file must be a string, and the price of forgetting is silence.**
+//! [`parse`] asks serde for a `BTreeMap<String, String>`; a file with one nested object in it
+//! does not parse, becomes an empty catalogue, and that language quietly stops being offered.
+//! It is the right failure — a damaged translation must not stop the tray from starting — but
+//! it is an invisible one, which is why the translation status lives in `ui/locales/README.md`
+//! rather than in a `_meta` key, and why `ui/test/i18n.test.mjs` fails on a non-string value.
+//!
+//! **No plural forms are needed here.** The four duration keys this file formats are unit
+//! abbreviations in all six languages — `2 h 10 m`, `2 sa 10 dk`, `2 ч 10 мин` — and an
+//! abbreviation does not inflect after a numeral. The rule a counted *word* would need
+//! (Russian: 1, then 2–4, then 5 and up) lives in `ui/src/i18n.ts` as `pluralCategory`,
+//! beside the test that freezes the set of keys carrying a count.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -26,7 +40,8 @@ use std::sync::{Arc, RwLock};
 const EN: &str = include_str!("../../../ui/locales/en.json");
 /// Turkish, written by hand alongside English.
 const TR: &str = include_str!("../../../ui/locales/tr.json");
-/// The four WP6 owns. Empty today; compiled in so that filling them is all it takes.
+/// The four WP6 translated: machine-translated first, corrections by pull request.
+/// Compiled in from the same files the panel bundles, so the two halves cannot drift.
 const ZH: &str = include_str!("../../../ui/locales/zh.json");
 const KO: &str = include_str!("../../../ui/locales/ko.json");
 const RU: &str = include_str!("../../../ui/locales/ru.json");
@@ -300,9 +315,14 @@ mod tests {
         assert_eq!(english.text("panel.window.unknown"), "unknown");
         assert!(!english.translates("panel.window.unknown"));
 
-        // A language WP6 has not filled in yet falls through to English rather than
-        // showing a half-translated panel.
-        assert_eq!(catalog("ko").text("panel.window.unknown"), "unknown");
+        // WP6's four answer for themselves now. Before it, this line read `"unknown"`:
+        // an empty catalogue falls through to English rather than showing message keys,
+        // and that is still what a language nobody has translated gets.
+        assert_eq!(catalog("ko").text("panel.window.unknown"), "알 수 없음");
+        assert_eq!(catalog("zh-CN").text("panel.window.unknown"), "未知");
+        assert_eq!(catalog("ru").text("panel.window.unknown"), "неизвестно");
+        assert_eq!(catalog("es-MX").text("panel.window.unknown"), "desconocido");
+        assert_eq!(catalog("de-DE").text("panel.window.unknown"), "unknown");
         assert_eq!(catalog("").text("tray.menu.open"), "Open");
     }
 
@@ -312,17 +332,108 @@ mod tests {
     }
 
     #[test]
-    fn every_english_key_is_translated_into_turkish() {
-        let turkish = catalog("tr");
-        let missing: Vec<&str> = turkish
-            .keys()
-            .into_iter()
-            .filter(|key| !turkish.translates(key))
-            .collect();
+    fn every_english_key_is_translated_into_every_other_language() {
+        // WP0 wrote this for Turkish alone, because the other four were empty files. WP6
+        // filled them, so the rule is now the one `docs/PROJECT.md` states without an
+        // exception: a key English has and a shipped language does not is a bug.
+        for locale in nazar_core::config::LOCALES {
+            if locale == "en" {
+                continue;
+            }
+            let catalog = catalog(locale);
+            let missing: Vec<&str> = catalog
+                .keys()
+                .into_iter()
+                .filter(|key| !catalog.translates(key))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{locale} is behind English on {} keys: {missing:?}",
+                missing.len()
+            );
+        }
+    }
+
+    /// Every message key named in this crate's own source, with the two that are built
+    /// from a provider name expanded.
+    ///
+    /// Read out of the files rather than listed by hand, so that a new `catalog.text(…)`
+    /// anywhere in the crate is covered the moment it is written rather than the next time
+    /// somebody remembers this test exists.
+    #[cfg(test)]
+    fn keys_the_rust_side_uses() -> Vec<String> {
+        let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut keys: Vec<String> = Vec::new();
+        let mut files = vec![source_dir];
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                let Ok(entries) = std::fs::read_dir(&path) else {
+                    continue;
+                };
+                files.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for call in [".text(\"", ".format(\""] {
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(call) {
+                    rest = &rest[at + call.len()..];
+                    if let Some(end) = rest.find('"') {
+                        keys.push(rest[..end].to_owned());
+                    }
+                }
+            }
+        }
+        // `tooltip` and `toast` build these two from the provider's own name, so no
+        // literal for them appears anywhere.
+        for provider in ["claude", "codex"] {
+            keys.push(format!("tray.provider.{provider}"));
+            keys.push(format!("panel.provider.{provider}"));
+        }
+        // The one deliberate non-key in the sources: the test above proves an unknown key
+        // renders as itself.
+        keys.retain(|key| key != "nothing.like.this");
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    #[test]
+    fn every_key_the_rust_side_names_exists_in_all_six_languages() {
+        // The tooltip, the menu and the toasts are the only text drawn outside the
+        // webview, and they read the same JSON the panel bundles. A key one of them uses
+        // and a translation lacks would be an English word in an otherwise Korean tray —
+        // the exact half-translated state WP6 exists to rule out.
+        let used = keys_the_rust_side_uses();
         assert!(
-            missing.is_empty(),
-            "EN and TR are both written by hand and must stay level: {missing:?}"
+            used.len() > 15,
+            "the scan found only {} keys, so it has stopped working: {used:?}",
+            used.len()
         );
+        let english = catalog("en");
+        for key in &used {
+            assert!(
+                english.keys().contains(&key.as_str()),
+                "{key} is used in Rust and is not in ui/locales/en.json"
+            );
+        }
+        for locale in nazar_core::config::LOCALES {
+            if locale == "en" {
+                continue;
+            }
+            let catalog = catalog(locale);
+            for key in &used {
+                assert!(
+                    catalog.translates(key),
+                    "{locale} does not translate {key}, which the Rust side draws"
+                );
+            }
+        }
     }
 
     #[test]
@@ -341,10 +452,22 @@ mod tests {
         );
         assert_eq!(
             resolve(Some("ko"), Some("tr-TR")),
-            "tr",
-            "a chosen language whose catalogue is still empty falls through to the machine's"
+            "ko",
+            "since WP6 filled it, a chosen Korean is Korean rather than a fall-through"
+        );
+        assert_eq!(
+            resolve(Some("de"), Some("ru-RU")),
+            "ru",
+            "a chosen language this build cannot paint still falls through to the machine's"
         );
         assert_eq!(resolve(Some("TR_tr"), None), "tr", "tags are normalised");
+        for locale in nazar_core::config::LOCALES {
+            assert_eq!(
+                resolve(Some(locale), None),
+                locale,
+                "every language the settings list must be selectable"
+            );
+        }
     }
 
     #[test]
@@ -354,23 +477,23 @@ mod tests {
             offered[0], "en",
             "English is the fallback, so it is listed first"
         );
-        assert!(offered.contains(&"tr"));
         for locale in &offered {
             assert!(
                 nazar_core::config::LOCALES.contains(locale),
                 "{locale} is not a language the settings know about"
             );
             assert!(
-                !catalog(locale).fallback.is_empty(),
-                "{locale} was offered with nothing behind it"
+                !catalog(locale).messages.is_empty() || *locale == "en",
+                "{locale} was offered with an empty catalogue behind it"
             );
         }
-        // WP6's four are compiled in and still empty, so they are not offered yet. The day
-        // one of them is written, this assertion is what says so.
+        // All six since WP6. A catalogue that stopped parsing — one nested object is enough,
+        // see the module note — would drop out of this list silently, so the count is the
+        // assertion rather than the membership.
         assert_eq!(
-            offered.len(),
-            2,
-            "EN and TR are written by hand; ZH, KO, RU and ES are WP6's, got {offered:?}"
+            offered,
+            nazar_core::config::LOCALES.to_vec(),
+            "every language v1 ships must be offered, in the order the settings list them"
         );
     }
 
@@ -408,5 +531,23 @@ mod tests {
         let turkish = catalog("tr");
         assert_eq!(turkish.text("tray.menu.quit"), "Çık");
         assert!(duration(&turkish, 7_800_000).contains("sa"));
+    }
+
+    #[test]
+    fn a_duration_uses_each_languages_own_unit_abbreviations() {
+        // Two hours ten minutes, spelled six ways. These are also the reason this product
+        // needs no plural rule: an abbreviation is the same word after 1 as after 5, which
+        // is what lets Russian — three plural forms — through on one template.
+        assert_eq!(duration(&catalog("zh"), 7_800_000), "2 小时 10 分");
+        assert_eq!(duration(&catalog("ko"), 7_800_000), "2시간 10분");
+        assert_eq!(duration(&catalog("ru"), 7_800_000), "2 ч 10 мин");
+        assert_eq!(duration(&catalog("es"), 7_800_000), "2 h 10 min");
+
+        // And the Russian counts that a plural rule would otherwise have to answer for:
+        // 1, 2 and 5 minutes take the same abbreviation.
+        let russian = catalog("ru");
+        assert_eq!(duration(&russian, 60_000), "1 мин");
+        assert_eq!(duration(&russian, 120_000), "2 мин");
+        assert_eq!(duration(&russian, 300_000), "5 мин");
     }
 }

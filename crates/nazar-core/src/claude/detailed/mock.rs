@@ -9,6 +9,15 @@
 //! never collide. It answers a fixed script — one canned response per request, in order —
 //! and records what it was asked, which is how the leak test proves the token really did
 //! travel (and the header test proves it travelled with the right company).
+//!
+//! **The record is written before the answer is sent, and that ordering is the whole
+//! contract.** It used to be the other way round, and the tests that read [`MockServer::requests`]
+//! failed about one run in ten: the client got its response, `refresh` returned, the test
+//! asked what the server had seen, and the worker thread had not yet reached the push. The
+//! cure is ordering rather than waiting — a `sleep` would only make the window wider on a
+//! fast machine and still lose on a loaded one. Because the record is taken while the
+//! client is still blocked on `read`, a client that has a response is a client whose
+//! request is already in [`MockServer::requests`], on every machine and under any load.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -112,11 +121,7 @@ impl MockServer {
                     let answer = script.get(index).cloned().unwrap_or_else(|| {
                         Canned::status_with_body(503, "the mock server ran out of script")
                     });
-                    if let Some(request) = serve(stream, &answer) {
-                        seen.lock()
-                            .expect("the record must not be poisoned")
-                            .push(request);
-                    }
+                    serve(stream, &answer, &seen);
                     if index + 1 >= script.len() {
                         break;
                     }
@@ -162,8 +167,12 @@ impl Drop for MockServer {
     }
 }
 
-/// Read one request and write one answer.
-fn serve(mut stream: TcpStream, answer: &Canned) -> Option<Seen> {
+/// Read one request, record it, and only then write one answer.
+///
+/// The order is deliberate; see the module note. `record` is taken while the client is
+/// still waiting for its first byte, so any test that has a response can rely on the
+/// request already being visible.
+fn serve(mut stream: TcpStream, answer: &Canned, record: &Mutex<Vec<Seen>>) -> Option<()> {
     let mut reader = BufReader::new(stream.try_clone().ok()?);
 
     let mut request_line = String::new();
@@ -196,6 +205,16 @@ fn serve(mut stream: TcpStream, answer: &Canned) -> Option<Seen> {
         let _ = reader.read_exact(&mut body);
     }
 
+    // Recorded here, one line before the answer goes out. Everything below this point is
+    // visible to the client, and nothing below it may be the first writer of the record.
+    record
+        .lock()
+        .expect("the record must not be poisoned")
+        .push(Seen {
+            request_line: request_line.trim_end().to_owned(),
+            headers,
+        });
+
     let reason = match answer.status {
         200 => "OK",
         401 => "Unauthorized",
@@ -215,9 +234,5 @@ fn serve(mut stream: TcpStream, answer: &Canned) -> Option<Seen> {
 
     stream.write_all(response.as_bytes()).ok()?;
     stream.flush().ok()?;
-
-    Some(Seen {
-        request_line: request_line.trim_end().to_owned(),
-        headers,
-    })
+    Some(())
 }

@@ -190,7 +190,11 @@ function applyChosenTheme(): void {
   const theme = THEMES[ui.theme] ?? THEMES["nazar"];
   if (!theme) return;
   applyTheme(root, theme, resolveMode(ui.mode, darkQuery.matches));
-  if (themeButton) themeButton.textContent = theme.label;
+  // The theme's own `label` is English in both theme files. The settings picker has always
+  // named the same two themes through message keys, so the footer toggle would otherwise
+  // read "Graphite" beneath a dropdown reading "Grafit". The key wins; `label` stays in the
+  // theme files as the name the brand definition gives them, which is not a UI string.
+  if (themeButton) themeButton.textContent = t(`settings.theme.${theme.name}`);
 }
 
 /** One window row. */

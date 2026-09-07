@@ -163,8 +163,23 @@ $shots = @(
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; Offer = 'on'; Out = 'docs/screenshots/wp5-100-offer.png' }
 )
 
+# WP6: the same panel in all six languages. The point of the set is the *width* — the panel
+# measures itself and asks Rust for a window that fits, so Russian and Spanish, which are the
+# longest, are the proof that a translation cannot clip its own layout.
+foreach ($language in @('en', 'tr', 'zh', 'ko', 'ru', 'es')) {
+    $shots += @{
+        Scale  = 1.0
+        Theme  = 'nazar'
+        Mode   = 'dark'
+        Hint   = 'off'
+        Locale = $language
+        Out    = "docs/screenshots/wp6-100-$language.png"
+    }
+}
+
 foreach ($shot in $shots) {
     $shotView = if ($shot.ContainsKey('View')) { $shot.View } else { 'quota' }
     $shotOffer = if ($shot.ContainsKey('Offer')) { $shot.Offer } else { 'off' }
-    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $Locale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY
+    $shotLocale = if ($shot.ContainsKey('Locale')) { $shot.Locale } else { $Locale }
+    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $shotLocale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY
 }
