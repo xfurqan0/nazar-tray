@@ -1,0 +1,28 @@
+[package]
+name = "nazar-statusline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Records Claude Code's status-line payload and runs the status line you already had."
+
+[lints.rust]
+missing_docs = "warn"
+
+[lib]
+name = "nazar_statusline"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nazar-statusline"
+path = "src/main.rs"
+
+# Deliberately three dependencies and no Tauri: this binary runs on every status-line
+# refresh, so every millisecond of start-up is a millisecond of the user's prompt.
+[dependencies]
+nazar-core = { path = "../nazar-core" }
+serde.workspace = true
+serde_json.workspace = true

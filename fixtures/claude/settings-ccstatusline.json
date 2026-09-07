@@ -1,0 +1,8 @@
+{
+  "model": "claude-fable-5-1",
+  "statusLine": {
+    "type": "command",
+    "command": "npx ccstatusline@latest"
+  },
+  "theme": "dark"
+}

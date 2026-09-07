@@ -1,0 +1,10 @@
+{
+  "cleanupPeriodDays": 90,
+  "permissions": {
+    "allow": []
+  },
+  "model": "claude-fable-5-1",
+  "enabledPlugins": {},
+  "theme": "dark",
+  "showThinkingSummaries": true
+}

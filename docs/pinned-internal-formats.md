@@ -9,8 +9,10 @@ the two repositories read different files and keep separate inventories.
 
 **Codex row observed under Codex `cli_version` 0.153.4, Windows 11, 2026-09-07**, across
 **18 rollout logs** written between 2026-08-27 and 2026-09-07 and containing **329
-`rate_limits` lines** (652 window objects). Nothing on this page is copied from
-documentation without a matching observation on a real machine.
+`rate_limits` lines** (652 window objects). **Claude rows observed under Claude Code
+2.1.263, Windows 11, 2026-09-07**: one captured status-line payload and the maintainer's
+own `settings.json`. Nothing on this page is copied from documentation without a matching
+observation on a real machine.
 
 Rules that follow from this table, and that the tests enforce:
 
@@ -31,7 +33,8 @@ Rules that follow from this table, and that the tests enforce:
 | Path | Fields used | Version observed | Fixture | Notes |
 |---|---|---|---|---|
 | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
-| Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}`, `session_id` | not read yet | none yet | **WP2.** The wrapper that captures it is this repository's deliverable; nothing reads it today, and this row is here so the inventory is complete rather than surprising. |
+| Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
+| `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
 | Claude Code usage endpoint | model-scoped weekly windows | not read yet | none yet | **WP2b, opt-in and off by default.** The only path in the whole product that reads a token, held in memory for one request. It will live behind its own switch and its own tests; the credential gate below grows an explicit allow-list for it rather than losing a needle. |
 
 ## The Codex rollout log
@@ -151,6 +154,101 @@ for the name of a credential file and for token-shaped identifiers, and fails th
 a hit. It assembles the needles at run time so it does not match itself, which is also why
 the file names above live in this document and not in a comment in the source.
 
+## The status-line payload
+
+Claude Code runs `statusLine.command` on every redraw and writes one JSON object to its
+standard input. `nazar-statusline` is installed as that command; what it does with the
+payload, and where it puts it, is [`statusline-wrapper.md`](statusline-wrapper.md). This
+section is the format itself.
+
+### The observed shape
+
+Captured on the maintainer's machine, Claude Code 2.1.263, 2026-09-07. Twenty top-level
+keys:
+
+```json
+{"session_id":"…","session_name":"…","prompt_id":"…","transcript_path":"…",
+ "scratchpad_dir":"…","cwd":"…",
+ "workspace":{"current_dir":"…","project_dir":"…","added_dirs":[],
+              "repo":{"host":"…","owner":"…","name":"…"}},
+ "model":{"id":"claude-fable-5-1","display_name":"Fable 5.1"},
+ "effort":{"level":"high"},"version":"2.1.263","output_style":{"name":"default"},
+ "cost":{"total_cost_usd":…,"total_duration_ms":…,"total_api_duration_ms":…,
+         "total_lines_added":…,"total_lines_removed":…},
+ "context_window":{"total_input_tokens":…,"total_output_tokens":…,
+                   "context_window_size":1000000,"current_usage":{…},
+                   "used_percentage":16,"remaining_percentage":84},
+ "exceeds_200k_tokens":false,"prompt_cache":{…},"fast_mode":false,
+ "thinking":{"enabled":true},
+ "rate_limits":{"five_hour":{"used_percentage":12,"resets_at":1788768000},
+                "seven_day":{"used_percentage":31,"resets_at":1789178400}}}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `session_id` | string (UUID) | Used as the capture's **file name**, after a character check. Never copied into `limits.json`. |
+| `rate_limits` | object, **often absent** | Present for Pro and Max subscribers, and only after the session's first API response. Absent is a documented state, not a fault. |
+| `rate_limits.five_hour` / `.seven_day` | object, **either can be absent** | Claude Code drops a window once its `resets_at` has passed. The fixture captured live has only `seven_day` for exactly that reason. |
+| `…used_percentage` | number | Integer in every observation; the parser accepts a float too. Copied through unrounded. |
+| `…resets_at` | **integer, Unix seconds, UTC** | Same encoding as Codex's. A value above 10¹² is read as milliseconds, so a future switch degrades instead of breaking. |
+| `model.id`, `model.display_name`, `version` | string | **Not a plan name.** No plan is derived from them; see below. |
+| everything else | — | Read by nobody. It is captured, because the capture is the whole payload, and it never reaches `limits.json`. |
+
+Documented but not present in this payload, and therefore not depended on: `vim.mode`,
+`agent.name`, `pr.*`, `worktree.*`, `workspace.git_worktree`, `rate_limits.spend_limit`.
+
+### Never taken out of a capture
+
+`limits.json` gets **two percentages, two reset times** and — if a payload ever carries an
+explicit `plan`, `plan_type` or `subscription_type` — a plan name that has passed the same
+identifier check the Codex reader uses. Nothing else. In particular:
+
+| Not read | Why |
+|---|---|
+| `cwd`, `transcript_path`, `scratchpad_dir`, `workspace.*` | Paths. They identify a machine and a project, and `limits.json` is meant to be safe to paste into a bug report. |
+| `session_id`, `prompt_id`, `session_name` | Identity. The session id names a file inside the user's own home directory and goes no further. |
+| `cost.*`, `context_window.*`, `prompt_cache.*` | Real data, and Nazar's to use — from the capture file, not from `limits.json`. The contract has no field for them and is not growing one. |
+| `model.*`, `version`, `effort`, `output_style` | Interesting, not quota. `model.display_name` and `effort.level` are printed by the wrapper's own minimal status line and are never written to a file. |
+
+A plan name is **not** derived from `model.id` or `version`. "This user is on Fable 5.1"
+does not mean "this user is on Max", and inventing the second from the first is exactly
+what rule 2 of [`limits-contract.md`](limits-contract.md) forbids. `providers.claude.plan`
+is therefore absent on the passive path.
+
+The gate: `nothing_but_the_allow_listed_values_leaves_the_reader` builds a capture whose
+every string is a sentinel and fails if the sentinel appears in the reading or in the
+serialised provider block.
+
+## Claude Code's settings file
+
+`CLAUDE_CONFIG_DIR` moves the directory; the default is `~/.claude`. `settings.json` is a
+JSON object with a flat top level. The installer reads it and writes it back, and the only
+key it understands is `statusLine`:
+
+```json
+"statusLine": { "type": "command", "command": "…", "padding": 0, "refreshInterval": 30 }
+```
+
+| Field | Behaviour on install |
+|---|---|
+| `type` | Set to `"command"`. |
+| `command` | Set to this program's absolute path, quoted if it contains a space. |
+| `padding`, `refreshInterval` | **Preserved** if present, absent if not. |
+| any other key inside `statusLine` | **Preserved.** A key a newer Claude Code adds is the user's, not ours to drop. |
+| every other key in the document | **Preserved, in order.** `serde_json`'s `preserve_order` is on for the whole workspace, and removal uses a shifting remove rather than the swapping one, which would silently reorder the file. |
+
+The three fixtures are the three shapes the acceptance criteria name: no `statusLine` at
+all, ccstatusline's `{"type":"command","command":"npx ccstatusline@latest"}`, and the
+maintainer's own shape (an interpreter, a quoted absolute path, `padding`,
+`refreshInterval`) with the path replaced. Each is installed, diffed and uninstalled in
+`crates/nazar-statusline/tests/installer.rs`, and the result is compared to the original
+**byte for byte** — all three round-trip exactly.
+
+Two things this file is never allowed to become: a file that was parsed loosely (invalid
+JSON is reported and left alone, never "repaired" and never replaced by `{}`), and a file
+that was written without a copy of the original beside it. Backups are named
+`settings.json.nazar-bak-<stamp>` and are never written over.
+
 ## Fixture sanitising
 
 `fixtures/codex/*.jsonl` are real lines from the maintainer's own logs. What was kept and
@@ -162,10 +260,21 @@ what was replaced:
 | `timestamp`, `type`, `payload.type` — the entry discriminators the parser dispatches on. | |
 | `plan_type` (`plus`) and `limit_id` (`codex`, `premium`) — tier names, published in the plan already, and the point of the `premium` fixture. | |
 
-`the_codex_fixtures_carry_nothing_that_identifies_a_machine` in `tests/hygiene.rs` is the
-gate: it fails on a `~`, a home-directory path, an e-mail address, a run of 32 hexadecimal
-characters, or the name of whoever is running the tests, read from the environment so that
-the name itself never enters the repository.
+`fixtures/claude/*.json` were sanitised the same way. The payload fixture is a real
+status-line payload with every number kept — the cost, the token counters, the two quota
+figures — and every path, id and repository name replaced. The settings fixtures keep the
+**shape** of the maintainer's file and nothing else: the same keys in the same order, with
+`node "C:\projects\example\.claude\scripts\statusline.js"` standing in for the real path.
+
+Two gates in `tests/hygiene.rs`, one per family:
+`the_codex_fixtures_carry_nothing_that_identifies_a_machine` and
+`the_claude_fixtures_carry_nothing_that_identifies_a_machine`. Both fail on a `~`, a
+home-directory path, an e-mail address, a run of 32 hexadecimal characters, or the name of
+whoever is running the tests — read from the environment so that the name itself never
+enters the repository. The Claude gate adds two checks of its own: every payload fixture
+has to still be a payload (and every settings fixture a settings file), and no payload
+fixture may contain a sign-in or account field, which is the claim the whole passive
+design rests on.
 
 ## Times are written in UTC
 

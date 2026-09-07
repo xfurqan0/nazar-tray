@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/nazar-core", "crates/nazar-tray"]
+members = ["crates/nazar-core", "crates/nazar-statusline", "crates/nazar-tray"]
 resolver = "2"
 
 [workspace.package]

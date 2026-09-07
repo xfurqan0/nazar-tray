@@ -8,11 +8,47 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing released yet. The repository holds the WP0 skeleton and the WP1 Codex reader: it
-builds, it tests, `nazar-tray --print` prints real numbers, and the tray still opens an
-empty panel.
+Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader and the
+WP2 Claude reader with its status-line wrapper: it builds, it tests, `nazar-tray --print`
+prints real numbers for both providers, and the tray still opens an empty panel.
 
 ### Added
+
+- **`nazar-statusline`**, the shared status-line wrapper, in a third crate with no Tauri in
+  it (334 KB release binary, three dependencies). Installed as Claude Code's
+  `statusLine.command`, it writes the payload **whole** to
+  `~/.nazar/statusline/<session_id>.json` and then runs the status line that was already
+  there, with the same bytes on standard input and its stdout, stderr and exit code
+  forwarded. Keyed by session id, so three concurrent sessions do not overwrite each
+  other. Measured at a **median of 9.6 ms** over ten runs against a 50 ms budget, release
+  build, no chained command. Empty or unparseable input still chains and still exits `0`:
+  nothing this program does can break the status line.
+- **`nazar-statusline install | uninstall | status`**. The install touches exactly one key
+  of `settings.json`, keeps every other key and their order, preserves `padding`,
+  `refreshInterval` and anything else the existing `statusLine` carried, prints a unified
+  diff whether or not anything is a terminal, and takes a backup it will never write over.
+  It refuses — changing nothing — on invalid JSON, on a lock file, and when it is already
+  installed. `uninstall` restores the exact object recorded in `chain.json`, checks it
+  against the backup, and leaves the backup in place. `--dry-run` prints the same diff and
+  writes nothing at all.
+- **Claude reader** (`nazar-core::claude`): reads the captures, takes the newest, and maps
+  `rate_limits.five_hour` and `.seven_day` to the `claude` provider block — percentage,
+  `windowMinutes`, `resetsAt` in UTC, `state`, and a binding window computed as the highest
+  percentage. `configured:false` when there is no capture; both windows `state:"error"`
+  with no percentage when the payload carries no `rate_limits`, which is what a
+  non-subscriber and a session before its first API response both look like. No plan name
+  is derived: the payload does not carry one, and `model.id` is not a subscription.
+- Claude fixtures sanitised from a real payload and a real settings file — a payload with
+  one live window, one with both, one with no `rate_limits`, and the three settings shapes
+  the acceptance criterion names (no status line, ccstatusline, a custom `node` script) —
+  plus a second leak test, a second fixture-hygiene gate, and rows in
+  `docs/pinned-internal-formats.md` for the payload and for `settings.json`.
+- `docs/statusline-wrapper.md`: what is captured, where it lives, why captures hold paths
+  and therefore never leave `~/.nazar`, and how to uninstall by hand from `chain.json` if
+  the binary is gone.
+- `NAZAR_HOME` moves `~/.nazar`. It exists so that the wrapper's tests run against a
+  throwaway directory; **no test in this repository reads or writes the real
+  `~/.claude` or the real `~/.nazar`**, which is risk R10's mitigation made mechanical.
 
 - **Codex reader** (`nazar-core::codex`): finds the newest `rollout-*.jsonl` under
   `$CODEX_HOME` (default `~/.codex`), follows it by byte offset, and maps
@@ -51,11 +87,28 @@ empty panel.
   and `scripts/check-licenses.mjs`, which fails on any dependency that is not permissively
   licensed.
 
+### Changed
+
+- **The `limits.json` samples now show UTC.** `fixtures/limits.sample.json`,
+  `docs/limits-contract.md` and `docs/PROJECT.md` section 6 carried a `+03:00` offset while
+  the writer has produced `…Z` since WP1. The instants are unchanged — the same moments,
+  written the way the file actually writes them. Consumers that vendored the sample should
+  re-copy it; nothing about the schema moved.
+
 ### Notes
 
 - Times in `limits.json` are RFC 3339 in UTC (`…Z`). They name the same instant a local
   offset would; consumers render local time, and countdowns do not depend on the offset.
   Reasoning in `docs/pinned-internal-formats.md`.
+- A capture file holds the whole status-line payload, and the payload holds paths — `cwd`,
+  `transcript_path`, the workspace. There is no token and no account identifier in it, but
+  the paths are why captures live under `~/.nazar` and why `limits.json` gets four numbers
+  out of one and nothing else. Cost and context usage stay in the capture, for Nazar.
+- The wrapper runs a chained command through `cmd.exe /C` on Windows and `sh -c`
+  elsewhere, because `statusLine.command` is a command line rather than a program and its
+  arguments. On Windows the line is passed raw and wrapped in one more pair of quotes;
+  Rust's own escaping follows the C runtime's rules and `cmd.exe` does not, which would
+  break every command with a quoted path in it.
 - The Codex reader reports what it read and how old it is (`sourceAt`); it does not decide
   when old becomes stale. That threshold belongs to the state model in WP3, so that all
   three displays answer it the same way — the retired prototype had three different ones.

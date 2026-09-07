@@ -72,14 +72,14 @@ fn no_source_file_names_a_credential_file() {
 
     let root = repo_root();
     let mut sources = Vec::new();
-    for crate_name in ["nazar-core", "nazar-tray"] {
+    for crate_name in ["nazar-core", "nazar-statusline", "nazar-tray"] {
         sources.extend(files_under(
             &root.join("crates").join(crate_name).join("src"),
             &["rs"],
         ));
     }
     assert!(
-        sources.len() >= 8,
+        sources.len() >= 14,
         "the gate found almost no source to check, which means it is not working"
     );
 
@@ -124,47 +124,116 @@ fn the_codex_fixtures_carry_nothing_that_identifies_a_machine() {
     );
 
     for path in fixtures {
+        assert_carries_no_identity(&path);
+    }
+}
+
+/// The Claude fixtures have to clear the same bar, and one more.
+///
+/// A status-line payload is *made* of paths — `cwd`, `transcript_path`, the workspace and
+/// its repository — so its fixture is the one most likely to carry a machine out of the
+/// house. The settings fixtures matter for the same reason: one of them is the shape of
+/// the maintainer's own file, and only the shape is allowed to travel.
+#[test]
+fn the_claude_fixtures_carry_nothing_that_identifies_a_machine() {
+    let root = repo_root();
+    let fixtures = files_under(&root.join("fixtures").join("claude"), &["json"]);
+    assert!(
+        fixtures.len() >= 6,
+        "expected the six Claude fixtures, found {}",
+        fixtures.len()
+    );
+
+    for path in &fixtures {
+        assert_carries_no_identity(path);
+    }
+
+    // The payload fixtures must be payloads, and the settings fixtures settings: a
+    // fixture that quietly stops being what its name says stops testing what it claims.
+    let mut payloads = 0;
+    let mut settings = 0;
+    for path in &fixtures {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("cannot read {name}"));
+        let text = std::fs::read_to_string(path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|_| panic!("{name} is not valid JSON"));
+        assert!(value.is_object(), "{name} is not a JSON object");
+        assert!(text.ends_with('\n'), "{name} has no trailing newline");
 
-        assert!(!text.contains('~'), "{name} contains a home-relative path");
-        for fragment in [
-            "C:\\Users\\",
-            "C:/Users/",
-            "/home/",
-            "/Users/",
-            "%USERPROFILE%",
-            "$HOME",
-        ] {
-            assert!(
-                !text.contains(fragment),
-                "{name} contains the path fragment {fragment:?}"
-            );
-        }
-        assert!(
-            !looks_like_an_email(&text),
-            "{name} contains an e-mail address"
-        );
-        assert!(
-            !contains_long_hex(&text),
-            "{name} contains a 32-character hexadecimal identifier"
-        );
-
-        // Whoever runs the tests: their own name must not be in a file they are about to
-        // publish. Read from the environment so the name itself is never committed.
-        for variable in ["USERNAME", "USER", "LOGNAME"] {
-            let Some(value) = std::env::var_os(variable) else {
-                continue;
-            };
-            let value = value.to_string_lossy().into_owned();
-            if value.len() < 3 {
-                continue;
+        if name.starts_with("statusline-payload") {
+            payloads += 1;
+            assert!(value.get("session_id").is_some(), "{name} is not a payload");
+            // No sign-in material and no account identity — the claim the whole design
+            // rests on, checked against the file rather than asserted in a README.
+            // Token *counts* are fine and are all over this payload; the needles below
+            // are assembled at run time so the shape of the check cannot match itself.
+            let forbidden: Vec<String> = vec![
+                format!("{}{}", "access", "_token"),
+                format!("{}{}", "refresh", "_token"),
+                format!("{}{}", "id", "_token"),
+                format!("{}{}", "api", "_key"),
+                format!("{}{}", "Bearer", " "),
+                format!("{}{}", "o", "auth"),
+                format!("{}{}", "account", "_id"),
+                format!("{}{}", "e-", "mail"),
+            ];
+            let lowered = text.to_lowercase();
+            for needle in &forbidden {
+                assert!(
+                    !lowered.contains(&needle.to_lowercase()),
+                    "{name} mentions {needle:?}"
+                );
             }
-            assert!(
-                !text.to_lowercase().contains(&value.to_lowercase()),
-                "{name} contains the current user's name"
-            );
+        } else if name.starts_with("settings-") {
+            settings += 1;
         }
+    }
+    assert_eq!(payloads, 3, "three payload shapes are pinned");
+    assert_eq!(settings, 3, "three settings shapes are pinned");
+}
+
+/// The shared bar: no home path, no e-mail, no long identifier, not the tester's name.
+fn assert_carries_no_identity(path: &Path) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("cannot read {name}"));
+
+    assert!(!text.contains('~'), "{name} contains a home-relative path");
+    for fragment in [
+        "C:\\Users\\",
+        "C:/Users/",
+        "/home/",
+        "/Users/",
+        "%USERPROFILE%",
+        "$HOME",
+    ] {
+        assert!(
+            !text.contains(fragment),
+            "{name} contains the path fragment {fragment:?}"
+        );
+    }
+    assert!(
+        !looks_like_an_email(&text),
+        "{name} contains an e-mail address"
+    );
+    assert!(
+        !contains_long_hex(&text),
+        "{name} contains a 32-character hexadecimal identifier"
+    );
+
+    // Whoever runs the tests: their own name must not be in a file they are about to
+    // publish. Read from the environment so the name itself is never committed.
+    for variable in ["USERNAME", "USER", "LOGNAME"] {
+        let Some(value) = std::env::var_os(variable) else {
+            continue;
+        };
+        let value = value.to_string_lossy().into_owned();
+        if value.len() < 3 {
+            continue;
+        }
+        assert!(
+            !text.to_lowercase().contains(&value.to_lowercase()),
+            "{name} contains the current user's name"
+        );
     }
 }
 

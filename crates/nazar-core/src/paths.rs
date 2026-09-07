@@ -13,6 +13,13 @@ use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 
+/// Environment variable that moves `~/.nazar` somewhere else.
+///
+/// It exists so that a test can point the whole data layer at a throwaway directory
+/// without touching the machine it runs on. The status-line wrapper honours it too, which
+/// is what makes the wrapper's tests safe to run on a developer's own computer.
+pub const NAZAR_HOME_VAR: &str = "NAZAR_HOME";
+
 /// The user's home directory, from `USERPROFILE` on Windows and `HOME` elsewhere.
 pub fn home_dir() -> Result<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -23,8 +30,25 @@ pub fn home_dir() -> Result<PathBuf> {
 }
 
 /// `~/.nazar` — the directory nazar-tray writes for other programs to read.
+///
+/// `NAZAR_HOME` overrides it wholesale. An empty variable is not a directory and is
+/// ignored, the same rule `CODEX_HOME` follows.
 pub fn data_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".nazar"))
+    let variable = std::env::var_os(NAZAR_HOME_VAR);
+    match resolve_data_dir(variable.as_deref()) {
+        Some(dir) => Ok(dir),
+        None => Ok(home_dir()?.join(".nazar")),
+    }
+}
+
+/// The override half of [`data_dir`], separated so it can be tested.
+///
+/// Mutating the process environment from a test is unsound once anything else reads it,
+/// and a test suite runs in threads, so the rule is checked directly instead.
+fn resolve_data_dir(variable: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    variable
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `~/.nazar/limits.json` — the one file Nazar reads from nazar-tray.
@@ -65,6 +89,10 @@ mod tests {
 
     #[test]
     fn the_data_paths_hang_off_the_home_directory() {
+        if std::env::var_os(NAZAR_HOME_VAR).is_some_and(|value| !value.is_empty()) {
+            // The override is in force on this machine; the next test covers it.
+            return;
+        }
         let Ok(home) = home_dir() else {
             // A build environment without HOME or USERPROFILE is a valid environment;
             // the functions report it rather than guessing a path.
@@ -85,9 +113,34 @@ mod tests {
     }
 
     #[test]
+    fn nazar_home_moves_the_whole_data_directory() {
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            resolve_data_dir(Some(OsStr::new("D:\\throwaway\\nazar"))),
+            Some(PathBuf::from("D:\\throwaway\\nazar"))
+        );
+        assert_eq!(
+            resolve_data_dir(Some(OsStr::new("/tmp/nazar-test"))),
+            Some(PathBuf::from("/tmp/nazar-test"))
+        );
+        assert_eq!(resolve_data_dir(None), None, "unset falls back to ~/.nazar");
+        assert_eq!(
+            resolve_data_dir(Some(OsStr::new(""))),
+            None,
+            "an empty variable is not a directory"
+        );
+        assert_eq!(NAZAR_HOME_VAR, "NAZAR_HOME");
+    }
+
+    #[test]
     fn the_frozen_v1_layout_is_a_single_file() {
         let Ok(path) = limits_path() else { return };
         assert_eq!(path.file_name().unwrap(), "limits.json");
-        assert_eq!(path.parent().unwrap().file_name().unwrap(), ".nazar");
+        assert_eq!(path.parent().unwrap(), data_dir().unwrap());
+        assert_eq!(
+            statusline_dir().unwrap().parent().unwrap(),
+            data_dir().unwrap()
+        );
     }
 }

@@ -2255,6 +2255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nazar-statusline"
+version = "0.1.0"
+dependencies = [
+ "nazar-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nazar-tray"
 version = "0.1.0"
 dependencies = [

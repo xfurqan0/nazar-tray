@@ -1,0 +1,24 @@
+{
+  "cleanupPeriodDays": 90,
+  "permissions": {
+    "allow": []
+  },
+  "model": "claude-fable-5-1",
+  "defaultShell": "powershell",
+  "statusLine": {
+    "type": "command",
+    "command": "node \"C:\\projects\\example\\.claude\\scripts\\statusline.js\"",
+    "padding": 0,
+    "refreshInterval": 30
+  },
+  "enabledPlugins": {},
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "high"
+    }
+  },
+  "autoUpdatesChannel": "latest",
+  "timeFormat": "24-hour",
+  "theme": "dark-daltonized",
+  "tui": "fullscreen"
+}

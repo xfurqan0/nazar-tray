@@ -13,7 +13,7 @@ Nazar's quota strip reads this file and nothing else from nazar-tray.
 > The plan's section 1.2 refers to this document as `LIMITS-CONTRACT.md`. It is
 > `docs/limits-contract.md`; the contents are what was described there.
 
-## Five rules that shape the format
+## Six rules that shape the format
 
 1. **No credentials, ever.** No tokens, no account identifiers, no e-mail addresses, no
    session ids. The file is safe to paste into a bug report. If a future field cannot
@@ -31,13 +31,15 @@ Nazar's quota strip reads this file and nothing else from nazar-tray.
    written. An older tray next to a newer file loses nothing.
 5. **Rounding happens at display time.** `percent` is stored as reported. A consumer that
    wants `18 %` rounds it itself.
+6. **Times are UTC.** Every timestamp in this file is RFC 3339 with a `Z`, and a consumer
+   renders local time itself. See the section at the end for why.
 
 ## Document
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `schemaVersion` | integer | yes | `1`. A bump is a breaking change for Nazar. |
-| `updatedAt` | string | yes | RFC 3339 with the writer's local offset. When the tray last wrote the file. |
+| `updatedAt` | string | yes | RFC 3339 **in UTC** (`…Z`). When the tray last wrote the file. See "Times are written in UTC" below. |
 | `providers` | object | yes | See below. |
 
 ### `providers.<name>`
@@ -81,30 +83,30 @@ needs to know how long a window is.
 ```json
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-07T00:12:34+03:00",
+  "updatedAt": "2026-09-06T21:12:34Z",
   "providers": {
     "claude": {
       "configured": true,
       "plan": "max_20x",
       "source": "statusline",
-      "sourceAt": "2026-09-07T00:12:30+03:00",
+      "sourceAt": "2026-09-06T21:12:30Z",
       "binding": "seven_day_fable",
       "windows": {
         "five_hour": {
           "percent": 12,
-          "resetsAt": "2026-09-07T06:10:00+03:00",
+          "resetsAt": "2026-09-07T03:10:00Z",
           "windowMinutes": 300,
           "state": "ok"
         },
         "seven_day": {
           "percent": 18,
-          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "resetsAt": "2026-09-12T02:00:00Z",
           "windowMinutes": 10080,
           "state": "ok"
         },
         "seven_day_fable": {
           "percent": 23,
-          "resetsAt": "2026-09-12T05:00:00+03:00",
+          "resetsAt": "2026-09-12T02:00:00Z",
           "windowMinutes": 10080,
           "state": "ok",
           "model": "Fable",
@@ -116,18 +118,18 @@ needs to know how long a window is.
       "configured": true,
       "plan": "plus",
       "source": "rollout",
-      "sourceAt": "2026-09-07T00:11:58+03:00",
+      "sourceAt": "2026-09-06T21:11:58Z",
       "binding": "secondary",
       "windows": {
         "primary": {
           "percent": 54,
-          "resetsAt": "2026-09-07T04:41:00+03:00",
+          "resetsAt": "2026-09-07T01:41:00Z",
           "windowMinutes": 300,
           "state": "ok"
         },
         "secondary": {
           "percent": 70,
-          "resetsAt": "2026-09-11T12:00:00+03:00",
+          "resetsAt": "2026-09-11T09:00:00Z",
           "windowMinutes": 10080,
           "state": "ok"
         }
@@ -150,7 +152,7 @@ and the one the passive path cannot see.
   "percent": 54,
   "windowMinutes": 300,
   "state": "stale",
-  "error": "no rollout log written since 2026-09-06T21:40:00+03:00"
+  "error": "no rollout log written since 2026-09-06T18:40:00Z"
 }
 ```
 
@@ -221,6 +223,20 @@ this schema accepts and the rules above reject is still wrong.
 validator that rejects a value a newer writer introduced would turn a forward-compatible
 document into a hard failure, which is exactly what rule 4 exists to prevent. The known
 values are in the tables above.
+
+## Times are written in UTC
+
+`updatedAt`, `sourceAt` and every window's `resetsAt` are RFC 3339 with a `Z`, never a
+local offset. The standard library has no time-zone database and no way to ask the
+operating system for the current offset, so a local offset would cost either a runtime
+dependency or hand-written daylight-saving code in the crate that is meant to be boring.
+A UTC timestamp names the same instant, a countdown — which is what a consumer actually
+draws — is offset-independent, and rendering local time is one call in every language that
+reads this file. `resetsAt` is written as the source reported it, converted to UTC: both
+Codex and Claude Code report Unix seconds.
+
+Decided in WP1 and applied to the samples in WP2; the reasoning in full is in
+[`pinned-internal-formats.md`](pinned-internal-formats.md).
 
 ## Reserved for v2
 

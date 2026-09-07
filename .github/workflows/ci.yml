@@ -68,14 +68,16 @@ jobs:
       - name: Test the workspace
         run: cargo test --workspace
 
-  # nazar-core is pure Rust with no Tauri in it, so it compiles and tests everywhere.
-  # The tray app itself is Windows-only in v1 on purpose: no toolkit gives a reliable
-  # tray popup on Linux (even CodexBar closed its Linux tray issue as not planned), and
-  # the macOS build waits for a signing certificate. Keeping the core green on all three
-  # is what makes those later builds a step rather than a rewrite, so it is checked from
-  # the first commit instead of the first port.
+  # nazar-core and nazar-statusline are pure Rust with no Tauri in them, so they compile
+  # and test everywhere. The tray app itself is Windows-only in v1 on purpose: no toolkit
+  # gives a reliable tray popup on Linux (even CodexBar closed its Linux tray issue as not
+  # planned), and the macOS build waits for a signing certificate. Keeping these two green
+  # on all three systems is what makes those later builds a step rather than a rewrite, so
+  # it is checked from the first commit instead of the first port. It also exercises the
+  # wrapper's POSIX path — `sh -c` for the chained command — which the Windows job never
+  # reaches.
   core:
-    name: Core — ${{ matrix.os }}
+    name: Core and wrapper — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -90,8 +92,8 @@ jobs:
         with:
           key: core-${{ matrix.os }}
 
-      - name: Test nazar-core
-        run: cargo test -p nazar-core
+      - name: Test nazar-core and nazar-statusline
+        run: cargo test -p nazar-core -p nazar-statusline
 
   # Produces the artifact, and is deliberately not a gate: `continue-on-error` means a
   # bundler failure is visible without turning the whole run red. Promote it to a gate

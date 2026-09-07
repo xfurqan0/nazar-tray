@@ -18,6 +18,7 @@
 
 use std::io::Write;
 
+use nazar_core::claude::ClaudeReader;
 use nazar_core::codex::CodexReader;
 use nazar_core::{Limits, Provider, now_rfc3339};
 
@@ -60,10 +61,11 @@ pub fn run_if_requested() -> bool {
 
 /// Build the `limits.json` document from the readers that exist.
 ///
-/// Codex is read; Claude is reported as unconfigured because its reader is WP2. Both keys
-/// are always present — the contract says a provider's key never disappears, so a
-/// consumer can tell "not set up on this machine" from "this build does not know about
-/// that provider" without special cases.
+/// Both providers are read from local files their own tools wrote: Codex from its newest
+/// `rollout-*.jsonl`, Claude from the status-line captures `nazar-statusline` leaves in
+/// `~/.nazar/statusline`. Both keys are always present — the contract says a provider's
+/// key never disappears, so a consumer can tell "not set up on this machine" from "this
+/// build does not know about that provider" without special cases.
 #[must_use]
 pub fn snapshot() -> Limits {
     let mut limits = Limits::new(now_rfc3339());
@@ -75,8 +77,10 @@ pub fn snapshot() -> Limits {
         Err(_) => Provider::default(),
     };
 
-    // WP2 fills this in from the status-line wrapper's capture files.
-    limits.providers.claude = Provider::default();
+    limits.providers.claude = match ClaudeReader::discover() {
+        Ok(mut reader) => reader.refresh(),
+        Err(_) => Provider::default(),
+    };
 
     limits
 }
@@ -102,11 +106,22 @@ mod tests {
         assert_eq!(parsed, limits);
     }
 
+    /// Both provider keys are always in the document, whatever this machine holds.
+    ///
+    /// The assertion cannot be "Claude is configured" or "Claude is not": the answer
+    /// depends on whether the wrapper is installed on the machine running the tests, and a
+    /// test that demands one of those is a test that fails on somebody else's computer.
+    /// What the contract actually promises is that the key is there either way, and that
+    /// an unconfigured provider carries no windows.
     #[test]
-    fn claude_is_present_and_unconfigured_until_its_reader_lands() {
+    fn both_providers_are_present_however_the_machine_is_set_up() {
         let limits = snapshot();
-        assert!(!limits.providers.claude.configured);
-        assert!(limits.providers.claude.windows.is_empty());
+        for provider in [&limits.providers.claude, &limits.providers.codex] {
+            if !provider.configured {
+                assert!(provider.windows.is_empty());
+                assert_eq!(provider.binding, None);
+            }
+        }
     }
 
     #[test]

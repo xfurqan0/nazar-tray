@@ -34,3 +34,6 @@ limits.json
 *.raw.json
 *.raw.jsonl
 fixtures/local/
+# A real status-line capture is this machine's session data, not a fixture: it holds
+# the working directory, the transcript path and the repository being worked on.
+statusline-last.json

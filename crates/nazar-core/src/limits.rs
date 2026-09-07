@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub struct Limits {
     /// Contract version. See [`SCHEMA_VERSION`].
     pub schema_version: u32,
-    /// When the tray last wrote this file, RFC 3339 with the writer's local offset.
+    /// When the tray last wrote this file, RFC 3339 in UTC (`…Z`). See [`crate::timefmt`].
     pub updated_at: String,
     /// One entry per supported provider.
     pub providers: Providers,

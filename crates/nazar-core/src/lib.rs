@@ -18,6 +18,7 @@
 //!    and what is off limits; two tests enforce it.
 
 pub mod atomic;
+pub mod claude;
 pub mod codex;
 pub mod error;
 pub mod limits;
@@ -27,6 +28,7 @@ pub mod timefmt;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+pub use claude::ClaudeReader;
 pub use codex::CodexReader;
 pub use error::{Error, Result};
 pub use limits::{

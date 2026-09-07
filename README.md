@@ -19,7 +19,7 @@ There are many. This one is built on one rule:
 Every other quota tool reads your OAuth token, or even your browser cookies, from inside an unsigned binary, then calls an undocumented endpoint that rate-limits them. nazar-tray does neither by default, because the numbers are already on your disk:
 
 - **Codex** writes its server-reported usage into every session log (`~/.codex/sessions/…/rollout-*.jsonl`).
-- **Claude Code** hands the same numbers to your status line on every refresh. nazar-tray installs a tiny status-line wrapper that records them and then runs whatever status line you already had.
+- **Claude Code** hands the same numbers to your status line on every refresh. nazar-tray installs a tiny status-line wrapper (`nazar-statusline`) that records them and then runs whatever status line you already had, unchanged. It takes a copy of `settings.json` first, shows you the diff before it writes, and `nazar-statusline uninstall` puts your own status line back exactly. What it captures, where, and how to undo it by hand: [docs/statusline-wrapper.md](docs/statusline-wrapper.md).
 
 That is the whole default data path: two local files in, one local `limits.json` out. The same file feeds the quota strip on the Nazar canvas.
 

@@ -51,7 +51,7 @@ What the research found that nobody ships:
 
 - Claude numbers update only while a Claude Code session refreshes its status line. Between sessions the tray shows the last value with its age and a countdown computed locally from `resets_at`. Quota does not burn while you are not using it, so this is honest, not stale.
 - The status-line payload carries only the 5-hour and the global 7-day window (documented; verified live). Model-scoped weekly windows come only from the official usage endpoint, so they need the opt-in **detailed windows** mode. In that mode the token is read from `~/.claude/.credentials.json`, held in memory for one request, never written or logged; the README states this in plain words, and the mode is off by default. The endpoint is undocumented and rate-limited (429); detailed mode keeps last-good values and backs off.
-- Users who already run a custom status line keep it: the wrapper chains to it. Users without one get a minimal default.
+- Users who already run a custom status line keep it: the wrapper chains to it. Users without one get a minimal default. Contract, files, permissions and the by-hand uninstall: `docs/statusline-wrapper.md`.
 - Codex log format is not a documented contract; the reader is defensive (schema-tolerant, keeps last good value, reports "unknown" rather than guessing).
 - Unsigned until SignPath approval; SmartScreen will warn. winget install avoids the browser download warning.
 
@@ -74,34 +74,37 @@ What the research found that nobody ships:
 ```json
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-07T00:12:34+03:00",
+  "updatedAt": "2026-09-06T21:12:34Z",
   "providers": {
     "claude": {
       "configured": true,
       "plan": "max_20x",
-      "sourceAt": "2026-09-07T00:12:30+03:00",
+      "sourceAt": "2026-09-06T21:12:30Z",
       "source": "statusline | endpoint",
       "binding": "seven_day_fable",
       "windows": {
-        "five_hour":        { "percent": 12, "resetsAt": "2026-09-07T06:10:00+03:00" },
-        "seven_day":        { "percent": 18, "resetsAt": "2026-09-12T05:00:00+03:00" },
-        "seven_day_fable":  { "percent": 23, "resetsAt": "2026-09-12T05:00:00+03:00", "model": "Fable", "detailed": true }
+        "five_hour":        { "percent": 12, "windowMinutes": 300,   "resetsAt": "2026-09-07T03:10:00Z", "state": "ok" },
+        "seven_day":        { "percent": 18, "windowMinutes": 10080, "resetsAt": "2026-09-12T02:00:00Z", "state": "ok" },
+        "seven_day_fable":  { "percent": 23, "windowMinutes": 10080, "resetsAt": "2026-09-12T02:00:00Z", "state": "ok", "model": "Fable", "detailed": true }
       }
     },
     "codex": {
       "configured": true,
       "plan": "plus",
       "sourceAt": "…",
+      "source": "rollout",
       "binding": "secondary",
       "windows": {
-        "primary":   { "percent": 54, "windowMinutes": 300,   "resetsAt": "…" },
-        "secondary": { "percent": 70, "windowMinutes": 10080, "resetsAt": "…" }
+        "primary":   { "percent": 54, "windowMinutes": 300,   "resetsAt": "…", "state": "ok" },
+        "secondary": { "percent": 70, "windowMinutes": 10080, "resetsAt": "…", "state": "ok" }
       }
     }
   }
 }
 ```
 No tokens, no account ids, no e-mail. `configured:false` when the provider's files are absent. Nazar reads this file and nothing else from nazar-tray.
+
+**Timestamps are RFC 3339 in UTC (`…Z`)** — decided in WP1 and applied to this sample in WP2. The standard library has no time-zone database, a UTC stamp names the same instant a local offset would, and a countdown is offset-independent; consumers render local time. Reasoning in `docs/pinned-internal-formats.md`.
 
 Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries `"state": "ok" | "stale" | "error"` plus an optional `"error"` string (the prototype had `stale`+`lastError`; the first frozen draft lost them); every provider carries `"source"` (`statusline | endpoint` for Claude, `rollout` for Codex); Claude windows carry `windowMinutes` (300 / 10080) like Codex so consumers need no provider-specific logic. The status-line wrapper keys its capture file by `session_id`, never a single fixed path (three concurrent sessions would otherwise overwrite each other).
 
@@ -111,7 +114,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 |---|---|---|
 | WP0 | Repo skeleton: Tauri v2 project, Rust core crate, CI (GitHub Actions, Windows build + tests), locale scaffolding with EN/TR, `limits.json` contract doc | `cargo test` and a Windows build pass in CI on an empty tray |
 | WP1 | **Codex reader**: find newest `rollout-*.jsonl`, tail for `rate_limits`, tolerate schema drift, fixtures from real logs | Unit tests on captured fixtures incl. missing/partial fields; live value matches Codex `/status` on the maintainer's machine |
-| WP2 | **Claude reader**: `nazar-statusline` wrapper (records `rate_limits`, chains to existing command, < 50 ms), installer merges into `~/.claude/settings.json` without clobbering | Works with no status line, with ccstatusline, with the maintainer's custom script; uninstall restores the previous command exactly |
+| WP2 ✅ | **Claude reader**: `nazar-statusline` wrapper (records `rate_limits`, chains to existing command, < 50 ms), installer merges into `~/.claude/settings.json` without clobbering | ~~Works with no status line, with ccstatusline, with the maintainer's custom script; uninstall restores the previous command exactly~~ — **landed 2026-09-07**, all three round-trip byte for byte |
 | WP2b | **Detailed windows mode (opt-in)**: settings toggle, token read in memory only, official usage endpoint client with backoff and last-good cache, model-scoped windows merged into the state with `detailed:true`, Max-plan detection prompt | Off by default; with the toggle on, the Fable weekly window appears and matches `/usage`; token never appears in any file, log, or error text (test asserts it); 429 leaves last value with a stale flag |
 | WP3 | **State model**: binding window across passive + detailed windows, staleness/age, local countdown, unknown state, atomic `limits.json` writer, single-instance | Property tests on window selection and reset math across time zones |
 | WP4 | **Tray icon + panel**: bead icon per scale factor, navy panel near cursor, both providers, countdowns, theme JSON (`nazar`, `graphite`) | Screenshots at 100/150/200 % DPI; panel opens on left/right click, closes on Esc/blur |
@@ -136,4 +139,5 @@ Going public happens after WP7, not before.
 - 2026-09-07 05:30 — **Order changed: nazar-tray is second, behind Nazar** (it was first). Nazar is the CV piece and runs on Node/TS, so it can start on the current PC while this repo waits for the Rust/Tauri toolchain on the new machine; Dile stays last. No package here changes: WP2's `nazar-statusline` wrapper is still owned by this repo and still the single implementation. What changes is its consumer's timing — Nazar ships v1 **without** the wrapper (quota strip hidden) and picks it up in its own v1.1, so WP2 no longer blocks anyone's first release, and WP8's handoff lands after both repos already exist.
 - 2026-09-07 — **WP0 landed.** Cargo workspace (`nazar-core` + `nazar-tray`), Tauri v2 shell with tray and popup panel, the `limits.json` contract with its atomic writer and `docs/limits-contract.md`, EN/TR locales with four placeholders, theme tokens copied from Nazar, CI on three operating systems, and a licence gate. `cargo test --workspace` and `npm test` green; `cargo tauri build --debug` produces the exe and an NSIS installer.
 - 2026-09-07 — **WP1 landed: the Codex reader.** `nazar-core::codex` locates the newest `rollout-*.jsonl` under `$CODEX_HOME` (default `~/.codex`), tails it by byte offset, and takes seven values out of `payload.rate_limits` and nothing else; 96 tests, a leak test with a sentinel in every text field, a credential grep over the workspace and a fixture-hygiene gate. Verified live against the maintainer's real logs: the weekly window read **70 % resetting 2026-09-07T12:24:52Z**, matching the official endpoint to the second, which also confirmed `resets_at` is Unix seconds. Two things the audit had not seen: a second limit family (`limit_id: "premium"`) whose windows are both `null` and which was the **last** quota line in two logs, and three logs with no quota line at all — both are now fixtures. `nazar-tray --print` dumps the document; the writer stays WP3's. Formats pinned in `docs/pinned-internal-formats.md`.
+- 2026-09-07 — **WP2 landed: the Claude reader and the shared status-line wrapper.** A third crate, `nazar-statusline`, builds a 334 KB binary with no Tauri in it. As a wrapper it reads the payload, writes it **whole** to `~/.nazar/statusline/<session_id>.json` and runs the status line that was there before, forwarding its output and its exit code — **median 9.6 ms over ten runs** against a 50 ms budget, release build, no chained command. As an installer it edits exactly one key of `settings.json`, keeps every other key and their order, refuses on invalid JSON or a lock file, is idempotent, takes a backup it will never write over, and prints a unified diff whether or not anything is a terminal. All three shapes the acceptance criterion names — no status line, ccstatusline, the maintainer's own `node "…"` script — install, diff and uninstall back to the **byte-identical** original. `nazar-core::claude` maps a capture to `providers.claude` (two windows, `windowMinutes`, UTC `resetsAt`, `state`, computed `binding`), reports `configured:false` with no capture and `state:"error"` with no `rate_limits`, and derives no plan name because the payload does not carry one. 82 new tests (188 in the workspace), a second leak test, a second fixture-hygiene gate, and `nazar-tray --print` now prints both providers. Verified live against the maintainer's own status line: with `chain.json` pointing at `node "…\statusline.js"`, the wrapper captured the payload and the real script drew its usual coloured line unchanged, exit 0. Contract in `docs/statusline-wrapper.md`; formats pinned. **Nothing on the maintainer's machine was written: the real-machine check was `install --dry-run`, verified by a SHA-256 taken either side.**
 - 2026-09-07 03:20 — Live check showed the status-line payload lacks model-scoped weekly windows (global 7-day 18 % vs Fable weekly 23 % on the maintainer's machine). Decision: hybrid. Passive by default; opt-in **detailed windows** mode (WP2b) reads the token in memory only and calls the official endpoint. Claim reworded to "by default". Raw status-line payload captured as a WP2 fixture.

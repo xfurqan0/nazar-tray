@@ -2,16 +2,16 @@
 //!
 //! WP0 wired the shell: a tray icon, a frameless popup panel that opens near the cursor
 //! on either mouse button, and a panel that closes itself on Esc or when it loses focus.
-//! WP1 adds the first reader — Codex's quota, taken from its own session logs — and a
-//! `--print` flag that dumps the `limits.json` document it produces. The tray itself
-//! still shows a static bead; wiring the reader into the icon and the panel is WP3 and
-//! WP4.
+//! WP1 added the first reader — Codex's quota, taken from its own session logs — and a
+//! `--print` flag that dumps the `limits.json` document it produces. WP2 adds the second:
+//! Claude's quota, taken from the captures the `nazar-statusline` wrapper writes. The tray
+//! itself still shows a static bead; wiring the readers into the icon and the panel is WP3
+//! and WP4.
 //!
 //! What this binary deliberately does **not** do yet, and the package that will add it:
 //!
 //! | Behaviour | Package |
 //! |---|---|
-//! | Read Claude's status-line capture | WP2 |
 //! | Detailed windows from the usage endpoint (opt-in) | WP2b |
 //! | Staleness, local countdown, writing `~/.nazar/limits.json` | WP3 |
 //! | Bead drawn per scale factor, real panel contents | WP4 |
