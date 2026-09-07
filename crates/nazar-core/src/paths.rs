@@ -56,6 +56,26 @@ pub fn limits_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("limits.json"))
 }
 
+/// `~/.nazar/limits.lock` — the advisory file that says who is allowed to write.
+///
+/// Beside the file it guards, on the same volume, for the same reason the atomic writer's
+/// temporary file is: a lock on one filesystem guarding a file on another guards nothing.
+/// What is in it, and what makes a holder count as alive, is [`crate::lock`].
+pub fn lock_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("limits.lock"))
+}
+
+/// `~/.nazar/tray.request` — "somebody launched the tray again; show the panel".
+///
+/// A second launch cannot open the first one's window directly without a channel between
+/// two processes, and every portable way to build one is heavier than this: a file that
+/// exists for a moment, is noticed within five seconds by the loop that is already looking
+/// at this directory's neighbours, and is deleted as it is acted on. It carries a timestamp
+/// and nothing else.
+pub fn request_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("tray.request"))
+}
+
 /// `~/.nazar/statusline` — per-session capture files from the `nazar-statusline` wrapper.
 ///
 /// Keyed by session id, never a single fixed path: three concurrent Claude Code sessions
@@ -162,5 +182,14 @@ mod tests {
             statusline_dir().unwrap().parent().unwrap(),
             data_dir().unwrap()
         );
+    }
+
+    #[test]
+    fn the_lock_sits_beside_the_file_it_guards() {
+        let Ok(limits) = limits_path() else { return };
+        let lock = lock_path().unwrap();
+        assert_eq!(lock.file_name().unwrap(), "limits.lock");
+        assert_eq!(lock.parent(), limits.parent());
+        assert_eq!(request_path().unwrap().parent(), limits.parent());
     }
 }

@@ -39,7 +39,12 @@ await build({
 // The tests exercise the same modules the panel runs, not a copy of their logic.
 await build({
   ...shared,
-  entryPoints: [resolve(SRC, "i18n.ts"), resolve(SRC, "theme.ts"), resolve(SRC, "locales.ts")],
+  entryPoints: [
+    resolve(SRC, "i18n.ts"),
+    resolve(SRC, "theme.ts"),
+    resolve(SRC, "locales.ts"),
+    resolve(SRC, "snapshot.ts"),
+  ],
   outdir: resolve(DIST, "lib"),
   outExtension: { ".js": ".mjs" },
 });

@@ -71,13 +71,19 @@ body {
 
 .provider {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px 10px;
   border: 1px solid var(--color-node-border, #1e4372);
   border-radius: 7px;
   background: var(--color-node, #102a4c);
+}
+
+.provider-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .provider-name {
@@ -85,13 +91,62 @@ body {
   font-weight: var(--type-weight-medium, 560);
 }
 
-/* Grey, never green and never a number: an unread window is unknown, not zero. */
-.provider-value {
-  color: var(--color-unknown-grey-text, #a3b2c4);
+.provider-age {
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+}
+
+/*
+ * WP3 shows the raw values and nothing else: one row per window, the key on the left and
+ * the numbers on the right. WP4 replaces all of this with the designed panel, which is why
+ * there is no bar, no bead fill and no colour beyond the severity class.
+ */
+.windows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.window {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   font-family: var(--type-mono-family, ui-monospace, monospace);
   font-size: var(--type-size-sm, 11.5px);
+}
+
+.window-key {
+  color: var(--color-text-faint, #7d96b5);
+}
+
+/* The binding window is the one that constrains you. It is the only thing given weight. */
+.window.binding .window-key,
+.window.binding .window-value {
+  font-weight: var(--type-weight-strong, 680);
+}
+
+/* Grey, never green and never a number: an unread window is unknown, not zero. */
+.window-value {
+  color: var(--color-unknown-grey-text, #a3b2c4);
   letter-spacing: var(--type-tracking-wide, 0.07em);
-  text-transform: lowercase;
+}
+
+.window.severity-ok .window-value {
+  color: var(--color-text, #eaf2ff);
+}
+
+.window.severity-warn .window-value {
+  color: var(--color-warn, #f2a93b);
+}
+
+.window.severity-critical .window-value,
+.window.severity-exhausted .window-value {
+  color: var(--color-danger, #e2564a);
 }
 
 .hint {

@@ -30,16 +30,51 @@ Nazar's quota strip reads this file and nothing else from nazar-tray.
    them back unchanged, and an unrecognised `state` or `source` value is preserved as
    written. An older tray next to a newer file loses nothing.
 5. **Rounding happens at display time.** `percent` is stored as reported. A consumer that
-   wants `18 %` rounds it itself.
+   wants `18 %` rounds it itself — **downwards**. 99.6 % is not 100 %, and a display that
+   says a window is spent when it is not is wrong at the exact moment it matters most.
 6. **Times are UTC.** Every timestamp in this file is RFC 3339 with a `Z`, and a consumer
    renders local time itself. See the section at the end for why.
+7. **Derived fields are computed by consumers; the file stores only measured values.**
+   Which window binds, how long until it resets, how old the reading is and how alarming it
+   is all change with the clock rather than with the data, so none of them is stored as a
+   fact about a moment that has passed. See the next section.
+
+## Derived fields are computed by consumers
+
+The file stores **only measured values**: what a source reported, and when it reported it.
+Everything a display actually wants is worked out from those two things plus the current
+time, and worked out again a second later, which is why none of it is written down:
+
+| Derived | From | Rule |
+|---|---|---|
+| `binding` | the windows' `percent` | The highest percentage. Ties go to the shorter `windowMinutes`, then to the smaller key. A window with **no** `percent` never binds; a provider whose windows are all unknown has no binding window at all. |
+| remaining | `resetsAt` − now | Milliseconds, and **negative when the reset is already due** — which is what a reading taken before a long sleep looks like. |
+| age | now − `sourceAt` | Milliseconds. Negative when the source's clock is ahead of the consumer's, which is not an error. |
+| freshness | age | `fresh` ≤ 5 min, `aging` ≤ 45 min, `stale` beyond that, `unknown` with no `sourceAt`. |
+| severity | `percent` | `ok` below 60, `warn` at 60, `critical` at 85, `exhausted` at 100, `unknown` with no `percent`. |
+
+The thresholds in the last two rows are the shipped defaults and live in the user's
+settings (`%APPDATA%\nazar\config.json`, keys `freshness` and `thresholds`), so that every
+display answers the same question the same way. The retired prototype had three displays
+with three different definitions of "stale" — 45 minutes in the tray, 30 in the status line
+and none at all in the fetcher — and a user watching two of them at once could not tell
+which to believe.
+
+`binding` **is** written into the file, because it is a summary a consumer should not have
+to recompute to render one row. It is the one exception, it is computed by the writer from
+the same rule, and a consumer that recomputes it must get the same answer. A consumer that
+disagrees with the file should trust its own arithmetic: the file may have been written by
+an older build or by hand.
+
+nazar-tray's own implementation is `crates/nazar-core/src/state.rs`, and its property tests
+are the executable form of the table above.
 
 ## Document
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `schemaVersion` | integer | yes | `1`. A bump is a breaking change for Nazar. |
-| `updatedAt` | string | yes | RFC 3339 **in UTC** (`…Z`). When the tray last wrote the file. See "Times are written in UTC" below. |
+| `updatedAt` | string | yes | RFC 3339 **in UTC** (`…Z`). When the tray last wrote the file — which is **when the content last changed**, not when the tray last looked. The writer compares the document it is about to write with the one it wrote last, ignoring this field, and writes nothing when they are the same. A consumer that wants to know whether the *tray* is alive reads the heartbeat in `limits.lock` instead; the two questions are different. See "One writer" below. |
 | `providers` | object | yes | See below. |
 
 ### `providers.<name>`
@@ -271,6 +306,23 @@ Codex and Claude Code report Unix seconds.
 
 Decided in WP1 and applied to the samples in WP2; the reasoning in full is in
 [`pinned-internal-formats.md`](pinned-internal-formats.md).
+
+## One writer
+
+`limits.json` has exactly one writer at a time, and `~/.nazar/limits.lock` is how that is
+enforced rather than promised. The full mechanism is in
+[`pinned-internal-formats.md`](pinned-internal-formats.md); what a consumer needs to know is
+three sentences:
+
+- The lock is an ordinary JSON file with a process id, a start time and a **heartbeat** that
+  the writer rewrites on every refresh — roughly once a minute, whether or not anything
+  changed.
+- A reader may look at it to answer "is the tray running", which `updatedAt` cannot answer
+  since the writer only writes on change. A heartbeat older than five minutes means nobody
+  is maintaining the file.
+- **Nothing but nazar-tray should write either file.** A consumer that wants a refresh runs
+  `nazar-tray --print --write`, which takes the same lock and defers to the tray if it is
+  already running.
 
 ## Reserved for v2
 

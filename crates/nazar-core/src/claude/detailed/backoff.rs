@@ -22,44 +22,18 @@
 
 use std::time::Duration;
 
+/// The clock this module measures its waits against.
+///
+/// It moved to [`crate::clock`] in WP3, when the refresh loop turned out to need the same
+/// two readings and to exist whether or not this feature is compiled in. Re-exported here
+/// so that `detailed::Clock` keeps meaning what it always meant.
+pub use crate::clock::{Clock, SystemClock};
+
 /// First wait after a failure.
 pub const BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Longest wait, however many failures there have been.
 pub const MAX_DELAY: Duration = Duration::from_secs(30 * 60);
-
-/// A clock the tests can move.
-///
-/// Two readings, because the two questions are different. `monotonic_millis` answers "how
-/// long since the last failure" and must not jump when the operating system corrects the
-/// wall clock. `now_rfc3339` answers "what time is it", which is what goes in the file and
-/// what a stored expiry is compared against.
-pub trait Clock: Send + Sync {
-    /// Milliseconds since an arbitrary origin that only moves forward.
-    fn monotonic_millis(&self) -> u64;
-
-    /// The current instant as RFC 3339 in UTC.
-    fn now_rfc3339(&self) -> String;
-}
-
-/// The real clock.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn monotonic_millis(&self) -> u64 {
-        // `Instant` has no epoch, so one is made at first use. `Instant::elapsed` is
-        // monotonic on every platform this runs on, which is the property that matters.
-        use std::sync::OnceLock;
-        use std::time::Instant;
-        static ORIGIN: OnceLock<Instant> = OnceLock::new();
-        ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64
-    }
-
-    fn now_rfc3339(&self) -> String {
-        crate::timefmt::now_rfc3339()
-    }
-}
 
 /// How long to wait, and how much of the wait is left.
 #[derive(Debug, Clone, Default)]

@@ -15,16 +15,12 @@
     <main class="panel">
       <div class="bead" data-bead><!--BEAD_SVG--></div>
       <h1 class="headline" data-headline></h1>
-      <ul class="providers">
-        <li class="provider">
-          <span class="provider-name" data-i18n="panel.provider.claude"></span>
-          <span class="provider-value" data-i18n="panel.window.unknown"></span>
-        </li>
-        <li class="provider">
-          <span class="provider-name" data-i18n="panel.provider.codex"></span>
-          <span class="provider-value" data-i18n="panel.window.unknown"></span>
-        </li>
-      </ul>
+      <!--
+        Filled from the derived snapshot by main.ts. Empty here rather than seeded with
+        two rows, because a row drawn before the first `get_snapshot` would be a row
+        asserting something nobody has read yet.
+      -->
+      <ul class="providers" data-providers></ul>
       <p class="hint" data-i18n="panel.hint.close"></p>
     </main>
     <script type="module" src="panel.js"></script>

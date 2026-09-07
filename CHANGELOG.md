@@ -9,11 +9,90 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 Nothing released yet. The repository holds the WP0 skeleton, the WP1 Codex reader, the WP2
-Claude reader with its status-line wrapper and the WP2b detailed-windows mode: it builds,
-it tests, `nazar-tray --print` prints real numbers for both providers, and the tray still
-opens an empty panel.
+Claude reader with its status-line wrapper, the WP2b detailed-windows mode and the WP3 state
+model, refresh loop and writer: it builds, it tests, and **the tray now works** — it reads
+both providers on its own schedule and writes `~/.nazar/limits.json`. The panel prints the
+numbers as raw text; designing it is WP4.
 
 ### Added
+
+- **State model** (`nazar-core::state`). `limits.json` stores what a source measured;
+  everything a display wants is derived at read time and stored nowhere, because all of it
+  changes with the clock rather than with the data: the **binding** window (highest
+  percentage, ties to the shorter window, and a window with no percentage never binds), the
+  **countdown** (`resetsAt` − now, **negative when the reset is already due** rather than
+  frozen at "now", which is audit scenario S7), the **age** (now − `sourceAt`), **freshness**
+  (`fresh` ≤ 5 min, `aging` ≤ 45 min, `stale` beyond) and **severity** (`ok` < 60, `warn`
+  ≥ 60, `critical` ≥ 85, `exhausted` ≥ 100). `unknown` is a real value in both of the last
+  two, and it sorts *below* `ok`, so a provider nobody could read never decides the icon's
+  colour on its own.
+- **One definition of "stale", in the settings.** The thresholds live in
+  `%APPDATA%\nazar\config.json` (`thresholds`, `freshness`) and every display reads them from
+  there. The retired prototype had three displays with three different answers — 45 minutes
+  in the tray, 30 in the status line, none in the fetcher — which is audit finding B14. The
+  binding rule is likewise one function now, shared by both readers and the view (B16).
+- **Refresh loop inside the tray process** (`nazar-core::refresh`), which is what
+  `docs/PROJECT.md` section 3 decided and what deletes the Task Scheduler / launchd / systemd
+  triple, the VBS launcher and the lock race the audit proved from logs. One thread owns
+  every reader. Five triggers: startup, a 60-second tick, a **five-second look** at the
+  status-line captures and at the rollout log being followed, an explicit request from the
+  panel or a second launch, and a **clock jump of more than two ticks** — which is how a
+  machine notices it has been asleep (audit scenario S7: gaps of 480, 575 and 867 minutes in
+  one week of logs, each followed by something going wrong). Everything but the tick is
+  coalesced by a 250 ms debounce, so a busy Codex session that writes a quota line every few
+  seconds still costs one refresh. The opt-in endpoint is asked at most **once every five
+  minutes**, on top of its own backoff.
+- **The writer, which mostly does not write** (`nazar-core::writer`). Each refresh is
+  compared with the last one — the serialised document, minus `updatedAt` — and an identical
+  one is not written at all: no temporary file, no rename, no modification time, nothing for
+  a watching consumer to wake up for. So **`updatedAt` moves with the content**, which is the
+  honest reading of "when the tray last wrote this file", and a consumer that wants to know
+  whether the *tray* is alive reads the lock's heartbeat instead. A tray restarting over an
+  unchanged file writes nothing, and its panel shows the last known numbers before its first
+  read finishes.
+- **One writer, enforced** (`nazar-core::lock`, `~/.nazar/limits.lock`). Acquisition is a
+  single `create_new`, so of two processes racing for it exactly one wins — finding B01 was a
+  lock whose check and whose write were separate operations, and the logs caught two
+  refreshers passing that check four seconds apart, which is what produced the observed
+  HTTP 429. Liveness is a **heartbeat** rewritten on every refresh, not a process id: there is
+  no portable way to ask whether a process is running, and a heartbeat also catches a holder
+  that is alive but wedged. A record silent for five minutes is reclaimed; an unreadable one
+  is respected until it ages out, so a competitor cannot evict a holder that is mid-write.
+  The holder re-checks the file **before** it writes, so a tray whose lock was taken over
+  while its machine slept stops writing rather than overwriting its replacement.
+- **Single instance.** The same lock, rather than a named mutex or a plugin: it is the
+  guarantee `limits.json` needs anyway, it works the same on all three target platforms, and
+  it added nothing to the dependency tree. A second launch leaves a marker at
+  `~/.nazar/tray.request`, which the running tray notices within five seconds, deletes, and
+  answers by opening its panel — then the second process exits. A marker older than a minute
+  is swept up without being obeyed.
+- **`nazar-tray --print --write`**: one refresh, written to `~/.nazar/limits.json`, for
+  scripts and for Linux — where v1 ships no tray at all and the CLI plus the Nazar canvas
+  *is* the story. It takes the same lock, and if the tray already holds it this **reads
+  instead of writing**: it prints what the tray wrote, says so on standard error, and changes
+  nothing.
+- **The panel reads the state.** `get_snapshot` derives the view for the instant the panel
+  asked, `get_warnings` exposes the loop's per-reader counters, `refresh_now` asks for a pass
+  (audit finding B13 was a Refresh button that appeared to do nothing), and a
+  `snapshot-changed` event fires **only when the document changed**. The panel counts the
+  seconds between refreshes itself. It shows raw values — provider, each window's percentage
+  or the word "unknown", the countdown, how old the reading is — because designing it is WP4
+  and a placeholder would only have to be deleted. Percentages are floored, never rounded up:
+  99.6 % is not 100 % (finding B15).
+- **Property tests**, with a hand-rolled generator rather than `proptest`: ten thousand
+  random window sets for the binding rule, three thousand random instants × six time-zone
+  spellings for the countdown (plus fixed cases at both American daylight-saving boundaries
+  and at Istanbul's, which has none), and monotonicity for severity and freshness across
+  their whole ranges. The severity boundaries are pinned at 59.9 / 60 / 84.9 / 85 / 100 / 101.
+  A hygiene test backs the time-zone property with a grep: nothing in the workspace reads
+  `TZ` or converts to local time, because a property test cannot see a dependency that has
+  not been written yet.
+- **94 new tests (343 in the workspace) and nine more in the panel (26)**, every loop test
+  driving `Engine::tick` with a clock it moves by hand rather than by waiting — a debounce, a
+  sixty-second tick and an eight-hour sleep are one line each. Three of the panel's new tests
+  are a cross-language gate: a command the panel invokes and a command the Rust side
+  registers are the same string in two files no compiler reads together, and a typo there
+  shows up as a panel that draws nothing, at run time, on somebody else's machine.
 
 - **Detailed windows (`nazar-core::claude::detailed`), opt-in and off by default.** With
   `detailedWindows` on, it reads four values out of `<CLAUDE_CONFIG_DIR or
@@ -111,7 +190,8 @@ opens an empty panel.
   source does not provide. No credential file is opened and nothing leaves the machine.
 - `nazar-tray --print`: writes the `limits.json` document to standard output and exits
   without starting the tray. It does **not** write `~/.nazar/limits.json`; that file keeps
-  its single writer and gets one in WP3.
+  its single writer, and WP3 gave it one — plus `--print --write` for the callers that want
+  a refresh without a tray.
 - Codex fixtures sanitised from real logs — a session's quota lines, the `limit_id`
   `premium` variant whose windows are both `null`, a log with no quota line, and a damaged
   log — plus `docs/pinned-internal-formats.md`, which records every field the reader
@@ -161,6 +241,28 @@ opens an empty panel.
 
 ### Notes
 
+- **WP3 added no dependencies.** 542 packages in the lock file before, 542 after. Three
+  crates were considered and each was measured rather than argued about. **`notify`** would
+  add two packages on Windows (`notify`, `notify-types`; `filetime`, `walkdir`, `same-file`,
+  `crossbeam-channel` and `log` are already there through Tauri) and more on Linux and macOS,
+  for a five-second latency improvement on a display whose slowest input redraws every thirty
+  seconds — and the readers already list those directories on every refresh, so the poll is
+  one extra `read_dir` of a handful of entries rather than a second thread with a platform
+  backend. **`tauri-plugin-single-instance`** would solve half of a problem the advisory lock
+  has to solve anyway, and brings a D-Bus stack on Linux. **`proptest`** would add about ten
+  packages to test rules that fit on one page; the generator here is a four-instruction
+  xorshift that prints a seed a failure can be replayed from. Each decision is written down
+  where the code is, not in a commit message: `refresh/watch.rs`, `main.rs` and
+  `state/tests.rs`.
+- **`updatedAt` now means "when the content last changed".** It always said "when the tray
+  last wrote the file", and that is still exactly what it is — the writer only writes on a
+  change. A consumer that was using it as a liveness signal for the tray should read
+  `~/.nazar/limits.lock`'s `heartbeatAt` instead, which advances every minute regardless.
+- **A tray that is killed rather than quit keeps its lock for five minutes**, so a relaunch
+  inside that window defers to a process that is gone. There is no Quit command yet — the tray
+  has no menu by design and the panel is where every action will live (WP5) — so during
+  development every stop is a kill. Deleting `~/.nazar/limits.lock` by hand is the escape and
+  is safe when no tray is running.
 - **The detailed-windows mode is behind a cargo feature as well as the runtime flag.**
   `nazar-core`'s `detailed-windows` feature is on by default, because the shipped tray
   offers the toggle; `nazar-statusline` depends on `nazar-core` with
@@ -190,9 +292,11 @@ opens an empty panel.
   Rust's own escaping follows the C runtime's rules and `cmd.exe` does not, which would
   break every command with a quoted path in it.
 - The Codex reader reports what it read and how old it is (`sourceAt`); it does not decide
-  when old becomes stale. That threshold belongs to the state model in WP3, so that all
-  three displays answer it the same way — the retired prototype had three different ones.
-- The tray shows a static bead. The bead that fills from the bottom with the binding
-  window is WP4 (decision K3, drawn in Rust per scale factor).
+  when old becomes stale. That threshold belongs to the state model, which WP3 put in the
+  settings so that all three displays answer it the same way — the retired prototype had
+  three different ones.
+- The tray still shows a static bead. The bead that fills from the bottom with the binding
+  window is WP4 (decision K3, drawn in Rust per scale factor); WP3 computes the fill level
+  and the colour but draws neither.
 - `tauri-plugin-notification`, `tauri-plugin-autostart` and `tauri-plugin-updater` are
   declared but not initialised. They are wired in WP5 and WP7.

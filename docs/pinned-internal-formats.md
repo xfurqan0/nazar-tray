@@ -40,6 +40,8 @@ Rules that follow from this table, and that the tests enforce:
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
 | `GET https://api.anthropic.com/api/oauth/usage` | `limits[]`, and inside each entry `{kind, percent, resets_at, scope.model.display_name}`; or the older top-level `five_hour`/`seven_day` `{utilization, resets_at}` | observed live 2026-09-07 | none — no fixture may hold a real response | **Opt-in, off by default.** See "The usage endpoint" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` | `claudeAiOauth.{accessToken, expiresAt, rateLimitTier, subscriptionType}` — **four values, and the token is never stored** | Claude Code 2.1.263 | none — and there never will be one | **Opt-in, off by default.** Read-only, never written. See "The sign-in file" below. |
+| `~/.nazar/limits.lock` | `{schemaVersion, pid, startedAt, heartbeatAt}` — **ours**, read and written | this build | none needed; `lock.rs`'s tests are the fixture | The advisory file that makes "one writer" true. See "The advisory lock" below. |
+| `~/.nazar/tray.request` | **existence and modification time only.** The contents are one timestamp, for a human reading the directory | this build | none | How a second launch reaches the running tray. See "The request marker" below. |
 
 ## The Codex rollout log
 
@@ -166,6 +168,77 @@ honest. Three more tests hold that place down: the directory must exist and must
 a needle (otherwise the allow-list is guarding nothing and should be deleted), nothing in
 it may contain a printing macro, and `Secret::expose_for_one_request` must have exactly one
 call site in shipping code.
+
+## The advisory lock
+
+`~/.nazar/limits.lock` is the only file on this page that belongs to nazar-tray itself. It
+is listed here anyway, because Nazar reads `~/.nazar` too and a file that appears next to
+`limits.json` should be documented rather than discovered.
+
+```json
+{
+  "schemaVersion": 1,
+  "pid": 24184,
+  "startedAt": "2026-09-07T09:12:04Z",
+  "heartbeatAt": "2026-09-07T09:18:04Z"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1`. Unknown keys are preserved through a heartbeat, like everywhere else. |
+| `pid` | The holder's process id. **A diagnostic, never a liveness proof** — see below. |
+| `startedAt` | When the holder took the lock. Together with `pid` it is how a holder recognises its own record. |
+| `heartbeatAt` | When the holder last said it was still there. Rewritten on **every** refresh, roughly once a minute, whether or not the numbers changed. |
+
+**Acquisition is one operation, not two.** `OpenOptions::create_new` either creates the file
+or fails because it exists; of two processes racing for it exactly one wins. Finding B01 of
+the code audit was a lock whose check and whose write were separate, and the logs caught two
+refreshers passing that check four seconds apart — which is what produced the observed
+HTTP 429.
+
+**Liveness is the heartbeat, not the process id.** There is no portable way to ask the
+operating system whether a given process is running, and buying one would cost a platform
+crate in the crate that is meant to be boring. A heartbeat costs nothing extra — the holder
+is awake every sixty seconds anyway — and it covers a case a process-id check cannot: a
+holder that is still running but wedged stops beating and is replaced, where a liveness
+probe would wait for ever on a process that will never write again. A record whose heartbeat
+is more than **five minutes** old (five missed ticks) may be deleted and retaken.
+
+**An unreadable lock file is respected until it ages out.** Between `create_new` and the
+record being written there is a moment when the file is empty; a competitor that read it then
+must wait rather than evict a holder that is one instruction from being alive. So a file
+whose contents are not a record is judged by its own modification time, against the same five
+minutes.
+
+**A holder verifies before it writes.** The heartbeat re-reads the file first and reports
+whether it still names this process. A tray whose lock was reclaimed while its machine slept
+finds out at the top of its next refresh and stops writing — before the write, not after it.
+
+**Consequence worth knowing:** a tray that is *killed* rather than quit does not release its
+lock, so a relaunch within five minutes defers to a process that is gone. WP5 adds the Quit
+command that makes a graceful exit possible at all; until then, deleting
+`~/.nazar/limits.lock` by hand is the manual escape, and doing so is safe when no tray is
+running.
+
+## The request marker
+
+`~/.nazar/tray.request` is how a second launch of the application reaches the first one.
+Two processes cannot share a window, and every portable channel between them — a socket, a
+named pipe, D-Bus, a platform single-instance plugin — is heavier than the problem. So the
+second launch writes a marker into the directory the running tray is already watching, and
+exits; the tray notices it within five seconds, deletes it, and opens its panel.
+
+```json
+{
+  "requestedAt": "2026-09-07T09:18:31Z"
+}
+```
+
+Only two things about the file are ever read: **that it exists**, and **when it was last
+written**. The timestamp inside is for a human looking at the directory. A marker older than
+sixty seconds is swept up without being obeyed — one left behind by a crash is litter, not an
+instruction, and a panel opening days later because of it would be a small haunting.
 
 ## The usage endpoint
 

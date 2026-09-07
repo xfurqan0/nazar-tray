@@ -231,6 +231,46 @@ fn the_token_is_exposed_in_one_place_in_the_shipping_code() {
     );
 }
 
+/// Nothing derives a time from the machine's time zone.
+///
+/// The contract stores UTC and the state model counts down between two instants, so a
+/// countdown is the same number wherever it is computed. `state/tests.rs` proves the
+/// arithmetic; this proves there is no second path — nothing reads `TZ`, and nothing calls a
+/// local-time conversion — because a property test cannot see a dependency that has not been
+/// written yet. Rendering local time is the panel's job, in JavaScript, where it is one call.
+#[test]
+fn nothing_in_the_workspace_asks_the_machine_what_time_zone_it_is_in() {
+    // Assembled at run time so this file does not match itself.
+    let needles = [
+        format!("\"{}\"", "TZ"),
+        format!("{}{}", "local", "time"),
+        format!("{}{}", "Local", "time"),
+        format!("{}{}", "to_", "local"),
+        format!("{}{}", "utc_", "offset"),
+    ];
+
+    let mut hits = Vec::new();
+    for path in workspace_sources() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for needle in &needles {
+            if text.contains(needle.as_str()) {
+                hits.push(format!(
+                    "{} mentions {needle:?}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "reset arithmetic happens on UTC instants and nowhere else; these files say \
+         otherwise:\n  {}",
+        hits.join("\n  ")
+    );
+}
+
 /// The committed fixtures must not identify the machine they were captured on.
 ///
 /// A fixture is a real session log with its text replaced. What has to be gone: home

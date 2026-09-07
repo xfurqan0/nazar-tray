@@ -2,9 +2,18 @@
   "app.name": "nazar-tray",
   "panel.headline": "{name} {version} — {status}",
   "panel.status.noData": "no data yet",
+  "panel.status.updated": "read {age} ago",
   "panel.provider.claude": "Claude Code",
   "panel.provider.codex": "Codex",
+  "panel.provider.notConfigured": "not set up",
   "panel.window.unknown": "unknown",
+  "panel.window.percent": "{percent} %",
+  "panel.window.resetsIn": "resets in {time}",
+  "panel.window.resetDue": "reset due",
+  "panel.freshness.fresh": "fresh",
+  "panel.freshness.aging": "ageing",
+  "panel.freshness.stale": "stale",
+  "panel.freshness.unknown": "age unknown",
   "panel.hint.close": "Esc closes this panel",
   "panel.bead.alt": "Nazar bead"
 }

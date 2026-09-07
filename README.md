@@ -4,8 +4,11 @@
 
 A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **skeleton (WP0).** The workspace builds, the tests pass and the tray opens an
-> empty panel that says so. No reader, no state model, nothing written to disk yet.
+> Status: **works, and looks like nothing (WP0–WP3).** Both readers are done, the refresh
+> loop runs inside the tray process, and `~/.nazar/limits.json` is written — atomically,
+> by one process, and only when the numbers have actually moved. The panel prints those
+> numbers as raw text: **the design is WP4**, and notifications, autostart and settings are
+> WP5. Not released, and not yet installable from anywhere.
 > Windows first; macOS and Linux builds later from the same codebase.
 > See [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan and [CHANGELOG.md](CHANGELOG.md)
 > for what has landed.
@@ -33,7 +36,14 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 - Popup panel with both providers, all windows, reset countdowns
 - Notifications at 60 / 85 / 100 %, once per window per reset
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)
-- `nazar-tray --print` for scripts and for Linux
+- `nazar-tray --print` for scripts and for Linux, and `--print --write` to refresh
+  `~/.nazar/limits.json` once without a tray running
+
+Everything is read and written by **one process**: no scheduled task, no launch agent, no
+systemd timer, and no second copy of the app fighting the first one for the same file. The
+tray refreshes itself every minute, notices a new reading within five seconds, notices that
+your laptop has been asleep, and writes the file only when something changed — so a consumer
+watching it is woken by news rather than by a timer.
 
 ## Roadmap
 
@@ -77,6 +87,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 node scripts/check-licenses.mjs
 ```
+
+No test in this repository **writes** outside a directory it made itself, reads sign-in
+material, or reaches the network. `NAZAR_HOME` moves the whole data directory, which is what
+makes the first of those true rather than merely intended. (`nazar-tray --print`'s own tests
+do *read* whatever this machine has under `~/.codex` and `~/.nazar/statusline`, because their
+whole point is that the output is a valid document on a real computer — which is also why
+none of them asserts a number.)
 
 **Running it**
 

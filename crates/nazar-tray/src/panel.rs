@@ -70,6 +70,24 @@ pub fn toggle_near(app: &AppHandle, cursor: PhysicalPosition<f64>) {
     let _ = window.set_focus();
 }
 
+/// Open the panel wherever the cursor is.
+///
+/// What a second launch of the application gets instead of a second tray icon: the refresh
+/// loop notices the marker that launch left behind and calls this. Safe from the loop's own
+/// thread — every call goes through the `AppHandle`, which queues onto the event loop.
+pub fn show(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+        return;
+    };
+    // A cursor position we cannot read is not a reason to refuse to open: the panel then
+    // appears wherever it last was, which is still an answer.
+    if let Ok(cursor) = app.cursor_position() {
+        let _ = place(&window, cursor);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 /// Hide the panel and remember when, so the next tray click reads as a toggle.
 pub fn hide(window: &WebviewWindow, state: &PanelState) {
     let _ = window.hide();

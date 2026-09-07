@@ -147,6 +147,16 @@ impl CodexReader {
         &self.home
     }
 
+    /// The rollout log this reader is currently following, once it has found one.
+    ///
+    /// The refresh loop watches it, and the directory it sits in, so that an appended quota
+    /// line is noticed within five seconds instead of at the next minute. Nothing else needs
+    /// this: it is a fact about the reader's own progress, not about the numbers.
+    #[must_use]
+    pub fn following(&self) -> Option<&Path> {
+        self.tail.as_ref().map(tail::Tail::path)
+    }
+
     /// How many lines have been skipped for being malformed since the reader was made.
     ///
     /// A steady rise here means the log format has moved and the pinned notes in
@@ -361,19 +371,10 @@ fn readable(quota: &Quota, source_at: &str) -> Provider {
 /// 52 % window in bold as "the one limiting you" while a 70 % window sat beside it.
 ///
 /// Ties go to `primary`, the shorter window: when the five-hour and the weekly window
-/// are equally full, the five-hour one is what you hit first.
+/// are equally full, the five-hour one is what you hit first. That rule is the same for
+/// every provider, so it lives in [`crate::state::binding`] and this is a name for it.
 fn binding(windows: &BTreeMap<String, Window>) -> Option<String> {
-    let mut best: Option<(&str, f64)> = None;
-    for key in [WINDOW_PRIMARY, WINDOW_SECONDARY] {
-        let Some(percent) = windows.get(key).and_then(|window| window.percent) else {
-            continue;
-        };
-        // Strictly greater, and `primary` is tried first, so a tie keeps `primary`.
-        if best.is_none_or(|(_, highest)| percent > highest) {
-            best = Some((key, percent));
-        }
-    }
-    best.map(|(key, _)| key.to_owned())
+    crate::state::binding(windows)
 }
 
 #[cfg(test)]

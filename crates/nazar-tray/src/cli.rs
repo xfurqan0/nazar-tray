@@ -1,20 +1,25 @@
-//! The one command-line mode the tray has: `nazar-tray --print`.
+//! The command-line modes: `nazar-tray --print`, and `--print --write`.
 //!
-//! It builds the `limits.json` document from whichever readers exist today and writes it
-//! to standard output. Nothing else happens: no window, no tray icon, and **no write to
-//! `~/.nazar/limits.json`** — the file has exactly one writer and wiring it up is WP3's
-//! job, not a side effect of a command that says "print".
+//! `--print` builds the `limits.json` document from whichever readers exist and writes it
+//! to standard output. Nothing else happens: no window, no tray icon, and nothing on disk.
 //!
-//! Why it exists before the package that needs it (WP8, the Nazar handoff): a reader is
-//! only finished when something outside the test suite can see what it produces. This is
-//! how the Codex reader gets checked against the real logs on a real machine, and it is
-//! how Nazar and the Linux story will read the same numbers later.
+//! `--print --write` adds the one thing WP3 made possible — **writing the file** — for the
+//! two cases the tray cannot cover:
 //!
-//! One limitation, deliberate and documented rather than worked around here: the tray is
-//! a GUI-subsystem binary on Windows, so a release build launched from an interactive
-//! console has no console to print to. Redirected output — `nazar-tray --print > out.json`
-//! or a pipe, which is how a consumer actually calls it — works in every build. Attaching
-//! to the parent console belongs with the rest of the command-line surface in WP8.
+//! * **Scripts.** A cron job, a status line, a dashboard: anything that wants the file
+//!   refreshed once and does not want a tray running to get it.
+//! * **Linux**, where v1 ships no tray at all (`docs/PROJECT.md` section 3). The CLI plus
+//!   the Nazar canvas *is* the Linux story, and this is the half that produces the file.
+//!
+//! It takes the same advisory lock the tray takes, and if the tray already holds it this
+//! **reads instead of writing**: it prints the document the running tray maintains and
+//! touches nothing. One writer, many readers, with no way to ask for an exception.
+//!
+//! One limitation, deliberate and documented rather than worked around here: the tray is a
+//! GUI-subsystem binary on Windows, so a release build launched from an interactive console
+//! has no console to print to. Redirected output — `nazar-tray --print > out.json` or a
+//! pipe, which is how a consumer actually calls it — works in every build. Attaching to the
+//! parent console belongs with the rest of the command-line surface in WP8.
 //!
 //! ## `--detailed`
 //!
@@ -30,13 +35,18 @@ use nazar_core::claude::ClaudeReader;
 use nazar_core::claude::detailed::{DetailedWindows, SystemClock};
 use nazar_core::claude::merge::merge;
 use nazar_core::codex::CodexReader;
-use nazar_core::{Config, Limits, Provider, now_rfc3339};
+use nazar_core::lock::{Acquisition, LimitsLock};
+use nazar_core::writer::LimitsWriter;
+use nazar_core::{Config, Limits, Provider, now_rfc3339, paths};
 
 /// The flag that turns the tray into a one-shot printer.
 const PRINT_FLAG: &str = "--print";
 
 /// The flag that turns the opt-in mode on for this run only.
 const DETAILED_FLAG: &str = "--detailed";
+
+/// The flag that makes the one-shot run write `~/.nazar/limits.json` as well as print it.
+const WRITE_FLAG: &str = "--write";
 
 /// Run a command-line mode if one was asked for.
 ///
@@ -49,8 +59,14 @@ pub fn run_if_requested() -> bool {
     if !arguments.iter().any(|argument| argument == PRINT_FLAG) {
         return false;
     }
+    let asked = |flag: &str| arguments.iter().any(|argument| argument == flag);
 
-    let document = snapshot(arguments.iter().any(|argument| argument == DETAILED_FLAG));
+    let document = if asked(WRITE_FLAG) {
+        write_once(asked(DETAILED_FLAG))
+    } else {
+        snapshot(asked(DETAILED_FLAG))
+    };
+
     let text = match document.to_json() {
         Ok(text) => text,
         Err(error) => {
@@ -70,13 +86,57 @@ pub fn run_if_requested() -> bool {
     true
 }
 
+/// One refresh, written to `~/.nazar/limits.json` if this process may write it.
+///
+/// The lock decides. With it, this is the writer for as long as the process lives, which is
+/// a fraction of a second. Without it, the tray is running and already keeps that file
+/// current, so the honest thing is to print what the tray wrote rather than to produce a
+/// second opinion — and to say on standard error why, since a script that asked to write is
+/// entitled to know that it did not.
+fn write_once(force_detailed: bool) -> Limits {
+    let now = now_rfc3339();
+    let Ok(path) = paths::limits_path() else {
+        eprintln!("nazar-tray: no home directory, so there is nowhere to write; printing only");
+        return snapshot(force_detailed);
+    };
+    let lock = paths::lock_path()
+        .ok()
+        .and_then(|lock_path| LimitsLock::acquire(&lock_path, &now).ok());
+
+    let Some(Acquisition::Held(lock)) = lock else {
+        eprintln!(
+            "nazar-tray: another instance is the writer; printing what it wrote and \
+             changing nothing"
+        );
+        return nazar_core::read_limits(&path).unwrap_or_else(|_| snapshot(force_detailed));
+    };
+
+    let limits = snapshot(force_detailed);
+    let mut writer = LimitsWriter::adopting(&path);
+    match writer.write_if_changed(&limits, &now) {
+        Ok(written) => {
+            let mut stamped = limits;
+            if let nazar_core::Written::Wrote(at) = written {
+                stamped.updated_at = at;
+            }
+            drop(lock);
+            stamped
+        }
+        Err(error) => {
+            eprintln!("nazar-tray: could not write limits.json: {error}");
+            drop(lock);
+            limits
+        }
+    }
+}
+
 /// Build the `limits.json` document from the readers that exist.
 ///
 /// Both providers are read from local files their own tools wrote: Codex from its newest
 /// `rollout-*.jsonl`, Claude from the status-line captures `nazar-statusline` leaves in
-/// `~/.nazar/statusline`. Both keys are always present — the contract says a provider's
-/// key never disappears, so a consumer can tell "not set up on this machine" from "this
-/// build does not know about that provider" without special cases.
+/// `~/.nazar/statusline`. Both keys are always present — the contract says a provider's key
+/// never disappears, so a consumer can tell "not set up on this machine" from "this build
+/// does not know about that provider" without special cases.
 ///
 /// `force_detailed` is the `--detailed` flag. Without it the opt-in mode does exactly what
 /// `config.json` says, which on a machine nobody has configured is nothing at all.
@@ -185,5 +245,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `--write` is opt-in, and `--print` on its own still writes nothing.
+    ///
+    /// Checked on the flag rather than by running the mode: a test that called `write_once`
+    /// would write `~/.nazar/limits.json` on the machine running the tests, and no test in
+    /// this repository is allowed to touch the real one.
+    #[test]
+    fn the_write_flag_is_a_separate_word() {
+        assert_eq!(WRITE_FLAG, "--write");
+        assert_ne!(WRITE_FLAG, PRINT_FLAG);
+        assert_ne!(WRITE_FLAG, DETAILED_FLAG);
     }
 }

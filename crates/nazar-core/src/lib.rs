@@ -5,7 +5,7 @@
 //! It knows nothing about Tauri, the tray, or any UI, so it builds and tests on every
 //! platform.
 //!
-//! Three rules shape everything here:
+//! Four rules shape everything here:
 //!
 //! 1. **Never invent a number.** A window whose value could not be read has no `percent`
 //!    at all and a `state` of [`WindowState::Error`]. Consumers render "unknown", never
@@ -16,6 +16,16 @@
 //!    the user's own tools wrote, take the handful of numbers they came for, and leave the
 //!    rest of the file where it is. `docs/pinned-internal-formats.md` lists what is read
 //!    and what is off limits; two tests enforce it.
+//! 4. **Never store what can be derived.** `limits.json` holds what a source measured;
+//!    which window binds, how long until it resets, how old the reading is and how alarming
+//!    it is all change with the clock rather than with the data, so they are worked out at
+//!    read time in [`state`] and stored nowhere.
+//!
+//! The moving parts, in the order data goes through them: the readers ([`codex`],
+//! [`claude`]) turn somebody else's files into provider blocks, [`refresh`] runs them on one
+//! thread and decides when, [`writer`] writes the result only when it differs from the last
+//! one, [`lock`] makes sure exactly one process is doing that, and [`state`] answers what any
+//! of it means right now.
 //!
 //! There is exactly one sanctioned exception to rule 3, and it is a switch the user turns:
 //! [`claude::detailed`], the opt-in detailed-windows mode, which reads Claude Code's OAuth
@@ -25,12 +35,17 @@
 
 pub mod atomic;
 pub mod claude;
+pub mod clock;
 pub mod codex;
 pub mod config;
 pub mod error;
 pub mod limits;
+pub mod lock;
 pub mod paths;
+pub mod refresh;
+pub mod state;
 pub mod timefmt;
+pub mod writer;
 
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -40,6 +55,7 @@ pub use claude::ClaudeReader;
 pub use claude::detailed::{DetailedWindows, should_suggest_detailed};
 #[cfg(feature = "detailed-windows")]
 pub use claude::merge::merge as merge_claude;
+pub use clock::{Clock, SystemClock};
 pub use codex::CodexReader;
 pub use config::Config;
 pub use error::{Error, Result};
@@ -47,4 +63,8 @@ pub use limits::{
     Limits, Provider, Providers, SCHEMA_VERSION, Source, Window, WindowState, read_limits,
     write_limits,
 };
+pub use lock::{Acquisition, LimitsLock};
+pub use refresh::{Cause, Engine, Event, LoopHandle, ReaderSet, Warnings};
+pub use state::{Freshness, Rules, Severity, Snapshot, SnapshotView};
 pub use timefmt::now_rfc3339;
+pub use writer::{LimitsWriter, Written};

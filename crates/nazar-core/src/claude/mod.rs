@@ -425,24 +425,12 @@ fn readable(reading: &Reading, captured_at: &str) -> Provider {
 /// Ties are broken by the shorter window first and then by key, so the answer is the same
 /// on every run: when two windows are equally full, the one that resets sooner is the one
 /// you hit first.
+///
+/// One implementation, in [`crate::state::binding`], shared with the Codex reader and with
+/// the derived view — because three displays that each computed it themselves is finding
+/// B16 of the audit.
 pub(crate) fn binding(windows: &BTreeMap<String, Window>) -> Option<String> {
-    // A window with no stated length sorts last among equals rather than first: it is the
-    // one we know least about, so it is the one that should not win a coin toss.
-    let length = |window: &Window| window.window_minutes.unwrap_or(u32::MAX);
-
-    windows
-        .iter()
-        .filter_map(|(key, window)| window.percent.map(|percent| (key, window, percent)))
-        .max_by(|left, right| {
-            left.2
-                .total_cmp(&right.2)
-                // The tie-breaks are written the other way round on purpose: the
-                // comparator answers "is left greater", and among equal percentages the
-                // *smaller* window length, then the *smaller* key, is what should win.
-                .then_with(|| length(right.1).cmp(&length(left.1)))
-                .then_with(|| right.0.cmp(left.0))
-        })
-        .map(|(key, _, _)| key.clone())
+    crate::state::binding(windows)
 }
 
 #[cfg(test)]

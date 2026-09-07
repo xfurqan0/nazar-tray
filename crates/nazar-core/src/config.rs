@@ -26,6 +26,7 @@ use std::path::Path;
 use crate::atomic;
 use crate::error::{Error, Result};
 use crate::paths::config_path;
+use crate::state::{FreshnessRules, Rules, Thresholds};
 
 /// Settings version written by this build.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -47,6 +48,16 @@ pub struct Config {
     /// suggestion is shown, so that a user who said no is not asked again.
     #[serde(default)]
     pub detailed_suggested: bool,
+    /// Percentages at which a window turns amber, red and spent. `60 / 85 / 100`.
+    ///
+    /// Here rather than in three displays because the audit found three displays with three
+    /// different answers to the same question (finding B14). Whatever a user changes it to,
+    /// the tray icon, the panel and anything reading `limits.json` read the same numbers.
+    #[serde(default)]
+    pub thresholds: Thresholds,
+    /// When a reading stops being fresh and starts being stale. `5` and `45` minutes.
+    #[serde(default)]
+    pub freshness: FreshnessRules,
     /// Keys a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -63,12 +74,23 @@ impl Default for Config {
             schema_version: CONFIG_SCHEMA_VERSION,
             detailed_windows: false,
             detailed_suggested: false,
+            thresholds: Thresholds::default(),
+            freshness: FreshnessRules::default(),
             extra: Map::new(),
         }
     }
 }
 
 impl Config {
+    /// The settings the derived view needs, in the shape [`crate::state`] wants them.
+    #[must_use]
+    pub fn rules(&self) -> Rules {
+        Rules {
+            thresholds: self.thresholds,
+            freshness: self.freshness,
+        }
+    }
+
     /// Parse settings from JSON text.
     pub fn from_json(text: &str) -> Result<Self> {
         Ok(serde_json::from_str(text)?)
@@ -168,7 +190,7 @@ mod tests {
   "detailedWindows": true,
   "detailedSuggested": false,
   "theme": "graphite",
-  "thresholds": [60, 85, 100]
+  "quietHours": [22, 7]
 }"#;
         let config = Config::from_json(newer).unwrap();
         assert!(config.detailed_windows);
@@ -179,6 +201,53 @@ mod tests {
             written, config,
             "an older build must not drop the settings a newer one wrote"
         );
+    }
+
+    #[test]
+    fn the_thresholds_have_the_documented_defaults() {
+        let config = Config::default();
+        assert_eq!(config.thresholds.warn, 60.0);
+        assert_eq!(config.thresholds.critical, 85.0);
+        assert_eq!(config.thresholds.exhausted, 100.0);
+        assert_eq!(config.freshness.fresh_minutes, 5);
+        assert_eq!(
+            config.freshness.aging_minutes, 45,
+            "45 minutes is the number docs/PROJECT.md has always named"
+        );
+        assert_eq!(config.rules().thresholds, config.thresholds);
+    }
+
+    #[test]
+    fn a_file_that_names_no_thresholds_gets_the_defaults() {
+        let minimal = r#"{ "detailedWindows": false }"#;
+        let config = Config::from_json(minimal).unwrap();
+        assert_eq!(config.thresholds, Thresholds::default());
+        assert_eq!(config.freshness, FreshnessRules::default());
+    }
+
+    #[test]
+    fn thresholds_round_trip_through_the_file() {
+        let dir = TempDir::new("config-thresholds");
+        let path = dir.join("config.json");
+
+        let config = Config {
+            thresholds: Thresholds {
+                warn: 50.0,
+                critical: 80.0,
+                exhausted: 100.0,
+            },
+            freshness: FreshnessRules {
+                fresh_minutes: 2,
+                aging_minutes: 30,
+            },
+            ..Config::default()
+        };
+        config.write(&path).unwrap();
+
+        assert_eq!(Config::read(&path).unwrap(), config);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"warn\": 50"), "got {text}");
+        assert!(text.contains("\"freshMinutes\": 2"), "got {text}");
     }
 
     #[test]
