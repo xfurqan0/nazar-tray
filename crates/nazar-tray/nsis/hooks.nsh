@@ -21,7 +21,10 @@
 ;    row with this application's name in a list a person reads, left behind by an uninstall
 ;    that claims to leave nothing. WP5 found it by looking; this is the removal.
 ;
-; 3. **`HKCU\Software\qarpus\nazar-tray`.** One value, the directory the last install went
+; 3. **`HKCU\Software\Furkan Yıldız\nazar-tray`.** The macro below deletes `${MANUPRODUCTKEY}`,
+;    which NSIS builds as `Software\${MANUFACTURER}\${PRODUCTNAME}` from `bundle.publisher`, so
+;    the middle segment follows that field and the code needs no edit when it changes.
+;    One value, the directory the last install went
 ;    to, so that a reinstall offers the same one. Tauri's template writes it always and
 ;    removes it only when the user ticks "delete application data" — so a silent uninstall,
 ;    which is what `winget uninstall` performs, leaves a key behind pointing at a directory

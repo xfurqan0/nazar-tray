@@ -63,9 +63,14 @@ in this repository.
 
 `xfurqan0.nazar-tray` uses the GitHub account name as the publisher half, which is the usual
 shape for a single-maintainer project. The `Publisher` field in the locale manifest is
-`qarpus`, matching `LICENSE` and the installer's own file properties. If a reviewer asks for
-the two to agree, the identifier to move to is `qarpus.nazar-tray` — changing it later means
-a new package rather than a new version, so it is worth settling in the first pull request.
+`Furkan Yıldız`, matching `LICENSE` and the installer's own file properties. The two are
+deliberately not the same string: a `PackageIdentifier` may hold neither a space nor a
+diacritic, so agreeing with the display name would mean `FurkanYildiz.nazar-tray`, and
+changing the identifier later means a new package rather than a new version — worth settling
+in the first pull request if a reviewer asks for it.
+
+The bundle identifier is a third, unrelated name: `io.github.xfurqan0.nazar-tray`, stamped by
+`crates/nazar-tray/tauri.conf.json` and read by Windows, not by winget.
 
 ## Why this file is not inside `winget/`
 

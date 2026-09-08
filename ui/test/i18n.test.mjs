@@ -206,7 +206,7 @@ test("a missing translation falls back to English, then to the key itself", () =
   };
 
   const tr = createTranslator(catalogs, "tr");
-  assert.equal(tr("greeting", { name: "qarpus" }), "merhaba qarpus");
+  assert.equal(tr("greeting", { name: "Furkan" }), "merhaba Furkan");
   assert.equal(tr("only"), "english");
   assert.equal(tr("panel.does.not.exist"), "panel.does.not.exist");
 });

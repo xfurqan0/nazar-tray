@@ -435,7 +435,8 @@ for the maintainer to run. Nothing in this repository runs them.
   asks the wrapper to undo its own installation *before* deleting it, so a status line
   pointing at a file that is about to vanish is restored rather than left dangling; it removes
   the `StartupApproved\Run` value Windows keeps beside the `Run` one, which is the residue
-  WP5 found and could only write down; and it removes `HKCU\Software\qarpus\nazar-tray`,
+  WP5 found and could only write down; and it removes `HKCU\Software\<publisher>\nazar-tray`
+  (`${MANUPRODUCTKEY}`, so the middle segment is whatever `bundle.publisher` holds),
   the key holding the last install location, which the stock template only removes when the
   *delete application data* box is ticked — so a silent uninstall was leaving a registry key
   pointing at a directory that no longer existed. That last one was **found by measurement**:
@@ -620,3 +621,20 @@ for the maintainer to run. Nothing in this repository runs them.
   spelling in it, which is what every restart during those two and a half hours looked like. One
   in `timefmt.rs` for the flooring, on both sides of the epoch. The `--demo-cross` sequence is
   untouched and still produces exactly the four answers it always did.
+
+- 2026-09-09 — Maintainer identity: author, publisher and copyright are Furkan Yıldız; bundle
+  identifier moved to `io.github.xfurqan0.*` before any release. `LICENSE`, `README.md`, the
+  winget locale manifest's `Publisher` and `Copyright`, and `crates/nazar-tray/tauri.conf.json`'s
+  `publisher`, `copyright` and `identifier`, which is now `io.github.xfurqan0.nazar-tray` —
+  reverse-DNS under a namespace the account controls, where the previous one was under a domain
+  it does not; `ui/test/version.test.mjs` pins the new identifier and
+  `ui/test/i18n.test.mjs` no longer interpolates the old handle into a greeting.
+
+  **Nothing has shipped, so nothing upgrades.** The bundle identifier and the
+  `HKCU\Software\<publisher>\nazar-tray` key that NSIS derives from `bundle.publisher`
+  (`${MANUPRODUCTKEY}` = `Software\${MANUFACTURER}\${PRODUCTNAME}`) both change on machines that
+  have never had an installed build, so there is no in-place upgrade to break, no orphaned key
+  and no second Add/Remove entry: the first release is the first time either name reaches a
+  machine. Doing it after v0.1.0 would have meant a new bundle identity, which Windows treats
+  as a different product. The winget `PackageIdentifier` is untouched — it was already
+  `xfurqan0.nazar-tray`, and the display `Publisher` beside it is the only half that moved.

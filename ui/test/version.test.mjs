@@ -29,8 +29,8 @@ test("the workspace, the app, the panel and the bundle agree on the version", ()
   );
 });
 
-test("the bundle identifier is the one the maintainer owns a domain for", () => {
-  assert.equal(json("crates/nazar-tray/tauri.conf.json").identifier, "xyz.qarpus.nazar-tray");
+test("the bundle identifier is the reverse-DNS form of the maintainer's GitHub namespace", () => {
+  assert.equal(json("crates/nazar-tray/tauri.conf.json").identifier, "io.github.xfurqan0.nazar-tray");
 });
 
 test("the panel window matches the label the Rust side looks up", () => {

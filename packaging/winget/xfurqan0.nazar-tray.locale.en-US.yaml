@@ -6,7 +6,7 @@ PackageIdentifier: xfurqan0.nazar-tray
 PackageVersion: 0.1.0
 PackageLocale: en-US
 
-Publisher: qarpus
+Publisher: Furkan Yıldız
 PublisherUrl: https://github.com/xfurqan0
 PublisherSupportUrl: https://github.com/xfurqan0/nazar-tray/issues
 
@@ -16,7 +16,7 @@ Moniker: nazar-tray
 
 License: MIT
 LicenseUrl: https://github.com/xfurqan0/nazar-tray/blob/main/LICENSE
-Copyright: Copyright (c) 2026 qarpus
+Copyright: Copyright (c) 2026 Furkan Yıldız
 CopyrightUrl: https://github.com/xfurqan0/nazar-tray/blob/main/LICENSE
 
 ShortDescription: Claude Code and Codex quota in the Windows system tray.

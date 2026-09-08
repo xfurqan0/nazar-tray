@@ -411,4 +411,4 @@ not a public issue: [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT — [LICENSE](LICENSE). Copyright (c) 2026 qarpus.
+MIT — [LICENSE](LICENSE). Copyright (c) 2026 Furkan Yıldız.
