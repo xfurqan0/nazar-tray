@@ -48,14 +48,33 @@ pub fn rfc3339_from_unix_seconds(seconds: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// Read a source's integer timestamp, in seconds or milliseconds, as Unix **seconds**.
+#[must_use]
+pub fn unix_seconds_auto(value: i64) -> i64 {
+    if value.abs() >= MILLISECONDS_THRESHOLD {
+        value.div_euclid(1000)
+    } else {
+        value
+    }
+}
+
 /// Read a source's integer timestamp, in seconds or milliseconds, as RFC 3339 UTC.
 #[must_use]
 pub fn rfc3339_from_unix_auto(value: i64) -> String {
-    if value.abs() >= MILLISECONDS_THRESHOLD {
-        rfc3339_from_unix_seconds(value.div_euclid(1000))
-    } else {
-        rfc3339_from_unix_seconds(value)
-    }
+    rfc3339_from_unix_seconds(unix_seconds_auto(value))
+}
+
+/// The whole minute an instant falls in: seconds rounded **down**, never up.
+///
+/// Down rather than to the nearest, because a reset is a deadline: the minute it is
+/// reported in is the minute it is still counting down through, and rounding `12:24:52`
+/// up to `12:25:00` would show eight seconds of quota that are not there.
+///
+/// `div_euclid` rather than `/`, so that an instant before 1970 floors the same way one
+/// after it does instead of rounding towards zero and landing a minute late.
+#[must_use]
+pub fn floor_to_minute(seconds: i64) -> i64 {
+    seconds.div_euclid(60) * 60
 }
 
 /// The current instant as RFC 3339 in UTC.
@@ -313,6 +332,27 @@ mod tests {
             rfc3339_from_unix_auto(1_788_751_044_000),
             "2026-09-07T03:17:24Z"
         );
+    }
+
+    #[test]
+    fn a_second_hand_is_rounded_down_to_the_minute_it_is_in() {
+        // The live jitter this exists for: the usage endpoint answered `02:00:00Z` and
+        // `01:59:59Z` for the same weekly reset, one refresh apart.
+        let round = |text: &str| {
+            rfc3339_from_unix_seconds(floor_to_minute(unix_seconds_from_rfc3339(text).unwrap()))
+        };
+        assert_eq!(round("2026-09-12T02:00:00Z"), "2026-09-12T02:00:00Z");
+        assert_eq!(round("2026-09-12T01:59:59Z"), "2026-09-12T01:59:00Z");
+        assert_eq!(round("2026-09-12T01:59:00Z"), "2026-09-12T01:59:00Z");
+
+        // Down, never up, and on both sides of the epoch.
+        assert_eq!(floor_to_minute(0), 0);
+        assert_eq!(floor_to_minute(59), 0);
+        assert_eq!(floor_to_minute(60), 60);
+        assert_eq!(floor_to_minute(-1), -60);
+        assert_eq!(floor_to_minute(-60), -60);
+        assert_eq!(unix_seconds_auto(1_788_751_044_000), 1_788_751_044);
+        assert_eq!(unix_seconds_auto(1_788_751_044), 1_788_751_044);
     }
 
     #[test]

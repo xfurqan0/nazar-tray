@@ -30,10 +30,31 @@
 //!    91 % has no previous reading, and the honest thing is to say so once and then be
 //!    quiet — not to wait for a crossing that has already happened. So "no previous
 //!    reading" is treated as "below", and rule 2 is what stops it repeating.
-//! 4. **A reset clears the window's keys, and its memory.** A new `resetsAt` is a new week;
-//!    the fired set goes, and so does the remembered percentage — otherwise a window that
-//!    reset from 86 % straight back to 86 % would look like no crossing at all, which is
-//!    exactly the case the `--demo-cross` run in `docs/PROJECT.md` exists to catch.
+//! 4. **A reset clears the window's keys, and its memory** — but a `resetsAt` that *moved*
+//!    is not the same thing as a `resetsAt` that **renewed**. A new period clears the fired
+//!    set and the remembered percentage, otherwise a window that reset from 86 % straight
+//!    back to 86 % would look like no crossing at all, which is exactly the case the
+//!    `--demo-cross` run in `docs/PROJECT.md` exists to catch. So the question "is this the
+//!    same period" has to be answered by `same_period` rather than by comparing two
+//!    strings, because a source can spell the same instant two ways one refresh apart:
+//!
+//!    > **The bug this rule was rewritten for.** On **2026-09-08**, between 19:16 and
+//!    > 21:43, the maintainer's machine showed **32 identical toasts** — *Claude Code ·
+//!    > weekly window 60 %* — one every five minutes, most of them twice. The Anthropic
+//!    > usage endpoint was reporting the same weekly reset as `2026-09-12T02:00:00Z` and
+//!    > `2026-09-12T01:59:59Z` on alternating refreshes. **One second.** String equality
+//!    > read every flip as a new week, cleared `fired`, dropped `previous`, and re-fired 60
+//!    > as a first observation (rule 3); the doubles were the swing landing in both
+//!    > directions inside one evaluation pair. `alerts.json` was rewritten every five
+//!    > minutes for two and a half hours.
+//!
+//!    A period that genuinely renews moves its reset **forward by a whole window**. So two
+//!    `resetsAt` values name the same period when they are less than half a window apart —
+//!    or, when the window's length is not known, less than an hour. Text that will not
+//!    parse falls back to the old string comparison, because there is nothing else to
+//!    compare. `crate::claude::resets_at_value` rounds the endpoint's answer down to the
+//!    minute as well, which flattens this particular source; the tolerance here is what
+//!    holds when the next source jitters by more than that.
 //! 5. **Unknown never notifies.** A window with no percentage, or one in `error`, produces
 //!    nothing and *forgets* what it last saw, so the reading that comes after it is a first
 //!    observation rather than a continuation of a number nobody can vouch for. Finding B03
@@ -88,6 +109,50 @@ const EPSILON: f64 = 1e-9;
 
 fn same(left: f64, right: f64) -> bool {
     (left - right).abs() < EPSILON
+}
+
+/// How far two `resetsAt` values may sit apart and still be one period, when the window's
+/// length is not known.
+///
+/// An hour: long enough to swallow any jitter a source has been seen to produce, and far
+/// short of the shortest window anything here reports (five hours), so a real renewal of
+/// even the shortest window is still unambiguously a new period.
+const UNKNOWN_WINDOW_TOLERANCE_SECONDS: i64 = 3600;
+
+/// Whether two `resetsAt` readings name the same reset period.
+///
+/// Rule 4's comparison, and the answer to the toast storm in this module's header. The
+/// order matters:
+///
+/// 1. **The same text is the same period**, including two `None`s — a window that has never
+///    carried a `resetsAt` is one period as far as this file is concerned.
+/// 2. **One side missing is not.** A window that had a reset and now has none is telling us
+///    something changed, and the safe reading of "something changed" is a new period.
+/// 3. **Two instants close together are.** Less than half a window apart when the length is
+///    known, less than [`UNKNOWN_WINDOW_TOLERANCE_SECONDS`] when it is not. Half a window,
+///    because a period that renews moves its reset forward by a whole one: the gap is
+///    either a rounding wobble or the length of the window, never anything in between.
+/// 4. **Text that will not parse falls back to step 1**, which is where this rule was
+///    before: with nothing to subtract there is nothing to be tolerant with.
+fn same_period(left: Option<&str>, right: Option<&str>, window_minutes: Option<u32>) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    let (Some(left), Some(right)) = (
+        unix_seconds_from_rfc3339(left),
+        unix_seconds_from_rfc3339(right),
+    ) else {
+        return false;
+    };
+    let tolerance = window_minutes
+        .filter(|minutes| *minutes > 0)
+        .map_or(UNKNOWN_WINDOW_TOLERANCE_SECONDS, |minutes| {
+            i64::from(minutes) * 60 / 2
+        });
+    left.abs_diff(right) < tolerance.unsigned_abs()
 }
 
 /// What one window has already been warned about, as `alerts.json` stores it.
@@ -376,18 +441,22 @@ impl Alerts {
         };
 
         let reset = window.resets_at.as_deref();
+        // Both halves of rule 4 ask the same question of the same window, so they ask it
+        // the same way: a second of jitter in `resetsAt` is not a new week.
+        let is_same_period =
+            |stored: Option<&str>| same_period(stored, reset, window.window_minutes);
 
         // Rule 4, the in-memory half: a reading from before the reset is not a previous
         // reading, it is a reading of a different week.
         let previous = self
             .seen
             .get(key)
-            .filter(|(_, seen_reset)| seen_reset.as_deref() == reset)
+            .filter(|(_, seen_reset)| is_same_period(seen_reset.as_deref()))
             .map(|(percent, _)| *percent);
 
         // Rule 2 and rule 4, the on-disk half.
         let already: &[f64] = match self.log.windows.get(key) {
-            Some(record) if record.resets_at.as_deref() == reset => &record.fired,
+            Some(record) if is_same_period(record.resets_at.as_deref()) => &record.fired,
             _ => &[],
         };
 
@@ -404,9 +473,11 @@ impl Alerts {
 
         if crossed.is_empty() {
             // Nothing fired, but the period may still have turned over: a record from the
-            // week before is bookkeeping for a week nobody is in any more.
+            // week before is bookkeeping for a week nobody is in any more. A record whose
+            // `resetsAt` merely wobbled is left exactly as it is — rewriting it here is what
+            // rewrote `alerts.json` every five minutes for two and a half hours.
             if let Some(record) = self.log.windows.get(key)
-                && record.resets_at.as_deref() != reset
+                && !is_same_period(record.resets_at.as_deref())
             {
                 self.log.windows.remove(key);
                 self.dirty = true;
@@ -415,10 +486,12 @@ impl Alerts {
         }
 
         let record = self.log.windows.entry(key.to_owned()).or_default();
-        if record.resets_at.as_deref() != reset {
-            record.resets_at = window.resets_at.clone();
+        if !is_same_period(record.resets_at.as_deref()) {
             record.fired.clear();
         }
+        // The newest spelling wins, whether or not the period turned over. The record is
+        // allowed to drift with the source because nothing compares it exactly any more.
+        record.resets_at = window.resets_at.clone();
         record.fired.extend(crossed.iter().copied());
         record.fired.sort_by(f64::total_cmp);
         record.fired.dedup_by(|left, right| same(*left, *right));

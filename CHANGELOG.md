@@ -237,6 +237,27 @@ person moves it.
 
 ### Fixed
 
+- **The toast storm on ±1 s `resetsAt` jitter.** On 2026-09-08 the maintainer's machine
+  showed **32 identical toasts** in two and a half hours — *Claude Code · weekly window 60 %* —
+  one every five minutes, most of them doubled, and rewrote `%APPDATA%\nazar\alerts.json` every
+  time. The cause was one second: the usage endpoint reported the same weekly reset as
+  `2026-09-12T02:00:00Z` and `2026-09-12T01:59:59Z` on alternating refreshes, and rule 4 of the
+  notification state machine — *a new `resetsAt` is a new week* — compared the two as **strings**
+  in both of its halves. Every flip cleared the fired thresholds and the remembered percentage,
+  so the next reading was a "first observation" and fired 60 % again. Two `resetsAt` values are
+  now one period when they are **less than half a window apart** — half, because a period that
+  genuinely renews moves its reset forward by a whole window, and nothing legitimate lands in
+  between — or, for a window with no `windowMinutes`, less than an hour. Text that will not parse
+  as an instant still falls back to comparing the strings. The record's own `resetsAt` is written
+  with the newest spelling when something fires and left alone when nothing does, so the file
+  stops being rewritten on every wobble.
+- **Both Claude sources now spell one instant one way.** `resets_at` is rounded **down to the
+  whole minute** as it is read, for the status-line payload's Unix seconds and for the usage
+  endpoint's `2026-09-12T02:00:00.130216+00:00` alike. Nothing downstream has a consumer for
+  sub-minute precision — the panel counts down in minutes — and flooring makes the endpoint
+  produce the same text twice running for a reset that has not moved. It is the cheap half of
+  the fix; the tolerance above is the half that survives a source jittering by more than a
+  minute.
 - **`nazar-statusline install` wrote a command Windows shells never ran.** Claude Code
   hands `statusLine.command` to **Git Bash** on Windows where it can find one, and in `sh` a
   backslash outside quotes is the escape character — so the absolute path this installer

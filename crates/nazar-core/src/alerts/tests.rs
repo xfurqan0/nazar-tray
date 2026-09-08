@@ -17,6 +17,9 @@ use crate::testutil::{ManualClock, TempDir};
 const RESET_A: &str = "2026-09-12T02:00:00Z";
 /// The next week's reset.
 const RESET_B: &str = "2026-09-19T02:00:00Z";
+/// [`RESET_A`] as the usage endpoint also spelled it on 2026-09-08, one second earlier and
+/// one refresh apart. Thirty-two toasts came out of this string.
+const RESET_A_JITTERED: &str = "2026-09-12T01:59:59Z";
 const NOW: &str = "2026-09-07T12:00:00Z";
 
 /// A view with one Codex weekly window at `percent`, resetting at `resets_at`.
@@ -322,6 +325,184 @@ fn a_record_for_a_window_nobody_reports_is_swept_up_once_its_week_is_gone() {
     let empty = Snapshot::new(Limits::new(later.to_owned())).view(later, &Rules::default());
     alerts.evaluate(&empty, &rules());
     assert!(alerts.log().windows.is_empty(), "three days is");
+}
+
+// ------------------------------------------------------ a reset that only looks new
+
+/// The live bug of 2026-09-08, in the shape it arrived in.
+///
+/// The usage endpoint alternated between `…T02:00:00Z` and `…T01:59:59Z` for the same
+/// weekly reset, every five minutes, for two and a half hours. String equality read each
+/// flip as a new week: 32 toasts, most of them doubled, and `alerts.json` rewritten every
+/// time. One second of jitter is not a renewal.
+#[test]
+fn a_resets_at_that_jitters_by_a_second_is_the_same_period() {
+    let dir = TempDir::new("alerts-jitter");
+    let path = dir.join("alerts.json");
+    let mut alerts = Alerts::open(&path);
+
+    assert_eq!(
+        thresholds(&alerts.evaluate(&view_at(70.0, RESET_A, NOW), &rules())),
+        vec![60.0],
+        "70 % on arrival is a first observation and worth one toast"
+    );
+    alerts.save().unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+
+    assert!(
+        alerts
+            .evaluate(&view_at(70.0, RESET_A_JITTERED, NOW), &rules())
+            .is_empty(),
+        "the same reset spelled one second earlier is not a new week"
+    );
+    assert!(
+        alerts
+            .evaluate(&view_at(70.0, RESET_A, NOW), &rules())
+            .is_empty(),
+        "and swinging back is not one either"
+    );
+    for _ in 0..8 {
+        assert!(
+            alerts
+                .evaluate(&view_at(70.0, RESET_A_JITTERED, NOW), &rules())
+                .is_empty()
+        );
+        assert!(
+            alerts
+                .evaluate(&view_at(70.0, RESET_A, NOW), &rules())
+                .is_empty()
+        );
+    }
+
+    assert!(
+        !alerts.is_dirty(),
+        "a wobble is not bookkeeping: nothing about the record changed"
+    );
+    alerts.save().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        written,
+        "alerts.json was rewritten every five minutes for two and a half hours"
+    );
+    assert_eq!(alerts.log().windows["codex/secondary"].fired, vec![60.0]);
+}
+
+/// The tolerance has to stay narrow enough that rule 4 still works.
+#[test]
+fn a_reset_that_really_renewed_still_clears_the_keys() {
+    let mut alerts = Alerts::in_memory();
+
+    assert_eq!(
+        thresholds(&alerts.evaluate(&view_at(70.0, RESET_A, NOW), &rules())),
+        vec![60.0]
+    );
+    assert!(
+        alerts
+            .evaluate(&view_at(70.0, RESET_A_JITTERED, NOW), &rules())
+            .is_empty()
+    );
+    // A week later, to the second: seven days is a whole window forward, which is what a
+    // renewal looks like and what a wobble never does.
+    assert_eq!(
+        thresholds(&alerts.evaluate(&view_at(70.0, RESET_B, NOW), &rules())),
+        vec![60.0],
+        "the fired set is cleared by a real reset, jitter or no jitter"
+    );
+    assert_eq!(
+        alerts.log().windows["codex/secondary"].resets_at.as_deref(),
+        Some(RESET_B),
+        "and the record carries the newest spelling of the reset"
+    );
+    assert_eq!(alerts.log().windows["codex/secondary"].fired, vec![60.0]);
+}
+
+/// A window with no `windowMinutes` has no window to take half of, so the tolerance is a
+/// flat hour.
+#[test]
+fn without_a_window_length_the_tolerance_is_an_hour() {
+    let at = |resets_at: &str| view_of(Window::ok(70.0).with_resets_at(resets_at), NOW);
+
+    let mut inside = Alerts::in_memory();
+    assert_eq!(
+        thresholds(&inside.evaluate(&at("2026-09-12T02:00:00Z"), &rules())),
+        vec![60.0]
+    );
+    assert!(
+        inside
+            .evaluate(&at("2026-09-12T02:59:00Z"), &rules())
+            .is_empty(),
+        "fifty-nine minutes is still the same period"
+    );
+
+    let mut outside = Alerts::in_memory();
+    assert_eq!(
+        thresholds(&outside.evaluate(&at("2026-09-12T02:00:00Z"), &rules())),
+        vec![60.0]
+    );
+    assert_eq!(
+        thresholds(&outside.evaluate(&at("2026-09-12T03:01:00Z"), &rules())),
+        vec![60.0],
+        "sixty-one minutes is a different one"
+    );
+}
+
+/// The half-window rule, and what it does with text it cannot read.
+#[test]
+fn two_resets_are_one_period_when_they_are_less_than_half_a_window_apart() {
+    // A five-hour window tolerates just under two and a half hours.
+    assert!(same_period(
+        Some("2026-09-12T02:00:00Z"),
+        Some("2026-09-12T04:29:00Z"),
+        Some(300)
+    ));
+    assert!(!same_period(
+        Some("2026-09-12T02:00:00Z"),
+        Some("2026-09-12T04:31:00Z"),
+        Some(300)
+    ));
+    // A weekly one tolerates just under three and a half days, and a real week is two of
+    // those.
+    assert!(same_period(
+        Some(RESET_A),
+        Some(RESET_A_JITTERED),
+        Some(10080)
+    ));
+    assert!(!same_period(Some(RESET_A), Some(RESET_B), Some(10080)));
+
+    // Nothing to subtract: back to comparing the strings, which is where this rule was.
+    assert!(same_period(Some("whenever"), Some("whenever"), Some(10080)));
+    assert!(!same_period(Some("whenever"), Some("later"), Some(10080)));
+    assert!(!same_period(Some(RESET_A), Some("whenever"), Some(10080)));
+    // A window that has never carried a reset is one period; one that lost its reset is not.
+    assert!(same_period(None, None, Some(10080)));
+    assert!(!same_period(Some(RESET_A), None, Some(10080)));
+    // A nonsense length falls back to the hour rather than to zero tolerance.
+    assert!(same_period(Some(RESET_A), Some(RESET_A_JITTERED), Some(0)));
+}
+
+/// The restart half of rule 4: the record on disk jitters too.
+#[test]
+fn a_record_read_from_disk_does_not_re_fire_on_a_jittered_reset() {
+    let dir = TempDir::new("alerts-jitter-restart");
+    let path = dir.join("alerts.json");
+    std::fs::write(
+        &path,
+        "{\"schemaVersion\":1,\"windows\":{\"codex/secondary\":\
+         {\"resetsAt\":\"2026-09-12T02:00:00Z\",\"fired\":[60.0]}}}\n",
+    )
+    .unwrap();
+
+    // The tray comes back, and the first reading it gets is the other spelling. Before the
+    // tolerance this cleared the record and toasted 60 % on every restart.
+    let mut alerts = Alerts::open(&path);
+    assert!(
+        alerts
+            .evaluate(&view_at(70.0, RESET_A_JITTERED, NOW), &rules())
+            .is_empty(),
+        "restarting into the wobble must not repeat a warning the user has already had"
+    );
+    assert!(!alerts.is_dirty(), "and nothing was rewritten");
+    assert_eq!(alerts.log().windows["codex/secondary"].fired, vec![60.0]);
 }
 
 // ------------------------------------------------------------------ unknown windows

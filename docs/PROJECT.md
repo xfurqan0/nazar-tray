@@ -124,6 +124,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP7 ✅ | **Distribution**: NSIS installer via the Tauri bundler, winget manifests, SignPath preparation, README (EN), CHANGELOG, first release checklist | ~~Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files~~ — **landed 2026-09-07**. Measured on the maintainer's machine rather than a VM (see the log): silent install → **tray up in 4.4 s**, Start Menu entry, no elevation; silent uninstall → nothing left but the two directories that are kept on purpose and named in the README. MSI **builds cleanly** (2.70 MB, WiX downloaded by the bundler) but is **not shipped** — see the log. |
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
 | T-WP8 ✅ | **The status line that was installed and never ran** (from live use; the `T-` prefix is this repository's own late-package prefix, as `N-` is Nazar's, and this is not WP8 above). `install` writes the program path with **forward slashes** on Windows, because Claude Code runs `statusLine.command` through Git Bash and an unquoted backslash is bash's escape character; every earlier spelling is recognised as the same installation; a broken one is **repaired** rather than reported as "already installed"; `status` names the shell and the fix; a path out of a build directory is warned about. The data directory against the settings directory is written into `docs/limits-contract.md` as a contract rather than left to be inferred | ~~The wrapper produces a capture on a Windows machine with a fresh install~~ — **landed 2026-09-08**. `status` on the maintainer's machine printed `installed: yes` for a day while nothing was ever spawned; it now prints the warning, and `install --dry-run` shows the rewrite. 459 tests, from 451 |
+| T-WP9 ✅ | **The toast storm on a jittering `resetsAt`** (from live use). `crate::alerts` rule 4 asked "is this the same reset period?" by comparing two strings; the usage endpoint answers the same weekly reset one second apart on alternating refreshes, so every flip read as a new week and re-fired the whole ladder. Two resets are now one period when they are **less than half a window apart** (an hour when the window's length is unknown), on both the in-memory and the on-disk half of the rule, and the Claude reader rounds `resets_at` **down to the whole minute** so both sources spell one instant one way | ~~A window whose `resetsAt` wobbles produces one toast per crossing and no more, and `alerts.json` stops being rewritten~~ — **landed 2026-09-08**. 32 toasts in two and a half hours on the maintainer's machine, all of them the same sentence; the sequence that produced them is now four tests. 465 tests, from 459 |
 
 Going public happens after WP7, not before. **WP7 does not include going public**: the tag,
 the GitHub Release, the winget pull request, the SignPath application and the repository's
@@ -555,3 +556,67 @@ for the maintainer to run. Nothing in this repository runs them.
   command on and off Windows, the warning's wording, and the build-directory check. No test
   writes to a real settings file: every new one is a pure function, which is the same reason
   the rest of this crate's tests never touch the machine they run on.
+
+- 2026-09-08 — **T-WP9: thirty-two toasts, one second apart** (`crates/nazar-core/src/alerts.rs`
+  — `same_period`, `UNKNOWN_WINDOW_TOLERANCE_SECONDS`, rule 4 in the module header;
+  `crates/nazar-core/src/claude/mod.rs` — `resets_at_value`; `crates/nazar-core/src/timefmt.rs`
+  — `floor_to_minute`, `unix_seconds_auto`). Between 19:16 and 21:43 the maintainer's Windows
+  notification database collected **32 toasts**, every one of them *Claude Code · weekly window
+  60 % / resets in 3 d 7 h*, one every five minutes — the endpoint refresh cadence — and most of
+  them **doubled**. `%APPDATA%\nazar\alerts.json` was rewritten every time.
+
+  **The cause is one second.** The Anthropic usage endpoint reported
+  `claude/seven_day.resetsAt` as `2026-09-12T02:00:00Z` on one refresh and
+  `2026-09-12T01:59:59Z` on the next, alternating, with `seven_day_fable` swinging the same
+  way; two consecutive `--print` runs showed both values for the same window. Rule 4 of
+  `alerts.rs` — *a new `resetsAt` is a new week* — compared the two as **strings**, in both
+  halves: `record.resets_at.as_deref() == reset` on disk and `seen_reset == reset` in memory.
+  So every flip cleared the `fired` set and dropped the remembered percentage, the next
+  evaluation was a first observation under rule 3, and 60 % fired again. The doubles are the
+  swing landing in both directions inside one pair of evaluations.
+
+  **A wobble is not a renewal, and the difference is measurable.** A period that genuinely
+  renews moves its reset forward by a **whole window**; the gap between two spellings of one
+  instant is seconds. So `same_period` reads both sides as instants and calls them one period
+  when they are less than **half a window** apart — half, because there is nothing legitimate
+  between "a rounding wobble" and "one window later" — falling back to a flat **hour** when the
+  window carries no `windowMinutes`, and to the old string comparison when either side will not
+  parse, because with nothing to subtract there is nothing to be tolerant with. Both halves of
+  rule 4 ask through the same closure, so the disk and the memory cannot disagree about where a
+  week ends. The record's own `resetsAt` is now written with the **newest** spelling whenever
+  something fires and left alone when nothing does: it is allowed to drift with the source,
+  because nothing compares it exactly any more, and rewriting it on every wobble is what
+  rewrote the file every five minutes.
+
+  **The source is rounded down to the minute as well** — `crate::claude::resets_at_value`, which
+  is the one function both Claude paths go through, the status line's Unix seconds and the
+  endpoint's `2026-09-12T02:00:00.130216+00:00` alike. Sub-minute precision has no consumer
+  anywhere downstream: the panel draws a countdown in minutes and the state machine only asks
+  whether two readings name the same period. It costs nothing, it makes the two sources produce
+  the same text for the same instant, and it flattens this particular endpoint before the
+  tolerance ever has to. Rounding is the belt; the tolerance is the braces, and it is the half
+  that survives a source which starts jittering by more than a minute.
+
+  **Not done, and why.** The same session found `codex/secondary` reporting `percent 70,
+  state: "ok"` with a `resetsAt` of `2026-09-07T12:24:52Z` — in the past, from a rollout log
+  nothing had written to since the 6th. A window whose reset has already passed is not a current
+  reading, and the honest rendering is "unknown". It is left alone because it is not the small
+  change it looks like: `state::binding` is one function shared by the two file readers and the
+  derived view, and **the readers have no clock** — `docs/pinned-internal-formats.md` is why they
+  do not — so making an expired window stop binding means threading `now` into both of them, plus
+  a severity override in the view and an exception in alerts rule 5. Worse, it would fire on
+  every window every period: `five_hour` is a few seconds past its reset on some refresh most
+  hours, and a window that flips to unknown and back makes the icon flicker and makes
+  `crate::alerts` forget its previous reading — which is a *new* way to produce the toast this
+  package exists to stop. The right fix is narrower and belongs to the Codex reader: a rollout
+  log that has gone quiet past its own reset should say `state: "stale"` at the point where it is
+  read, where the clock already is. Written down rather than done.
+
+  **Tests: 465, from 459.** Five in `alerts/tests.rs` — the live sequence (70 % at `02:00:00Z`,
+  the same window at `01:59:59Z`, and back, sixteen more times, with the file compared byte for
+  byte before and after), a real seven-day renewal still clearing the keys through the jitter,
+  the hour of tolerance a window with no length gets on both sides of the boundary, the
+  half-window rule and its fallbacks directly, and a record read **from disk** with the other
+  spelling in it, which is what every restart during those two and a half hours looked like. One
+  in `timefmt.rs` for the flooring, on both sides of the epoch. The `--demo-cross` sequence is
+  untouched and still produces exactly the four answers it always did.

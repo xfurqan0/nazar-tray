@@ -55,8 +55,8 @@ use crate::error::Result;
 use crate::limits::{Provider, Source, Window};
 use crate::paths::statusline_dir;
 use crate::timefmt::{
-    rfc3339_from_system_time, rfc3339_from_unix_auto, rfc3339_utc, sanitize_plan,
-    sanitize_timestamp,
+    floor_to_minute, rfc3339_from_system_time, rfc3339_from_unix_seconds, sanitize_plan,
+    sanitize_timestamp, unix_seconds_auto, unix_seconds_from_rfc3339,
 };
 
 /// Key of the five-hour window in `limits.json`.
@@ -302,7 +302,8 @@ fn window(value: &Value) -> Option<ReadingWindow> {
     })
 }
 
-/// Read `resets_at` as RFC 3339 text, in the one spelling the contract allows.
+/// Read `resets_at` as RFC 3339 text, in the one spelling the contract allows, **rounded
+/// down to the whole minute**.
 ///
 /// The two sources disagree about how to write an instant, which is exactly why this is
 /// one function rather than two:
@@ -314,17 +315,34 @@ fn window(value: &Value) -> Option<ReadingWindow> {
 /// Both come out as `2026-09-07T13:10:00Z`. An integer too large to be seconds is read as
 /// milliseconds and a string that is not a timestamp yields nothing, so a format change
 /// degrades rather than breaks.
+///
+/// ## Why the minute and not the second
+///
+/// The usage endpoint does not report a stable reset instant. On 2026-09-08 it answered
+/// **`2026-09-12T02:00:00Z` and `2026-09-12T01:59:59Z` for the same weekly window**, one
+/// refresh apart, and went on alternating between the two for hours. One second of jitter
+/// is noise from whatever computes that field on the far side, and **nothing downstream of
+/// here has a consumer for sub-minute precision**: the panel draws a countdown in minutes,
+/// and [`crate::alerts`] only asks whether two readings name the same period. Flooring both
+/// sources to the minute makes them produce the same text for the same instant, and makes
+/// the endpoint produce the same text twice running for a reset that has not moved.
+///
+/// This is the cheap half of the fix. The other half is in [`crate::alerts`], which
+/// compares two `resetsAt` values with a tolerance rather than as strings — so a source
+/// that jitters by more than a minute, or one that starts jittering tomorrow in a way this
+/// rounding does not flatten, still cannot be mistaken for a new week.
 pub(crate) fn resets_at_value(value: &Value) -> Option<String> {
-    if let Some(seconds) = value.as_i64() {
-        return Some(rfc3339_from_unix_auto(seconds));
-    }
-    if let Some(seconds) = value.as_f64() {
-        if seconds.is_finite() && seconds.abs() < 9e18 {
-            return Some(rfc3339_from_unix_auto(seconds as i64));
+    let seconds = if let Some(seconds) = value.as_i64() {
+        unix_seconds_auto(seconds)
+    } else if let Some(seconds) = value.as_f64() {
+        if !seconds.is_finite() || seconds.abs() >= 9e18 {
+            return None;
         }
-        return None;
-    }
-    value.as_str().and_then(rfc3339_utc)
+        unix_seconds_auto(seconds as i64)
+    } else {
+        unix_seconds_from_rfc3339(value.as_str()?)?
+    };
+    Some(rfc3339_from_unix_seconds(floor_to_minute(seconds)))
 }
 
 /// Render a status as the `providers.claude` block of `limits.json`.
