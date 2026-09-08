@@ -46,7 +46,7 @@
 //! | `--hint on\|off` | shows or hides the first-run overflow hint, which is otherwise a once-per-machine state |
 //! | `--offer on\|off` | the same, for the one-time Max-plan offer |
 //! | `--locale tr` | the panel and the tooltip in one language, whatever the machine's is |
-//! | `--icons <dir>` | rasterises the bead states into a strip and exits; nothing else happens |
+//! | `--icons <dir>` | writes the bead's two states — the mark, and unknown — at 16, 32 and 64 px, plus one strip of all six, then exits; nothing else happens |
 //! | `--view settings` | opens the panel on the settings page, which is otherwise a click away |
 //!
 //! `--demo` is the one that matters for safety: a screenshot session must not be able to
@@ -159,11 +159,16 @@ fn value_of(arguments: &[String], flag: &str) -> Option<String> {
     arguments.get(at + 1).cloned()
 }
 
-/// `--icons <dir>`: rasterise every bead state and the documentation strip.
+/// `--icons <dir>`: rasterise both bead states and the documentation strip.
+///
+/// Seven files: `bead-mark-*.png` and `bead-unknown-*.png` at 16, 32 and 64 pixels, and
+/// `bead-states.png` with all six in one picture. Two states because the icon has two — it
+/// stopped carrying the quota on 2026-09-09, and what is left is the mark and "nothing could
+/// be read".
 ///
 /// The tray itself never encodes a PNG — it hands the shell raw pixels — so this exists for
-/// the repository rather than for the product: `docs/screenshots/wp4-icons.png` is produced
-/// by the same code that draws the real icon, which is the only way a picture in the
+/// the repository rather than for the product: everything in `docs/design/` is produced by
+/// the same code that draws the real icon, which is the only way a picture in the
 /// documentation can be trusted to still be what the application looks like.
 fn write_icons(directory: &std::path::Path) -> bool {
     match crate::icon::export(directory) {

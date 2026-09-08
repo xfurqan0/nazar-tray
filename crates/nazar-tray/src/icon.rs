@@ -1,37 +1,71 @@
-//! The tray bead, drawn at run time.
+//! The tray bead, drawn at run time on Nazar's sixteen-cell grid.
 //!
-//! Decision K3 of `docs/PROJECT.md` section 8, closed here: the icon is **rendered in
-//! Rust for the current scale factor**, not shipped as a set of pre-rendered PNGs. A
-//! pre-rendered set would need one file per fill level per severity per freshness per
-//! scale — a few hundred images that a theme change invalidates all at once — and the
-//! theme hexes would then live in two places. Drawing it costs the sixty lines below and
-//! keeps `ui/theme.nazar.json` the only place a colour is written down.
+//! **The icon carries no state.** It is the mark — deep blue rim, white band, a whole yellow
+//! iris, black pupil — and it looks the same at 3 % as at 97 %. There is exactly one
+//! exception, and it is the last section of this file: when nothing could be read at all the
+//! rim goes grey and a hollow square stands where the iris would be.
 //!
-//! `tiny-skia` was the leaning in the plan and is not used: the whole picture is four
-//! circles and a horizontal cut, the sibling `scripts/render-bead-png.mjs` already
-//! rasterises the same shapes in JavaScript, and this product's pitch is one small binary
-//! with nothing behind it. Nothing here needs a path, a transform or a blend mode.
+//! That is a reversal of what this module did for one evening, and the reasons are worth
+//! writing down, because they are what a gauge inside a tray icon actually costs.
+//!
+//! * **The tray is where the icon is recognised. The panel is where the quota is read.**
+//!   Nobody reads a percentage off sixteen pixels. The number is in the tooltip on hover and
+//!   in the panel on click, to the decimal, in both cases about a second away — so the fill
+//!   was never the only route to it, only the least precise one. What the tray icon is for
+//!   is being *found*, and a mark is found by being always the same.
+//! * **A fill over the whole chamber ate the mark.** Band and iris filling together meant the
+//!   white ring was gone past about 70 %: an orange disc with a blue rim, sitting beside
+//!   Nazar's bead in the same tray, at exactly the percentage that most needs recognising.
+//! * **Confining the fill to the iris did not save it.** With the band held white the mark
+//!   survived, but the iris then carried the level alone — eight rows, part yellow and part
+//!   white — and at 16 pixels a half-coloured iris does not read as a measurement. It reads
+//!   as a bead with a piece missing: two sibling icons in one tray, one of them always whole
+//!   and the other apparently drawn wrong. A signal that looks like a rendering fault is
+//!   worse than no signal, because the user has to rule the fault out before reading it.
+//!
+//! Severity and freshness left with the fill. An icon with no level has nothing to colour and
+//! nothing to drain, so the orange and red fills, the desaturation and the row arithmetic are
+//! all gone from this file. Neither signal was lost: the tooltip names the binding window's
+//! percentage and the panel shows every window, its severity colour and its age.
+//!
+//! Decision K3 of `docs/PROJECT.md` section 8 still holds, on thinner ice than before: the
+//! icon is **rendered in Rust for the current scale factor** rather than shipped as PNGs.
+//! With the states down to two, a pre-rendered set would be eight small files rather than the
+//! few hundred the fill implied, so this is no longer the obvious call — it is kept because
+//! the theme hexes then live in one place instead of two, and because the shell asks for a
+//! size rather than picking one from a list.
 //!
 //! ```text
-//!            ╭─────────╮        rim      deep blue, or grey when nothing was read
-//!           │  ╭─────╮  │       chamber  white — this is what "empty" looks like
-//!           │  │▓▓▓▓▓│  │       fill     rises from the bottom with the binding window,
-//!           │  │▓▓▓▓▓│  │                coloured by severity
-//!            ╰─────────╯        pupil    black, only when a window is spent
+//!      ████████        rim      deep blue, or grey when nothing was read
+//!    ██▒▒▒▒▒▒▒▒██      band     white
+//!   ██▒▒░░░░░░▒▒██     iris     whole, at every reading
+//!   ██▒▒░░██░░▒▒██     pupil    the grid's own 2x2 centre, black, always
+//!    ██▒▒░░░░▒▒██
+//!      ████████
 //! ```
 //!
-//! Four rules, each of them a finding from the audit or a line of the plan:
+//! **The iris is yellow here, and only here.** Rim `#0E2A5A`, band `#FFFFFF` and pupil
+//! `#0A0A0F` are Nazar's, shared on purpose: two programs by the same hand, one mark. The
+//! iris is `#F2A93B` rather than Nazar's `#3FA9F5` so that the two beads sitting side by
+//! side in one Windows tray are told apart at 16 pixels, where a shape difference would not
+//! survive. That hex is borrowed rather than invented: it is Nazar's amber, the colour its
+//! bar bead turns past the warning threshold — `modes.dark.warn` in the theme files both
+//! repositories carry — so the one difference between the marks still comes out of the
+//! family's own palette. `docs/PROJECT.md` has the decision; the Nazar repository's
+//! `docs/design/` has the six directions the grid came out of and why this one won.
 //!
-//! 1. **Unknown never draws a fill.** A grey rim and a hollow ring, never a reassuring
-//!    empty-blue bead that looks like "0 % used" (finding B03).
-//! 2. **The fill is the binding window**, the highest percentage across both providers —
-//!    the number that actually constrains the user (finding B04).
-//! 3. **Age shows.** A reading that is ageing or stale is drawn desaturated, so an icon
-//!    that has not been fed in an hour does not look as confident as one from a second ago.
-//! 4. **The colours are the brand's, written once.** The constants below are copied from
+//! Three rules, and the middle one is the only state there is:
+//!
+//! 1. **The mark is whole.** Every cell of [`BEAD`] takes its own colour, at every size and
+//!    at every reading. The render at 16 pixels is `ui/assets/bead.svg` pixel for pixel, and
+//!    [`tests`] parses that file and fails if the two drift.
+//! 2. **Unknown is drawn, and drawn as unknown.** Nothing read means a grey rim and a hollow
+//!    six-by-six ring where the iris and pupil are — never a confident bead that could be
+//!    mistaken for a healthy reading (finding B03).
+//! 3. **The colours are the brand's, written once.** The constants below are copied from
 //!    `ui/theme.nazar.json`; [`tests`] parses that file and fails if they drift.
 
-use nazar_core::state::{Freshness, Severity, SnapshotView};
+use nazar_core::state::SnapshotView;
 
 /// A straight (non-premultiplied) RGB colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,132 +94,107 @@ impl Rgb {
     pub fn hex(&self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.red, self.green, self.blue)
     }
-
-    /// Blend towards this colour's own grey by `amount` (0 = untouched, 1 = fully grey).
-    ///
-    /// Rec. 601 luma, because the eye weighs green more than blue and a naive average
-    /// turns the deep blue rim almost black.
-    #[must_use]
-    fn desaturated(self, amount: f64) -> Self {
-        let amount = amount.clamp(0.0, 1.0);
-        let luma = 0.299 * f64::from(self.red)
-            + 0.587 * f64::from(self.green)
-            + 0.114 * f64::from(self.blue);
-        let mix = |channel: u8| {
-            let value = f64::from(channel) * (1.0 - amount) + luma * amount;
-            value.round().clamp(0.0, 255.0) as u8
-        };
-        Rgb::new(mix(self.red), mix(self.green), mix(self.blue))
-    }
 }
 
-/// The bead's rim, and the fill of a window that is comfortably inside its quota.
-/// `bead.deepBlue` in the theme files.
+/// The bead's rim. `bead.deepBlue`, and Nazar's — the two programs share a mark.
 pub const DEEP_BLUE: Rgb = Rgb::new(0x0E, 0x2A, 0x5A);
-/// The fill below the warning threshold. `bead.lightBlue`.
-pub const LIGHT_BLUE: Rgb = Rgb::new(0x3F, 0xA9, 0xF5);
-/// The empty chamber. `bead.white`.
-pub const WHITE: Rgb = Rgb::new(0xFF, 0xFF, 0xFF);
-/// The pupil, drawn only on a spent window. `bead.blackDot`.
-pub const BLACK_DOT: Rgb = Rgb::new(0x0A, 0x0A, 0x0F);
-/// The fill at or above the warning threshold. `modes.light.warn`.
+/// The iris, whole, at every reading. `bead.iris`.
 ///
-/// The **light**-mode tones are the ones used here, in both themes and whatever the panel
-/// is set to: the fill sits on the white chamber, not on the taskbar, so it is legibility
-/// against white that decides. The dark-mode amber is chosen to glow on navy and would be
-/// a pale wash inside the bead.
-pub const AMBER: Rgb = Rgb::new(0xB8, 0x74, 0x00);
-/// The fill at or above the critical threshold. `modes.light.danger`.
-pub const RED: Rgb = Rgb::new(0xC0, 0x39, 0x2B);
+/// This is the one hex the two programs do **not** share: Nazar's iris is `#3FA9F5`. A tray
+/// holding both beads has 16 pixels to tell them apart with, and colour is the only channel
+/// that survives at that size.
+///
+/// The tone itself is the family's, not this repository's: `#F2A93B` is Nazar's amber, the
+/// colour its bar bead turns past the warning threshold — `modes.dark.warn` in the theme
+/// files both repositories carry. Sibling applications, one palette, one hex used for two
+/// different jobs.
+pub const IRIS: Rgb = Rgb::new(0xF2, 0xA9, 0x3B);
+/// The band between the rim and the iris. `bead.white`.
+pub const WHITE: Rgb = Rgb::new(0xFF, 0xFF, 0xFF);
+/// The pupil, the grid's own 2x2 centre. `bead.blackDot`.
+pub const BLACK_DOT: Rgb = Rgb::new(0x0A, 0x0A, 0x0F);
 /// The rim and the hollow ring when nothing could be read. `modes.light.unknownGrey`.
 pub const GREY: Rgb = Rgb::new(0x78, 0x87, 0x9A);
 
-/// Bead radius as a fraction of half the icon, leaving room for the antialiased edge.
-const INSET: f64 = 1.0 / 32.0;
-/// The chamber, as a fraction of the bead's radius. What is left is the rim.
-const CHAMBER: f64 = 0.72;
-/// The pupil of a spent bead, as a fraction of the bead's radius.
-const PUPIL: f64 = 0.26;
-/// Outer edge of the hollow ring that means "unknown", as a fraction of the radius.
-const RING_OUTER: f64 = 0.46;
-/// Inner edge of that ring.
-const RING_INNER: f64 = 0.24;
-/// Samples per pixel per axis. Sixteen samples give seventeen alpha levels, which is
-/// enough for a 16-pixel circle and is what `scripts/render-bead-png.mjs` uses.
-const SUPERSAMPLE: u32 = 4;
+/// The grid's extent, in cells, on both axes. Also the tray's native pixel size.
+pub const GRID: usize = 16;
 
-/// How much of the colour is drained at each freshness.
+/// The mark, one character a cell: `R` rim, `W` band, `I` iris, `P` pupil, `.` nothing.
 ///
-/// `Unknown` — a reading with no `sourceAt` at all — is treated as nearly stale rather than
-/// as fresh: an age nobody can work out is not a recent one.
-///
-/// The numbers were set by looking at a 16-pixel bead on a real taskbar. At 0.6 a stale
-/// amber is brown and the severity stops being readable, which trades one signal for
-/// another; 0.45 still says "this is old" while leaving the colour recognisable.
-fn fade(freshness: Freshness) -> f64 {
-    match freshness {
-        Freshness::Fresh => 0.0,
-        Freshness::Aging => 0.20,
-        Freshness::Stale => 0.45,
-        Freshness::Unknown => 0.35,
-    }
-}
+/// Cell for cell the grid Nazar draws from — `packages/ui/src/bead.ts` there, which is
+/// `docs/design/icon-04-pixel-bead.svg` transcribed. This repository keeps its own copy in
+/// `ui/assets/bead.svg`, and [`tests`] parses that file and fails if the two disagree; the
+/// only difference between the two programs' artwork is which hex the `I` cells take.
+const BEAD: [&[u8; GRID]; GRID] = [
+    b"......RRRR......",
+    b"....RRRRRRRR....",
+    b"..RRRRWWWWRRRR..",
+    b"..RRWWWWWWWWRR..",
+    b".RRWWWWIIWWWWRR.",
+    b".RRWWIIIIIIWWRR.",
+    b"RRWWWIIIIIIWWWRR",
+    b"RRWWIIIPPIIIWWRR",
+    b"RRWWIIIPPIIIWWRR",
+    b"RRWWWIIIIIIWWWRR",
+    b".RRWWIIIIIIWWRR.",
+    b".RRWWWWIIWWWWRR.",
+    b"..RRWWWWWWWWRR..",
+    b"..RRRRWWWWRRRR..",
+    b"....RRRRRRRR....",
+    b"......RRRR......",
+];
 
-/// Everything the drawing needs, and nothing else.
+/// The hollow square that means "nothing was read": the ring around the box from
+/// `(RING_FROM, RING_FROM)` to `(RING_TO, RING_TO)`, one cell thick.
 ///
-/// Deliberately not a `SnapshotView`: the rasteriser is a pure function of three values,
-/// so its tests are three values in and pixels out. [`IconState::from_view`] is the one
-/// place that knows how to get them out of a snapshot.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IconState {
-    /// The binding window's percentage. `None` is unknown, and draws no fill at all.
-    pub percent: Option<f64>,
-    /// Severity of that window, which picks the fill colour.
-    pub severity: Severity,
-    /// How old the reading behind it is, which drains the colour.
-    pub freshness: Freshness,
+/// A square rather than a circle because there is no circle to be had at this size — a
+/// ring of cells six across and one thick is what a 16-pixel grid can spell, and pretending
+/// otherwise would mean antialiasing, which this module has none of. Six across is even, so
+/// the ring is centred on the same seam the pupil is.
+const RING_FROM: usize = 5;
+/// The far edge of that ring, inclusive.
+const RING_TO: usize = 10;
+
+/// Which of the two drawings to rasterise.
+///
+/// Deliberately not a `SnapshotView` and deliberately not a percentage: the rasteriser is a
+/// pure function of this one value, so its tests are one value in and pixels out.
+/// [`IconState::from_view`] is the one place that knows how to get it out of a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconState {
+    /// Something was read. The mark, whole, whatever the number turned out to be.
+    Mark,
+    /// Nothing could be read: a grey rim and a hollow ring (finding B03).
+    Unknown,
 }
 
 impl Default for IconState {
     /// What the tray shows before anything has been read.
     fn default() -> Self {
-        IconState {
-            percent: None,
-            severity: Severity::Unknown,
-            freshness: Freshness::Unknown,
-        }
+        IconState::Unknown
     }
 }
 
 impl IconState {
     /// The state the icon should be in for a derived snapshot.
     ///
-    /// The bead shows **one** number: the highest binding percentage across the providers,
-    /// which is the window that will stop the user first. The severity and the freshness
-    /// come from that same provider rather than from the worst of each — an icon that took
-    /// its colour from one provider and its age from another would describe a machine that
-    /// does not exist.
+    /// One question: **did any provider produce a binding window with a percentage in it?**
+    /// If so the icon is the mark, and which provider, how high the number was and how old
+    /// the reading is are all the tooltip's and the panel's business rather than the icon's.
+    /// If not, nothing on this machine could be read, and the icon says so.
     #[must_use]
     pub fn from_view(view: &SnapshotView) -> Self {
-        let mut chosen: Option<(f64, Severity, Freshness)> = None;
-        for provider in &view.providers {
-            let Some(window) = provider.windows.iter().find(|window| window.binding) else {
-                continue;
-            };
-            let Some(percent) = window.percent.filter(|value| value.is_finite()) else {
-                continue;
-            };
-            if chosen.is_none_or(|(best, _, _)| percent > best) {
-                chosen = Some((percent, window.severity, provider.freshness));
-            }
-        }
-        match chosen {
-            Some((percent, severity, freshness)) => IconState {
-                percent: Some(percent),
-                severity,
-                freshness,
-            },
-            None => IconState::default(),
+        let read = view.providers.iter().any(|provider| {
+            provider
+                .windows
+                .iter()
+                .filter(|window| window.binding)
+                .any(|window| window.percent.is_some_and(f64::is_finite))
+        });
+        if read {
+            IconState::Mark
+        } else {
+            IconState::Unknown
         }
     }
 }
@@ -252,169 +261,126 @@ impl Bitmap {
     }
 }
 
-/// The physical size of the tray icon at a scale factor.
+/// The physical size of the tray icon at a scale factor: always a whole multiple of the
+/// grid, so a cell is always a whole square block of pixels.
 ///
 /// Windows asks for a 16-pixel icon at 100 %, and `SM_CXSMICON` grows with the display
-/// scale: 20 at 125 %, 24 at 150 %, 32 at 200 %. Handing the shell exactly that size is
-/// what makes the bead crisp instead of resampled, and it is why this is drawn rather
-/// than shipped.
+/// scale: 20 at 125 %, 24 at 150 %, 32 at 200 %. Nazar hands the shell exactly that number
+/// and lets four of its sixteen cells come out a pixel wider than the rest.
+///
+/// This icon takes the other side of that trade, and it kept taking it when the fill was
+/// removed — the reason simply changed. It used to be arithmetic: rows of unequal height
+/// stopped 50 % from being half. What is left is the drawing. At 20 pixels, four of the
+/// sixteen cells are two pixels wide and twelve are one, and the four land wherever the
+/// division puts them: a band two cells thick that is three pixels on one side and two on
+/// the other, a 2x2 pupil that comes out 3x2. A 16-pixel bead scaled by the shell into a
+/// 20-pixel slot is soft; a 20-pixel bead drawn on uneven cells is crooked, and at this size
+/// soft beats crooked.
+///
+/// Capped at 64: past 400 % the taskbar is not asking for an icon any more.
 #[must_use]
 pub fn size_for_scale(scale: f64) -> u32 {
-    let size = (16.0 * scale).round();
-    (size.clamp(8.0, 256.0) as u32).max(8)
+    let asked = (16.0 * scale).round().clamp(16.0, 256.0) as u32;
+    let cells = (asked / GRID as u32).clamp(1, 4);
+    cells * GRID as u32
+}
+
+/// The colour of one grid cell, or `None` where the mark draws nothing at all.
+///
+/// The whole of the difference between the two states is here, and it is four lines long.
+fn cell_colour(state: IconState, x: usize, y: usize) -> Option<Rgb> {
+    let glyph = BEAD[y][x];
+    if glyph == b'.' {
+        return None;
+    }
+    if state == IconState::Unknown {
+        // No confident bead, ever: a grey rim around an empty chamber with a hollow ring in
+        // it. The ring sits entirely on iris and pupil cells, so the band stays white here
+        // too, exactly as it is in the mark.
+        let on_ring = (RING_FROM..=RING_TO).contains(&x)
+            && (RING_FROM..=RING_TO).contains(&y)
+            && (x == RING_FROM || x == RING_TO || y == RING_FROM || y == RING_TO);
+        return Some(if glyph == b'R' || on_ring {
+            GREY
+        } else {
+            WHITE
+        });
+    }
+    match glyph {
+        b'R' => Some(DEEP_BLUE),
+        b'W' => Some(WHITE),
+        b'I' => Some(IRIS),
+        b'P' => Some(BLACK_DOT),
+        _ => None,
+    }
 }
 
 /// Draw the bead.
 ///
-/// `size` is physical pixels; the picture is defined in fractions of it, so 16, 20, 24 and
-/// 32 are the same drawing at four resolutions rather than four drawings.
+/// `size` is physical pixels. Nearest neighbour and nothing else: the cell a pixel belongs
+/// to is `x * 16 / size` in integer arithmetic, so a pixel is inside exactly one cell and
+/// takes its colour whole. No supersampling, no blending, no partial alpha — every pixel is
+/// opaque or absent, which is the entire point of authoring on the grid.
+///
+/// [`size_for_scale`] only ever asks for a multiple of sixteen, where every cell is the
+/// same square block. Any other size still renders, with cells a pixel wider here and there;
+/// the icon-set script leans on that for the Store logos, which are not multiples of anything.
 #[must_use]
-pub fn render(size: u32, state: &IconState) -> Bitmap {
+pub fn render(size: u32, state: IconState) -> Bitmap {
     let mut bitmap = Bitmap::blank(size, size);
-    let extent = f64::from(size);
-    let centre = extent / 2.0;
-    let radius = centre - (extent * INSET).max(0.5);
-    if radius <= 0.0 {
+    if size == 0 {
         return bitmap;
     }
-
-    let unknown = state.severity == Severity::Unknown || state.percent.is_none();
-    let drained = fade(state.freshness);
-    let rim = if unknown { GREY } else { DEEP_BLUE }.desaturated(drained);
-    let fill = fill_colour(state.severity).desaturated(drained);
-    let ring = GREY.desaturated(drained);
-
-    let chamber = radius * CHAMBER;
-    let pupil = radius * PUPIL;
-    let ring_outer = radius * RING_OUTER;
-    let ring_inner = radius * RING_INNER;
-
-    // Percentages above 100 exist — a source can report 104 — and the bead is simply full.
-    let percent = state.percent.unwrap_or(0.0).clamp(0.0, 100.0);
-    let surface = centre + chamber - 2.0 * chamber * percent / 100.0;
-
-    let samples = f64::from(SUPERSAMPLE * SUPERSAMPLE);
-    let step = 1.0 / f64::from(SUPERSAMPLE);
-    let offset = step / 2.0;
+    let grid = GRID as u32;
 
     for y in 0..size {
+        let row = (y * grid / size) as usize;
         for x in 0..size {
-            let (mut red, mut green, mut blue, mut covered) = (0.0, 0.0, 0.0, 0.0);
-
-            for sub_y in 0..SUPERSAMPLE {
-                let py = f64::from(y) + f64::from(sub_y) * step + offset;
-                for sub_x in 0..SUPERSAMPLE {
-                    let px = f64::from(x) + f64::from(sub_x) * step + offset;
-                    let distance = ((px - centre).powi(2) + (py - centre).powi(2)).sqrt();
-
-                    // Painter's order, from the rim inwards. The last shape that contains
-                    // the sample wins, exactly like the SVG the panel draws.
-                    let colour = if distance > radius {
-                        None
-                    } else if distance > chamber {
-                        Some(rim)
-                    } else if unknown {
-                        // No fill, ever: a hollow ring inside an empty chamber.
-                        Some(if distance <= ring_outer && distance >= ring_inner {
-                            ring
-                        } else {
-                            WHITE
-                        })
-                    } else if state.severity == Severity::Exhausted && distance <= pupil {
-                        Some(BLACK_DOT)
-                    } else if py >= surface {
-                        Some(fill)
-                    } else {
-                        Some(WHITE)
-                    };
-
-                    if let Some(colour) = colour {
-                        red += f64::from(colour.red);
-                        green += f64::from(colour.green);
-                        blue += f64::from(colour.blue);
-                        covered += 1.0;
-                    }
-                }
-            }
-
-            if covered > 0.0 {
-                let at = ((y as usize) * (size as usize) + x as usize) * 4;
-                bitmap.rgba[at] = (red / covered).round() as u8;
-                bitmap.rgba[at + 1] = (green / covered).round() as u8;
-                bitmap.rgba[at + 2] = (blue / covered).round() as u8;
-                bitmap.rgba[at + 3] = (covered / samples * 255.0).round() as u8;
-            }
+            let Some(colour) = cell_colour(state, (x * grid / size) as usize, row) else {
+                continue;
+            };
+            let at = ((y as usize) * (size as usize) + x as usize) * 4;
+            bitmap.rgba[at] = colour.red;
+            bitmap.rgba[at + 1] = colour.green;
+            bitmap.rgba[at + 2] = colour.blue;
+            bitmap.rgba[at + 3] = 0xFF;
         }
     }
 
     bitmap
 }
 
-/// The fill colour for a severity. Unknown has none, which is the whole point.
-#[must_use]
-pub fn fill_colour(severity: Severity) -> Rgb {
-    match severity {
-        Severity::Unknown => GREY,
-        Severity::Ok => LIGHT_BLUE,
-        Severity::Warn => AMBER,
-        Severity::Critical | Severity::Exhausted => RED,
-    }
-}
-
-/// The states the icon strip in `docs/screenshots/wp4-icons.png` shows, left to right.
+/// Both states the icon has, and the names their files take in `docs/design/`.
 ///
-/// Kept here rather than in the exporter so that a test can assert the strip covers every
-/// severity and every freshness: a screenshot nobody checks is a screenshot that quietly
-/// stops matching the code.
-#[must_use]
-pub fn strip_states() -> Vec<(&'static str, IconState)> {
-    let at = |percent: f64, severity: Severity, freshness: Freshness| IconState {
-        percent: Some(percent),
-        severity,
-        freshness,
-    };
-    vec![
-        ("unknown", IconState::default()),
-        ("ok-8", at(8.0, Severity::Ok, Freshness::Fresh)),
-        ("ok-42", at(42.0, Severity::Ok, Freshness::Fresh)),
-        ("warn-63", at(63.0, Severity::Warn, Freshness::Fresh)),
-        (
-            "critical-88",
-            at(88.0, Severity::Critical, Freshness::Fresh),
-        ),
-        (
-            "exhausted-100",
-            at(100.0, Severity::Exhausted, Freshness::Fresh),
-        ),
-        ("warn-63-ageing", at(63.0, Severity::Warn, Freshness::Aging)),
-        ("warn-63-stale", at(63.0, Severity::Warn, Freshness::Stale)),
-        (
-            "critical-92-stale",
-            at(92.0, Severity::Critical, Freshness::Stale),
-        ),
-    ]
-}
+/// Kept here rather than in the exporter so a test can assert the pictures in the repository
+/// are the states the code can actually be in: documentation nobody checks is documentation
+/// that quietly stops matching.
+pub const DOCUMENTED_STATES: [(&str, IconState); 2] =
+    [("mark", IconState::Mark), ("unknown", IconState::Unknown)];
 
-/// The scales the strip and the screenshots are taken at: 100 %, 150 %, 200 %.
-pub const STRIP_SCALES: [f64; 3] = [1.0, 1.5, 2.0];
+/// The sizes those pictures are written at, and the strip's three rows: the tray's own unit
+/// at 100 %, and what [`size_for_scale`] hands out at 200 % and 400 %.
+///
+/// Not 125 % or 150 %: both round down to the same 16-pixel bead, so a row for either would
+/// be a duplicate. 400 % is where a reader can count the cells instead.
+pub const DOCUMENTED_SIZES: [u32; 3] = [16, 32, 64];
 
-/// Compose the icon strip: one column per state, one row per scale.
+/// Compose the icon strip: one column per state, one row per size.
 #[must_use]
 pub fn strip() -> Bitmap {
-    let states = strip_states();
-    let sizes: Vec<u32> = STRIP_SCALES.iter().copied().map(size_for_scale).collect();
     let gap = 6;
-    let cell = sizes.iter().copied().max().unwrap_or(32) + gap;
+    let cell = DOCUMENTED_SIZES.iter().copied().max().unwrap_or(64) + gap;
 
-    let width = cell * u32::try_from(states.len()).unwrap_or(1) + gap;
-    let height = sizes.iter().sum::<u32>() + gap * (u32::try_from(sizes.len()).unwrap_or(1) + 1);
+    let width = cell * u32::try_from(DOCUMENTED_STATES.len()).unwrap_or(1) + gap;
+    let height = DOCUMENTED_SIZES.iter().sum::<u32>()
+        + gap * (u32::try_from(DOCUMENTED_SIZES.len()).unwrap_or(1) + 1);
     let mut sheet = Bitmap::blank(width, height);
 
     let mut y = gap;
-    for size in sizes {
-        for (column, (_, state)) in states.iter().enumerate() {
+    for size in DOCUMENTED_SIZES {
+        for (column, (_, state)) in DOCUMENTED_STATES.iter().enumerate() {
             let x = gap + cell * u32::try_from(column).unwrap_or(0) + (cell - gap - size) / 2;
-            sheet.draw(&render(size, state), x, y);
+            sheet.draw(&render(size, *state), x, y);
         }
         y += size + gap;
     }
@@ -427,7 +393,7 @@ pub fn strip() -> Bitmap {
 /// and its tree in a product that ships one small binary.
 ///
 /// Nothing in the running tray calls this. The tray hands its RGBA straight to the shell;
-/// this exists for `--icons`, which produces the strip in `docs/screenshots`, and for the
+/// this exists for `--icons`, which produces the pictures in `docs/design`, and for the
 /// tests that pin the drawing.
 #[must_use]
 pub fn encode_png(bitmap: &Bitmap) -> Vec<u8> {
@@ -596,8 +562,8 @@ fn symbol(bits: &mut Bits, symbol: u32) {
 /// bytes, which is what transparency is), **4** (the same pixel repeated, which is what a
 /// flat colour is) and **the row stride** (a row identical to the one above, which is what
 /// the empty half of a strip is). That is a few lines instead of a hash chain, and on this
-/// input — flat circles on transparency — it does the job: the icon strip goes from 130 KB
-/// stored to a few kilobytes. On input it cannot match it degrades to literals, which is
+/// input — flat colour on transparency — it does the job: the icon strip goes from tens of
+/// kilobytes stored to a few. On input it cannot match it degrades to literals, which is
 /// exactly what a stored block would have cost.
 fn zlib(data: &[u8], stride: usize) -> Vec<u8> {
     // 0x78 0x01: deflate, 32 KiB window, no preset dictionary. (0x7801 % 31 == 0.)
@@ -699,20 +665,32 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-/// Write the icon strip into a directory. `--icons` calls this.
+/// Write the icon strip and both states into a directory.
+/// `--icons docs/design` produces everything in that folder: seven files.
 ///
-/// One file, not twenty-seven: the strip already carries every state at every scale, one
-/// row per scale, and a documentation directory full of 16-pixel PNGs is a directory
-/// nobody opens.
+/// The strip is the picture for a README — both states at all three sizes, one row per
+/// size — and beside it each state is written out on its own, so a maintainer can look at
+/// one bead large enough to count its cells.
 ///
 /// # Errors
 /// Whatever the file system says: a directory that cannot be created, a file that cannot
 /// be written.
 pub fn export(directory: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     std::fs::create_dir_all(directory)?;
-    let path = directory.join("wp4-icons.png");
+
+    let mut written = Vec::new();
+    let path = directory.join("bead-states.png");
     std::fs::write(&path, encode_png(&strip()))?;
-    Ok(vec![path])
+    written.push(path);
+
+    for (name, state) in DOCUMENTED_STATES {
+        for size in DOCUMENTED_SIZES {
+            let path = directory.join(format!("bead-{name}-{size}.png"));
+            std::fs::write(&path, encode_png(&render(size, state)))?;
+            written.push(path);
+        }
+    }
+    Ok(written)
 }
 
 #[cfg(test)]

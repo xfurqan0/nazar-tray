@@ -45,7 +45,7 @@ What the research found that nobody ships:
 | Refresh | **Inside the tray process.** A 60 s tick plus a 5 s look at the files that feed it; no OS scheduler. | Kills the Task Scheduler / launchd / systemd triple, the VBS launcher and the lock race the audit proved from logs. *(WP3 built the "file watchers" half as a five-second poll rather than with `notify`: the readers already list those directories, and a watcher would add packages and a second thread for a five-second latency improvement on a display whose slowest input redraws every thirty seconds. Reasoning in `crates/nazar-core/src/refresh/watch.rs`.)* |
 | i18n | JSON locale files, system language auto-detected, override in settings. EN and TR by the maintainer; ZH, KO, RU, ES machine-translated first, corrections via PR. | Win-CodexBar ships five languages; table stakes. |
 | Distribution | GitHub Releases + **winget** (accepts unsigned installers) + apply to **SignPath Foundation** for a free OSS Windows OV certificate. macOS notarization ($99/yr) only with the macOS build; Homebrew cask needs 225★. | EV certs no longer bypass SmartScreen (2024). Budget ceiling ≈ $126/yr. |
-| Visual identity | Nazar bead: deep blue / light blue / white / black dot. Icon = bead filling from the bottom with the binding window; amber ≥ 60 %, red ≥ 85 %, **grey = unknown** (never a reassuring "0"). Panel on navy. Themes as JSON: `nazar` (default), `graphite`. | Drops the Apple-grey look inherited from Win-CodexBar; inspiration credited in README, not in code. |
+| Visual identity | Nazar bead on the 16-cell pixel grid: deep blue rim / white band / **yellow** iris / black pupil *(revised 2026-09-09: the mark was four circles and the iris was Nazar's light blue)*. Icon = **the mark, whole, at every reading** *(revised again the same evening: it used to fill with the binding window)*; the one exception is **grey = unknown** — a grey rim and a hollow ring when nothing could be read, never a reassuring "0". The quota is read in the tooltip and in the panel, where amber ≥ 60 % and red ≥ 85 % still colour it. Panel on navy. Themes as JSON: `nazar` (default), `graphite`. | Drops the Apple-grey look inherited from Win-CodexBar; inspiration credited in README, not in code. |
 
 ## 4. Known limits of the passive design (write them in the README)
 
@@ -134,7 +134,7 @@ for the maintainer to run. Nothing in this repository runs them.
 ## 8. Open decisions
 - ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
 - ~~Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework~~ → **closed 2026-09-07 in WP0: plain TypeScript, HTML and CSS, bundled by esbuild, no framework** (decision K2). The panel's only runtime dependency is `@tauri-apps/api`; `ui/` has two dev dependencies, esbuild and TypeScript.
-- ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set is one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is four circles and a horizontal cut, which is a hundred lines of arithmetic and no dependency. `crates/nazar-tray/src/icon.rs`.
+- ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set was one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is no dependency and, since 2026-09-09, not even arithmetic — sixteen rows of sixteen cells and a lookup. That evening's second revision cut the states to two, so a pre-rendered set would now be eight small files and the decision is no longer obvious; it stands because the theme hexes then live in one place instead of two, and because the shell asks for a size rather than picking one from a list. `crates/nazar-tray/src/icon.rs`.
 - Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
 
 ## 9. Log
@@ -201,7 +201,10 @@ for the maintainer to run. Nothing in this repository runs them.
   leaning in section 8 and was not needed: the picture is four circles and a cut, the hexes
   come from `ui/theme.nazar.json` (a test parses that file and fails on drift), and the
   tooltip — `Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)` — is built from
-  the same locale files the panel reads, because the tray is UI too.
+  the same locale files the panel reads, because the tray is UI too. *(Two evenings later the
+  circles became the pixel grid and the fill, the severity colours and the fade were taken out
+  — decision K25 and its two addenda. The tooltip is unchanged; the icon is the mark, or grey
+  when nothing could be read.)*
   **(2) The panel is designed.** A card per provider on navy: the lobehub mark (MIT, licence
   in `ui/assets/`), the plan as the source spelled it, and a freshness sentence. A row per
   window: its name taken from `windowMinutes` rather than from the provider, a `detailed`
@@ -638,3 +641,160 @@ for the maintainer to run. Nothing in this repository runs them.
   machine. Doing it after v0.1.0 would have meant a new bundle identity, which Windows treats
   as a different product. The winget `PackageIdentifier` is untouched — it was already
   `xfurqan0.nazar-tray`, and the display `Publisher` beside it is the only half that moved.
+
+- 2026-09-09 — **The pixel bead, with a yellow iris** (decision K25). The tray icon was four
+  concentric circles and a 4×4 supersampler; it is now the mark Nazar chose as its direction
+  04 — sixteen rows of sixteen cells — and the renderer is a lookup. Three decisions, each
+  with its own reason.
+
+  **Why pixel.** At 16 pixels a cell is exactly one device pixel, so what Windows puts on the
+  taskbar is the artwork rather than an approximation of it, and there is no antialiased
+  fringe to go muddy against a dark taskbar. That argument is Nazar's and it applies here
+  unchanged. The one that belongs to this program is the gauge: the chamber is **twelve grid
+  rows** tall, the percentage is rounded to a whole number of rows, and 50 % is the bottom six
+  of them — the bead's lower half, exactly. A circle cut by a horizontal line has to be
+  measured to be believed; a row count can be read off the icon, and `icon/tests.rs` now
+  asserts it in cells rather than in pixels. *(Superseded twice the same evening: the fill was
+  cut back from the chamber to the iris and from twelve rows to eight, and then removed
+  altogether — see the two addenda below. The icon carries no gauge.)*
+
+  **Why yellow.** Rim `#0E2A5A`, band `#FFFFFF` and pupil `#0A0A0F` stay Nazar's, on purpose:
+  two programs by the same hand, one mark, and `ui/test/theme.test.mjs` still fails if any of
+  the three drifts. The iris is `#F2A93B` where Nazar's is `#3FA9F5`, because the two beads sit
+  **side by side in one Windows tray** and 16 pixels is not enough room to tell them apart by
+  shape. Sibling applications, not the same application twice. The same test now asserts the
+  *difference*, so a well-meaning "sync the palettes" commit fails.
+
+  `#F2A93B` is not a hex invented for this repository. It is **Nazar's amber — the colour its
+  bar bead turns past the warning threshold**, `modes.dark.warn` in the theme files both
+  programs carry. The one place the two marks differ is still drawn from the family's own
+  palette; the tray simply spends on an iris what Nazar spends on a warning.
+
+  **Why the warning fill moved to orange.** It was `modes.light.warn`, `#B87400`, borrowed from
+  the panel. Dark amber reads as "not blue" beside a light-blue iris and as "the same colour,
+  dimmer" beside a yellow one, which is the one thing a severity colour may not do. The bead's
+  three fills are now three hues — yellow `#F2A93B`, orange `#E8720C`, red `#C0392B` — and the
+  warning tone got its own key, `bead.warnFill`, in both theme files rather than moving
+  `modes.light.warn` underneath the panel. The panel's warn tone is text on a pale card with a
+  4.5:1 floor to clear (`ui/test/contrast.test.mjs` measures it); the bead's is a block of
+  colour with no text on it. They stopped wanting the same hex, so they stopped sharing one.
+
+  **And why it did not move a second time.** The iris settling on `#F2A93B` — a step darker
+  than the first yellow this decision reached for — brings it closer to the warning fill, so
+  the obvious follow-up is to darken the warning to something like `#D9530F` and reopen the
+  gap. Measured on the regenerated `docs/design/bead-states.png`, that is a losing trade.
+  Iris-to-warning and warning-to-red are **ΔE00 16.6 and 22.7** as they stand; with `#D9530F`
+  they become **26.0 and 13.0**. The first gap widens by taking the second below where the
+  first ever was, and the ordering is the same under simulated protanopia and deuteranopia and
+  at all three freshness levels, where the drained fills keep 14.9–16.6 against 13.0–13.5.
+  Three fills read as three states when they are *spaced*, not when two of them are far apart
+  and the other two are crowded, and `#E8720C` sits nearest the middle of the run. It stays.
+
+  **What else changed, and what did not.** Every rule the audit put into the icon survives
+  unchanged: unknown never draws a fill (finding B03) — it draws a grey rim and, in place of
+  the old hollow circle, a **six-by-six square ring one cell thick**, which is what a 16-cell
+  grid can spell without antialiasing; the fill is the highest binding window across both
+  providers (B04); freshness still drains the colour; a spent window still gets the pupil,
+  which is now the grid's own 2×2 centre rather than a circle. `size_for_scale` is the one
+  behaviour that did move: it returns a **whole multiple of sixteen** (16/32/48/64) instead of
+  the exact `SM_CXSMICON` size, because a fill measured in rows needs rows of equal height and
+  20 or 24 pixels for 16 cells does not give them. At 125 % and 150 % the shell scales a
+  16-pixel bead into a 20- or 24-pixel slot: a slightly soft mark whose *level* is still exact,
+  which is the opposite of the trade Nazar took and the right one for an icon that is read
+  rather than recognised.
+
+  **And the icon set is no longer `cargo tauri icon`.** The CLI resamples one large PNG down
+  with a smooth filter, which turns 8-bit art into a blur of it. `scripts/render-app-icons.mjs`
+  renders every size from `ui/assets/bead.svg` nearest-neighbour and packs the same containers
+  the CLI produced — PNG-in-ICO at 16/24/32/48/64/256, an `.icns` of the PNG-carrying types,
+  the four loose PNGs and the ten MSIX logos. The nine logo boxes that are not multiples of 16
+  (30, 44, 71, 89, 107, 142, 150, 284, 310) get the bead at the largest whole cell size that
+  fits, centred, with transparent padding. Zero dependencies, no browser, no network. The
+  documentation artefacts moved with it: `docs/design/bead-states.png` is the strip that used
+  to be `docs/screenshots/wp4-icons.png`, and beside it are the five corners of the contract —
+  empty, half, warning, spent, unknown — at 16 and 32 pixels, one file each, all produced by
+  `nazar-tray --icons docs/design` from the code that draws the real icon.
+
+  **Addendum, 2026-09-09 01:40 — the fill is confined to the iris.** Written a few hours
+  after the rest of K25, with the real icon in the real tray rather than in a strip.
+
+  **What was wrong.** The gauge above fills the whole chamber, band and iris together. On the
+  taskbar at 74 % that means the white band is gone, the iris has nothing left to sit inside,
+  and the mark is an orange disc with a blue rim — next to Nazar's bead it reads as *a
+  different thing*, not as a sibling. The eye disappears at exactly the percentage the icon
+  most needs to be understood at a glance, which is the trade backwards: an icon that stops
+  being recognisable in order to be precise has spent its identity on a number nobody reads
+  off an icon anyway.
+
+  **The rule now.** The `W` cells — the band — are white in every state and at every level,
+  and the fill only ever climbs the **iris**: grid rows 4 to 11, eight of them, bottom up.
+  Unfilled iris cells are white, so 0 % is a white eye and 100 % is a full coloured one with
+  its white ring intact. Severity still picks the colour and freshness still drains it. Spent
+  is unchanged: a full iris with the 2×2 pupil black on top of it. Unknown is unchanged in
+  every byte — a grey rim and the six-by-six ring — because unknown never had a fill to
+  confine, and `PIN_UNKNOWN` in `icon/tests.rs` is the same pair of numbers it was.
+
+  **What the resolution costs, and why it costs nothing.** A step is 12.5 % of the window
+  instead of 8.3 %. That is the whole price, and it is not a price: nobody reads a percentage
+  off a 16-pixel icon. The icon answers *roughly how far along, and how bad* — eight steps and
+  three hues do that comfortably — and the tooltip and the panel answer the rest to the
+  decimal. One exception was added so the coarser step cannot lie: **any percentage above zero
+  fills at least one row**, since a naive round would draw an empty bead up to 6.25 % and make
+  a used window look untouched. Zero is the only reading allowed to look empty.
+
+  `icon/tests.rs` carries the regression as a named test — the band is white at every level
+  and in every state, with the 74 % warning that started this written out as its own case —
+  and `docs/design/bead-states.png` and the five corner files were regenerated. The
+  application icon set did not move: it renders the still mark from `ui/assets/bead.svg` and
+  carries no state, so `scripts/render-app-icons.mjs` produces the same bytes it did before.
+
+  **Second addendum, 2026-09-09 01:50 — the tray icon carries no state.** Written ten minutes
+  after the addendum above, with the confined fill running in the real tray. The gauge is gone
+  entirely: no fill, no severity colour, no freshness fade. The icon is the mark — deep blue
+  rim, white band, whole yellow iris, black pupil — at every reading, with exactly one
+  exception, below.
+
+  **Why the iris fill did not survive either.** Confining it kept the bead recognisable, which
+  was the point, but it moved the whole signal onto eight iris rows, and at 16 pixels a
+  part-yellow, part-white iris does not read as a level. It reads as a bead with a piece
+  missing. Two sibling icons sit in that tray; one of them is always whole, and the other now
+  looked drawn wrong. A signal the user has to rule out as a rendering fault before reading it
+  is worse than no signal, and it costs the thing a tray icon is actually for — being found.
+
+  **What the icon is for, restated.** The tray is where the icon is *recognised*; the panel is
+  where the quota is *read*. Nobody reads a percentage off sixteen pixels, and both routes to
+  the real number — hover for the tooltip, click for the panel — are about a second away and
+  are unchanged. **The tooltip still names each provider's binding window and its percentage,
+  and the panel still shows every window, its severity colour, its reset and its age.** Nothing
+  was removed from either; what was removed is a third, coarse, ambiguous copy of the same
+  number, drawn in a space too small to hold it.
+
+  **The one state, and it is the audit's.** Unknown — no provider could be read at all — still
+  draws a grey rim `#78879A` and a six-by-six ring one cell thick where the iris and pupil are,
+  with no pupil. Finding B03 is exactly this: an icon that has read nothing must not look like
+  an icon that has read something reassuring. `IconState` is now that one bit and nothing else,
+  and `IconState::from_view` asks one question — did any provider produce a binding window with
+  a percentage in it?
+
+  **What went with the fill.** `ORANGE` and `RED`, `bead.warnFill` in both theme files,
+  `filled_rows` and the iris-row constants, `Rgb::desaturated` and `fade`, and the severity and
+  freshness fields of `IconState`. The panel keeps `modes.light.warn` and `modes.light.danger`
+  and every test that measures their contrast; the theme's `bead` block is back to the mark's
+  four layers, and `ui/test/theme.test.mjs` fails if a fifth key returns. `size_for_scale`
+  keeps returning whole multiples of sixteen, on a new reason: the arithmetic that needed rows
+  of equal height is gone, but at 20 or 24 pixels four of the sixteen cells still come out a
+  pixel wider than the rest, which lands on a two-cell band and a 2×2 pupil and draws a
+  lopsided eye. Soft beats crooked at this size.
+
+  `icon/tests.rs` is thirteen tests where it was twenty: the render **is** `ui/assets/bead.svg`
+  cell for cell at 16, 32, 48 and 64 px, the pupil is always there, unknown is a grey rim and a
+  hollow ring and nothing else, sixteen pixels is sixteen cells, and the palette is the theme
+  file's. `docs/design/` is seven files where it was eleven — `bead-mark-{16,32,64}.png`,
+  `bead-unknown-{16,32,64}.png` and the strip — all written by
+  `nazar-tray --icons docs/design`. The application icon set is unchanged again, for the same
+  reason as last time: it renders the still mark and never carried state.
+
+  **Still to do:** the panel screenshots in `docs/screenshots/` were taken before all of this
+  and still show the round bead in the panel header — `wp4-100-*`, `wp4-150-*`, `wp4-200-*`,
+  `wp5-100-*`, `wp6-100-*` and `wp7-100-statusline`. Re-shooting them is a separate pass with
+  `scripts/screenshot.ps1`; nothing about them is wrong except the mark.

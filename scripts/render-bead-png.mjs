@@ -1,11 +1,17 @@
 // Rasterise ui/assets/bead.svg to a square PNG.
 //
-// Why not a library: the SVG is four concentric circles, and the alternative is pulling
-// a rasteriser (and its transitive tree) into a project whose whole pitch is that it
-// ships one small binary with nothing behind it. This reads the same SVG the panel
+// Why not a library: the bead is sixty integer rects on a 16x16 grid, and the alternative
+// is pulling a rasteriser (and its transitive tree) into a project whose whole pitch is
+// that it ships one small binary with nothing behind it. This reads the same SVG the panel
 // shows, so the icon and the artwork cannot drift.
 //
-// Usage: node scripts/render-bead-png.mjs [size] [output.png]
+// **Nearest neighbour, on purpose.** The mark is authored on the grid the tray draws at,
+// so a cell is a whole unit and a render at any multiple of 16 puts a whole square block of
+// pixels inside each one. There is nothing to supersample and nothing to blend: every
+// output pixel is one cell's colour at full alpha, or nothing at all. A smooth filter —
+// which is what `cargo tauri icon` used to apply here — turns 8-bit art into a blur of it.
+//
+// Usage: node scripts/render-bead-png.mjs [size] [output.png] [source.svg]
 
 import { deflateSync } from "node:zlib";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -14,74 +20,104 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..");
-const SOURCE = resolve(REPO, "ui/assets/bead.svg");
+const DEFAULT_SOURCE = "ui/assets/bead.svg";
 
-const SUPERSAMPLE = 4;
+/** The grid the mark is authored on, and the tray's native pixel size. */
+export const GRID = 16;
 
-function parseCircles(svg) {
+/**
+ * Read the bead SVG into a 16x16 array of `[r, g, b]`, `null` where nothing is drawn.
+ *
+ * Strict by design: a non-integer attribute, a rect that runs off the grid, or two rects
+ * covering one cell are all failures rather than something to paint over. The artwork is
+ * hand-authored and there are sixty rects in it; if the file stops looking like that, the
+ * icon set must not be regenerated from it silently.
+ */
+function readGrid(svg) {
   const viewBox = /viewBox="0 0 (\d+) (\d+)"/.exec(svg);
-  if (!viewBox) throw new Error("bead.svg has no square viewBox starting at the origin");
-
-  const circles = [];
-  const pattern = /<circle\s+cx="([\d.]+)"\s+cy="([\d.]+)"\s+r="([\d.]+)"\s+fill="#([0-9A-Fa-f]{6})"\s*\/>/g;
-  for (const match of svg.matchAll(pattern)) {
-    circles.push({
-      cx: Number(match[1]),
-      cy: Number(match[2]),
-      r: Number(match[3]),
-      rgb: [
-        parseInt(match[4].slice(0, 2), 16),
-        parseInt(match[4].slice(2, 4), 16),
-        parseInt(match[4].slice(4, 6), 16),
-      ],
-    });
+  if (viewBox === null) throw new Error("the artwork has no square viewBox at the origin");
+  if (Number(viewBox[1]) !== GRID || Number(viewBox[2]) !== GRID) {
+    throw new Error(`the artwork is not on the ${GRID}x${GRID} grid: ${viewBox[0]}`);
   }
-  if (circles.length === 0) throw new Error("bead.svg contains no circles");
-  return { extent: Number(viewBox[1]), circles };
-}
 
-function render(size, { extent, circles }) {
-  const scale = extent / size;
-  const step = scale / SUPERSAMPLE;
-  const offset = step / 2;
-  const pixels = Buffer.alloc(size * size * 4);
+  const cells = Array.from({ length: GRID }, () => Array.from({ length: GRID }, () => null));
+  const pattern =
+    /<rect\s+x="(\d+)"\s+y="(\d+)"\s+width="(\d+)"\s+height="(\d+)"\s+fill="#([0-9A-Fa-f]{6})"\s*\/>/g;
 
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let covered = 0;
-
-      for (let sy = 0; sy < SUPERSAMPLE; sy += 1) {
-        const py = y * scale + sy * step + offset;
-        for (let sx = 0; sx < SUPERSAMPLE; sx += 1) {
-          const px = x * scale + sx * step + offset;
-          // Painter's order: the last circle that contains the sample wins.
-          let hit = null;
-          for (const circle of circles) {
-            const dx = px - circle.cx;
-            const dy = py - circle.cy;
-            if (dx * dx + dy * dy <= circle.r * circle.r) hit = circle;
-          }
-          if (hit) {
-            r += hit.rgb[0];
-            g += hit.rgb[1];
-            b += hit.rgb[2];
-            covered += 1;
-          }
-        }
-      }
-
-      const at = (y * size + x) * 4;
-      const samples = SUPERSAMPLE * SUPERSAMPLE;
-      if (covered > 0) {
-        pixels[at] = Math.round(r / covered);
-        pixels[at + 1] = Math.round(g / covered);
-        pixels[at + 2] = Math.round(b / covered);
-        pixels[at + 3] = Math.round((covered / samples) * 255);
+  let count = 0;
+  for (const match of svg.matchAll(pattern)) {
+    const [x, y, width, height] = match.slice(1, 5).map(Number);
+    const hex = match[5];
+    const rgb = [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16),
+    ];
+    if (x + width > GRID || y + height > GRID) {
+      throw new Error(`a rect at ${x},${y} runs off the ${GRID}x${GRID} grid`);
+    }
+    for (let row = y; row < y + height; row += 1) {
+      for (let column = x; column < x + width; column += 1) {
+        if (cells[row][column] !== null) throw new Error(`two rects cover cell ${column},${row}`);
+        cells[row][column] = rgb;
       }
     }
+    count += 1;
+  }
+  if (count === 0) throw new Error("the artwork contains no rects");
+  return cells;
+}
+
+/** Read the artwork and hand back its cells. */
+export function beadGrid(source = resolve(REPO, DEFAULT_SOURCE)) {
+  return readGrid(readFileSync(source, "utf8"));
+}
+
+/**
+ * Blow the grid up to `size` pixels square, one cell to a block.
+ *
+ * At a multiple of 16 every block is the same k x k square. At anything else the blocks
+ * come out uneven — still hard-edged, never blended — which is why `fitToBox` exists for
+ * the Store logos rather than letting this function take the strain.
+ */
+export function renderBead(size, cells) {
+  const pixels = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    const row = cells[Math.floor((y * GRID) / size)];
+    for (let x = 0; x < size; x += 1) {
+      const cell = row[Math.floor((x * GRID) / size)];
+      if (cell === null) continue;
+      const at = (y * size + x) * 4;
+      pixels[at] = cell[0];
+      pixels[at + 1] = cell[1];
+      pixels[at + 2] = cell[2];
+      pixels[at + 3] = 0xff;
+    }
+  }
+  return pixels;
+}
+
+/**
+ * The mark centred in a `box`-pixel square, at the largest whole cell size that fits.
+ *
+ * Windows asks for logos at 30, 44, 71, 89, 107, 142, 150, 284 and 310 pixels, and not one
+ * of those is a multiple of 16. Rather than resample — the one thing this artwork must
+ * never suffer — the bead is drawn at the largest multiple of 16 that fits inside the box
+ * and the remainder is left transparent. A tile with a few pixels of padding is what every
+ * one of those logos gets anyway; a blurred mark is not.
+ */
+export function fitToBox(box, cells) {
+  const scale = Math.max(1, Math.floor(box / GRID));
+  const size = scale * GRID;
+  const bead = renderBead(size, cells);
+  if (size === box) return bead;
+
+  const pixels = Buffer.alloc(box * box * 4);
+  const offset = Math.floor((box - size) / 2);
+  for (let y = 0; y < size; y += 1) {
+    const from = y * size * 4;
+    const to = ((y + offset) * box + offset) * 4;
+    bead.copy(pixels, to, from, from + size * 4);
   }
   return pixels;
 }
@@ -111,17 +147,18 @@ function chunk(type, data) {
   return Buffer.concat([length, body, crc]);
 }
 
-function toPng(size, pixels) {
+/** Encode straight (non-premultiplied) RGBA pixels as a PNG. */
+export function toPng(width, height, pixels) {
   const header = Buffer.alloc(13);
-  header.writeUInt32BE(size, 0);
-  header.writeUInt32BE(size, 4);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
   header[8] = 8; // bit depth
   header[9] = 6; // colour type: RGBA
   // bytes 10..12 stay zero: deflate, adaptive filtering, no interlace
 
-  const stride = size * 4;
-  const raw = Buffer.alloc((stride + 1) * size);
-  for (let y = 0; y < size; y += 1) {
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
     raw[y * (stride + 1)] = 0; // filter type 0 (none)
     pixels.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
   }
@@ -134,10 +171,19 @@ function toPng(size, pixels) {
   ]);
 }
 
-const size = Number(process.argv[2] ?? 1024);
-const output = resolve(REPO, process.argv[3] ?? "ui/assets/bead-1024.png");
-const bead = parseCircles(readFileSync(SOURCE, "utf8"));
+// Run as a script rather than imported: rasterise one file.
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const size = Number(process.argv[2] ?? 1024);
+  if (!Number.isInteger(size) || size < GRID) throw new Error(`${size} is not a usable size`);
+  if (size % GRID !== 0) {
+    process.stderr.write(
+      `warning: ${size} is not a multiple of ${GRID}, so the cells will be uneven widths\n`,
+    );
+  }
+  const output = resolve(REPO, process.argv[3] ?? "ui/assets/bead-1024.png");
+  const source = resolve(REPO, process.argv[4] ?? DEFAULT_SOURCE);
 
-mkdirSync(dirname(output), { recursive: true });
-writeFileSync(output, toPng(size, render(size, bead)));
-process.stdout.write(`rendered ${size}x${size} bead to ${output}\n`);
+  mkdirSync(dirname(output), { recursive: true });
+  writeFileSync(output, toPng(size, size, renderBead(size, beadGrid(source))));
+  process.stdout.write(`rendered ${size}x${size} bead to ${output}\n`);
+}

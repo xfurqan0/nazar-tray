@@ -1,11 +1,21 @@
 /**
  * Theme tokens, turned into CSS custom properties.
  *
- * `theme.nazar.json` and `theme.graphite.json` are **verbatim copies** of Nazar's files
- * (`nazar/packages/ui/theme.*.json`). The values belong to the brand definition, not to
- * either repo; Nazar happened to write them down first because it ships first. Copies
- * plus an equality test beat a shared package for thirty lines of JSON (decision K23);
- * `test/theme.test.mjs` is that test.
+ * `theme.nazar.json` and `theme.graphite.json` started as **verbatim copies** of Nazar's
+ * files (`nazar/packages/ui/theme.*.json`). Most of the values still belong to the brand
+ * definition rather than to either repo; Nazar happened to write them down first because
+ * it ships first. Copies plus an equality test beat a shared package for thirty lines of
+ * JSON (decision K23); `test/theme.test.mjs` is that test.
+ *
+ * One key under `bead` is this repository's own and is asserted to *differ* from Nazar's:
+ * `iris` is `#F2A93B` rather than light blue, so the two beads are told apart in one tray.
+ * The hex is not new — it is Nazar's amber, the colour its bar bead turns past the warning
+ * threshold, and it is sitting in `modes.dark.warn` of these very files.
+ *
+ * The block is four layers and nothing else. It briefly carried a fifth, `warnFill`, for a
+ * tray icon that filled with the quota; the icon carries no state any more, so the key went
+ * with the gauge rather than staying behind as a colour nothing draws. `docs/PROJECT.md`,
+ * 2026-09-09.
  */
 
 import graphite from "../theme.graphite.json";
@@ -18,7 +28,7 @@ export type ThemeMode = "light" | "dark";
 export interface Theme {
   readonly name: string;
   readonly label: string;
-  /** The four bead colours. Identical across themes; identical to Nazar's. */
+  /** The mark's four colours. Identical across themes. */
   readonly bead: Readonly<Record<string, string>>;
   /** Amber and red thresholds, in percent. */
   readonly thresholds: Readonly<Record<string, number>>;

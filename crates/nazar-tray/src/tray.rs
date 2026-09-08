@@ -122,7 +122,7 @@ pub fn install(app: &AppHandle, strings: &Arc<Strings>) -> tauri::Result<()> {
     let menu = build_menu(app, &catalog)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(image(&IconState::default(), 1.0))
+        .icon(image(IconState::default(), 1.0))
         // The bead is a coloured mark, not a silhouette; letting macOS recolour it as a
         // template would throw away the signal.
         .icon_as_template(false)
@@ -179,7 +179,7 @@ pub fn refresh(app: &AppHandle, catalog: &Catalog) {
         return;
     };
 
-    let _ = tray.set_icon(Some(image(&IconState::from_view(&view), scale_factor(app))));
+    let _ = tray.set_icon(Some(image(IconState::from_view(&view), scale_factor(app))));
     let _ = tray.set_tooltip(Some(tooltip(&view, catalog)));
 }
 
@@ -199,7 +199,7 @@ fn scale_factor(app: &AppHandle) -> f64 {
 ///
 /// No PNG anywhere in this path: [`icon::render`] produces exactly the RGBA the shell
 /// wants, so nothing is encoded and nothing is decoded.
-fn image(state: &IconState, scale: f64) -> Image<'static> {
+fn image(state: IconState, scale: f64) -> Image<'static> {
     let bitmap = icon::render(icon::size_for_scale(scale), state);
     Image::new_owned(bitmap.rgba, bitmap.width, bitmap.height)
 }

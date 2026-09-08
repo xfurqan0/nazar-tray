@@ -1,4 +1,4 @@
-// The icon strip in docs/screenshots, checked by a decoder nobody in this repository wrote.
+// The icon strip in docs/design, checked by a decoder nobody in this repository wrote.
 //
 // `crates/nazar-tray/src/icon.rs` encodes PNG by hand — a fixed-Huffman deflate stream in
 // about eighty lines, because an image crate is a dependency tree in a product that ships
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const STRIP = resolve(REPO, "docs/screenshots/wp4-icons.png");
+const STRIP = resolve(REPO, "docs/design/bead-states.png");
 
 /** Split a PNG into its chunks. */
 function chunks(bytes) {
@@ -39,7 +39,7 @@ function chunks(bytes) {
 test("the icon strip is a PNG that a real decoder can read", () => {
   assert.ok(
     existsSync(STRIP),
-    "docs/screenshots/wp4-icons.png is missing; regenerate it with `nazar-tray --icons docs/screenshots`",
+    "docs/design/bead-states.png is missing; regenerate it with `nazar-tray --icons docs/design`",
   );
   const parts = chunks(readFileSync(STRIP));
 
@@ -65,19 +65,22 @@ test("the icon strip is a PNG that a real decoder can read", () => {
 
 test("the strip has the shape the rasteriser says it does", () => {
   const rust = readFileSync(resolve(REPO, "crates/nazar-tray/src/icon.rs"), "utf8");
-  // The names of the states, from the body of `strip_states`. Matched on the quoted names
-  // rather than on the shape of the call, because rustfmt wraps some of those calls and
-  // not others, and a test that breaks when the formatter runs is a test nobody trusts.
-  const body = /pub fn strip_states\(\)[\s\S]*?\n\}/.exec(rust);
-  assert.ok(body, "icon.rs no longer has strip_states");
+  // The names of the states, from the body of `DOCUMENTED_STATES`. Matched on the quoted
+  // names rather than on the shape of the literal, because rustfmt wraps it one way at one
+  // length and another way at another, and a test that breaks when the formatter runs is a
+  // test nobody trusts.
+  const body = /pub const DOCUMENTED_STATES[\s\S]*?\];/.exec(rust);
+  assert.ok(body, "icon.rs no longer has DOCUMENTED_STATES");
   const states = [...body[0].matchAll(/"([a-z0-9-]+)"/g)].map((match) => match[1]);
-  assert.ok(states.length >= 8, `expected the strip's states, found ${states.join(", ")}`);
-  assert.ok(states.includes("unknown"), "the strip must show the unknown bead");
+  // Two of them, since 2026-09-09: the icon carries no state beyond "was anything read".
+  assert.deepEqual(states, ["mark", "unknown"], `unexpected states ${states.join(", ")}`);
 
   const header = chunks(readFileSync(STRIP)).find((part) => part.type === "IHDR");
   const width = header.data.readUInt32BE(0);
   const height = header.data.readUInt32BE(4);
-  // Nine columns of 32 + 6, plus a margin; three rows of 16, 24 and 32 plus four gaps.
-  assert.equal(width, states.length * 38 + 6, `unexpected width ${width}`);
-  assert.equal(height, 16 + 24 + 32 + 6 * 4, `unexpected height ${height}`);
+  // Two columns of 64 + 6, plus a margin; three rows of 16, 32 and 64 plus four gaps.
+  // The sizes are the ones size_for_scale hands out at 100 %, 200 % and 400 %, and they are
+  // whole multiples of the sixteen-cell grid because nothing else is allowed to be.
+  assert.equal(width, states.length * 70 + 6, `unexpected width ${width}`);
+  assert.equal(height, 16 + 32 + 64 + 6 * 4, `unexpected height ${height}`);
 });

@@ -4,8 +4,8 @@
   "description": "Neutral surfaces, the same bead thresholds. For people who want the navy gone.",
   "bead": {
     "deepBlue": "#0E2A5A",
-    "lightBlue": "#3FA9F5",
     "white": "#FFFFFF",
+    "iris": "#F2A93B",
     "blackDot": "#0A0A0F"
   },
   "thresholds": {

@@ -90,9 +90,18 @@ body {
   gap: 8px;
 }
 
+/*
+ * The bead in the header, on the grid it is authored on.
+ *
+ * 16 px, not the 20 it was: the mark is sixteen cells wide, so a box that is a whole
+ * multiple of sixteen puts a whole number of CSS pixels inside every cell and 20 does not.
+ * 16 is also the size the tray draws at, which is the one place this artwork is at home.
+ * `crispEdges` and `pixelated` are the belt and braces — the first is on the SVG itself and
+ * governs the rects, the second matters the day this is swapped for a raster.
+ */
 .mark {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
 }
 
@@ -100,6 +109,8 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  shape-rendering: crispEdges;
+  image-rendering: pixelated;
 }
 
 .title {

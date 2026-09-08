@@ -1,16 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Nazar bead">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="32" height="32" shape-rendering="crispEdges" role="img" aria-label="Nazar bead">
   <title>Nazar bead</title>
   <!--
-    The four bead colours are the brand definition shared with Nazar. They are copied
-    from nazar/packages/ui/theme.nazar.json and must not drift; ui/test/theme.test.mjs
-    asserts every hex below against theme.nazar.json.
+    The mark, on the 16x16 grid the tray actually draws at. Every cell is a whole unit, so
+    at 16 px each rect lands on exactly one device pixel and nothing is resampled; blown up
+    it stays 8-bit art rather than becoming a blur of it.
 
-    Concentric circles only, in painter's order. scripts/render-bead-png.mjs parses this
-    file and rasterises exactly these circles, so the SVG stays the single source for
-    both the panel artwork and the application icon.
+    Geometry identical to Nazar's docs/design/icon-04-pixel-bead.svg, cell for cell. Rim
+    #0E2A5A, band #FFFFFF and pupil #0A0A0F are the brand definition shared with Nazar and
+    must not drift. The iris is the one difference: #F2A93B here against Nazar's #3FA9F5,
+    so that the two beads sitting side by side in one Windows tray are told apart at 16 px,
+    where a difference of shape would not survive. #F2A93B is itself Nazar's amber — the
+    colour its bar bead turns past the warning threshold, modes.dark.warn in the shared
+    theme — so the two marks differ by a hex the family already owns.
+
+    Three things read this file and two tests compare them: scripts/render-bead-png.mjs
+    rasterises it for the application icons, ui/build.mjs inlines it into the panel, and
+    crates/nazar-tray/src/icon.rs carries the same grid as sixteen strings.
+    ui/test/theme.test.mjs pins the hexes; the Rust tests pin the geometry.
   -->
-  <circle cx="512" cy="512" r="480" fill="#0E2A5A"/>
-  <circle cx="512" cy="512" r="330" fill="#FFFFFF"/>
-  <circle cx="512" cy="512" r="210" fill="#3FA9F5"/>
-  <circle cx="512" cy="512" r="96" fill="#0A0A0F"/>
+  <rect x="6" y="0" width="4" height="1" fill="#0E2A5A"/>
+  <rect x="4" y="1" width="8" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="2" width="4" height="1" fill="#0E2A5A"/>
+  <rect x="6" y="2" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="10" y="2" width="4" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="3" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="4" y="3" width="8" height="1" fill="#FFFFFF"/>
+  <rect x="12" y="3" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="1" y="4" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="3" y="4" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="7" y="4" width="2" height="1" fill="#F2A93B"/>
+  <rect x="9" y="4" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="13" y="4" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="1" y="5" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="3" y="5" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="5" y="5" width="6" height="1" fill="#F2A93B"/>
+  <rect x="11" y="5" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="13" y="5" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="0" y="6" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="6" width="3" height="1" fill="#FFFFFF"/>
+  <rect x="5" y="6" width="6" height="1" fill="#F2A93B"/>
+  <rect x="11" y="6" width="3" height="1" fill="#FFFFFF"/>
+  <rect x="14" y="6" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="0" y="7" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="7" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="4" y="7" width="3" height="1" fill="#F2A93B"/>
+  <rect x="7" y="7" width="2" height="1" fill="#0A0A0F"/>
+  <rect x="9" y="7" width="3" height="1" fill="#F2A93B"/>
+  <rect x="12" y="7" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="14" y="7" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="0" y="8" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="8" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="4" y="8" width="3" height="1" fill="#F2A93B"/>
+  <rect x="7" y="8" width="2" height="1" fill="#0A0A0F"/>
+  <rect x="9" y="8" width="3" height="1" fill="#F2A93B"/>
+  <rect x="12" y="8" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="14" y="8" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="0" y="9" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="9" width="3" height="1" fill="#FFFFFF"/>
+  <rect x="5" y="9" width="6" height="1" fill="#F2A93B"/>
+  <rect x="11" y="9" width="3" height="1" fill="#FFFFFF"/>
+  <rect x="14" y="9" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="1" y="10" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="3" y="10" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="5" y="10" width="6" height="1" fill="#F2A93B"/>
+  <rect x="11" y="10" width="2" height="1" fill="#FFFFFF"/>
+  <rect x="13" y="10" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="1" y="11" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="3" y="11" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="7" y="11" width="2" height="1" fill="#F2A93B"/>
+  <rect x="9" y="11" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="13" y="11" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="12" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="4" y="12" width="8" height="1" fill="#FFFFFF"/>
+  <rect x="12" y="12" width="2" height="1" fill="#0E2A5A"/>
+  <rect x="2" y="13" width="4" height="1" fill="#0E2A5A"/>
+  <rect x="6" y="13" width="4" height="1" fill="#FFFFFF"/>
+  <rect x="10" y="13" width="4" height="1" fill="#0E2A5A"/>
+  <rect x="4" y="14" width="8" height="1" fill="#0E2A5A"/>
+  <rect x="6" y="15" width="4" height="1" fill="#0E2A5A"/>
 </svg>

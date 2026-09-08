@@ -1,11 +1,11 @@
 {
   "name": "nazar",
   "label": "Nazar",
-  "description": "The bead on navy: deep blue, light blue, white, black dot. Default theme.",
+  "description": "The bead on navy: deep blue rim, white band, yellow iris, black pupil. Default theme.",
   "bead": {
     "deepBlue": "#0E2A5A",
-    "lightBlue": "#3FA9F5",
     "white": "#FFFFFF",
+    "iris": "#F2A93B",
     "blackDot": "#0A0A0F"
   },
   "thresholds": {

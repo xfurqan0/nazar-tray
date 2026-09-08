@@ -2,7 +2,7 @@
 
 **Your Claude Code and Codex quota, in the system tray. Zero credentials, zero network.** The tray face of [Nazar](https://github.com/xfurqan0/nazar).
 
-A bead in your tray fills up as you burn through your 5-hour and weekly windows. Click it for the full picture: every window, its percentage, and when it resets. Amber at 60 %, red at 85 %, a notification before you hit the wall.
+A pixel bead sits in your tray. Hover it for your most-constrained window; click it for the full picture: every window, its percentage, and when it resets. Orange at 60 %, red at 85 %, a notification before you hit the wall.
 
 > Status: **release candidate (WP7) — not yet published.** Everything is here: both readers,
 > the refresh loop inside the tray process, `~/.nazar/limits.json` written atomically by one
@@ -19,7 +19,9 @@ A bead in your tray fills up as you burn through your 5-hour and weekly windows.
 <sub>Demo data, so the picture shows the states that are hard to arrange on purpose: a window
 over the amber threshold, one over the red threshold that only the opt-in detailed mode can
 see, and one nobody could read — which says so rather than showing a reassuring zero. The
-bead states at every scale: [docs/screenshots/wp4-icons.png](docs/screenshots/wp4-icons.png).</sub>
+bead at every scale, and the grey it turns when nothing could be read:
+[docs/design/bead-states.png](docs/design/bead-states.png), with both states one file each
+beside it.</sub>
 
 ## Install
 
@@ -76,7 +78,8 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 
 ## What you get
 
-- Tray bead icon showing your most-constrained window; grey means "unknown", never a false zero
+- Tray bead icon with your most-constrained window in its tooltip; the bead turns grey when
+  nothing could be read, never a false zero
 - Popup panel with both providers, all windows, reset countdowns
 - Notifications at 60 / 85 / 100 %, once per window per reset
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)
@@ -111,7 +114,7 @@ Five rules, so it is a warning rather than a nuisance:
   sentence, and it says 85 %.
 
 **Quiet hours** stop the interruption without stopping the tray: the crossing is still
-recorded and the icon still changes colour, you just are not told about it at three in the
+recorded and the panel still shows it in red, you just are not told about it at three in the
 morning. Times are your own wall clock, and the range may wrap midnight.
 
 **Clicking a toast does not open the panel.** Tauri's notification plugin does not hand an
@@ -272,7 +275,7 @@ macOS too, and CI keeps it that way.
 | MSVC Build Tools 2022 | with the C++ workload | there is no linker without it |
 | WebView2 | already part of Windows 10 1803+ and Windows 11 | the panel runs in it |
 | Node | 22 | builds the panel and runs its tests |
-| `tauri-cli` | 2.x | `cargo install tauri-cli --locked` — only needed for `tauri build` and `tauri icon` |
+| `tauri-cli` | 2.x | `cargo install tauri-cli --locked` — only needed for `tauri build`. **Not** for the icons: see below |
 
 **Layout**
 
@@ -285,8 +288,8 @@ crates/nazar-tray       the Tauri v2 app: tray icon, panel window. Windows first
 ui/                     the panel: plain TypeScript, HTML and CSS, bundled by esbuild
 fixtures/               limits.sample.json, the file consumers copy into their tests
 packaging/winget/       the three manifests the winget package is submitted as
-scripts/                the build, the licence gate, the notices, the bead rasteriser
-                        and the screenshot runner
+scripts/                the build, the licence gate, the notices, the bead rasteriser,
+                        the application icon set and the screenshot runner
 docs/                   the plan, the contracts, the release checklist, screenshots
 ```
 
@@ -344,17 +347,27 @@ of those into a release.
 **Regenerating the icons** — after editing `ui/assets/bead.svg`:
 
 ```powershell
-node scripts/render-bead-png.mjs
-cargo tauri icon ui/assets/bead-1024.png -o crates/nazar-tray/icons
+node scripts/render-app-icons.mjs      # crates/nazar-tray/icons: PNGs, .ico, .icns
+node scripts/render-bead-png.mjs       # ui/assets/bead-1024.png, the 1024 px master
 ```
 
-That is the **application** icon: the installer, the taskbar, the Store logos. The **tray**
-icon is not a file at all — it is drawn at run time by `crates/nazar-tray/src/icon.rs` for
-the current scale factor, from the hexes in `ui/theme.nazar.json`. The strip in the
-documentation comes from the same code:
+That is the **application** icon: the installer, the taskbar, the Store logos.
+
+**Not `cargo tauri icon`.** The CLI takes one large PNG and resamples it down with a smooth
+filter, which is right for a vector mark and wrong for this one — the bead is authored on a
+16-cell grid so that no resampler is ever involved, and a smooth downscale of 8-bit art is a
+blur of it. `render-app-icons.mjs` renders every size from the grid instead, nearest
+neighbour, and packs the same containers the CLI produced: PNG-in-ICO at 16/24/32/48/64/256
+and an `.icns` of the PNG-carrying types. The nine Store logos are not multiples of 16, so
+the bead is drawn at the largest whole cell size that fits and centred with transparent
+padding. Zero dependencies, no browser, no network.
+
+The **tray** icon is not a file at all — it is drawn at run time by
+`crates/nazar-tray/src/icon.rs` for the current scale factor, from the hexes in
+`ui/theme.nazar.json`. Everything in `docs/design/` comes from that same code:
 
 ```powershell
-cargo run -p nazar-tray -- --icons docs/screenshots
+cargo run -p nazar-tray -- --icons docs/design
 ```
 
 **Regenerating the screenshots**

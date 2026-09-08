@@ -39,7 +39,7 @@ const provider = (name, severity) => ({
   windows: [],
 });
 
-test("the worst severity across providers is what the icon will show", () => {
+test("the worst severity across providers is the one the panel reports", () => {
   assert.equal(
     worstSeverity({ updatedAt: "", now: "", providers: [] }),
     "unknown",

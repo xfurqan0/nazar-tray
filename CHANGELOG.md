@@ -208,6 +208,49 @@ person moves it.
 
 ### Changed
 
+- **The bead is pixel art now, its iris is yellow, and it carries no state** (decision K25,
+  `crates/nazar-tray/src/icon.rs`). The tray icon was four concentric circles and a 4×4
+  supersampler; it is the mark Nazar adopted as its direction 04 — **sixteen rows of sixteen
+  cells** — and the renderer is a lookup with no arithmetic and no blending in it. At 16 px a
+  cell is exactly one device pixel, so what Windows draws is the artwork rather than an
+  approximation of it, and no pixel is ever partly transparent at any size.
+  Rim `#0E2A5A`, band `#FFFFFF` and pupil `#0A0A0F` stay Nazar's; the **iris is `#F2A93B`**
+  where Nazar's is `#3FA9F5`, because the two beads sit side by side in one Windows tray and
+  16 pixels is not enough room to tell sibling applications apart by shape. `theme.test.mjs`
+  asserts the three shared hexes *and* the one deliberate difference. `#F2A93B` is itself a
+  family colour — **Nazar's amber, the colour its bar bead turns past the warning
+  threshold**, `modes.dark.warn` in both theme files — so the marks differ by a hex the brand
+  already owns rather than by a new one.
+- **The icon does not fill with the quota.** It is the mark, whole, at every reading: no fill
+  level, no severity colour, no fading with age. Two attempts at a gauge were built and taken
+  back the same evening — one filling the whole chamber, which lost the white band past about
+  70 % and turned the bead into an orange disc, and one confined to the iris, which kept the
+  mark but made a part-coloured iris look like a bead with a piece missing rather than like a
+  measurement. Sixteen pixels is not a place to read a percentage off, and both places that
+  *are* were always a second away and are unchanged: **the tooltip still names each provider's
+  binding window and its percentage, and the panel still shows every window, its severity
+  colour, its reset and its age.**
+- **Unknown is the icon's one state, and it is the audit's** (finding B03). When no provider
+  could be read the rim goes grey `#78879A` and a six-by-six ring one cell thick stands where
+  the iris and pupil are — never a confident bead that could pass for a healthy reading. Every
+  other reading draws the same mark.
+- **`size_for_scale` returns a whole multiple of sixteen** — 16, 32, 48, 64 — instead of the
+  exact `SM_CXSMICON` size. At 20 or 24 pixels four of the sixteen cells come out a pixel wider
+  than the rest, which lands on a two-cell band and a 2×2 pupil and draws a lopsided eye. At
+  125 % and 150 % the shell scales a 16-pixel bead into a 20- or 24-pixel slot instead: soft
+  beats crooked at this size.
+- **The application icons are rendered from the grid, not by `cargo tauri icon`**
+  (`scripts/render-app-icons.mjs`). The CLI resamples one large PNG down with a smooth filter,
+  which turns 8-bit art into a blur of it. The new script renders every size from
+  `ui/assets/bead.svg` nearest-neighbour and packs the same containers the CLI produced —
+  PNG-in-ICO at 16/24/32/48/64/256, an `.icns` of the PNG-carrying types, the loose PNGs and
+  the MSIX logos. The nine logo boxes that are not multiples of 16 get the bead at the largest
+  whole cell size that fits, centred, with transparent padding. Zero dependencies, no browser,
+  no network.
+- **The icon strip moved to `docs/design/bead-states.png`** and brought company: both states —
+  the mark, and unknown — at 16, 32 and 64 pixels, one file each. `nazar-tray --icons
+  docs/design` writes all seven from the code that draws the real icon. The panel screenshots
+  in `docs/screenshots/` still show the round bead in the header and are due a re-shoot.
 - **Three layout fixes for text that only a translation could produce.** A provider card's
   first line **wraps**, because Russian's *"устарело · последние данные 1 ч 10 мин назад"* was
   being cut off with an ellipsis where the English fits. The footer **wraps whole buttons**
@@ -311,15 +354,17 @@ person moves it.
   that.
 
 - **The tray bead, drawn at run time** (`crates/nazar-tray/src/icon.rs`, decision K3). One
-  rasteriser, one drawing, three scales: 16 px at 100 %, 20 at 125 %, 24 at 150 %, 32 at
-  200 % — what `SM_CXSMICON` actually asks for, handed to the shell as raw RGBA with no PNG
-  anywhere in the path. A deep-blue rim, a **white chamber that is what "empty" looks like**,
-  and a fill rising from the bottom with the **binding window across both providers**: light
-  blue below 60 %, amber at 60, red at 85, and a black pupil at 100 so a spent window
-  survives a greyscale screenshot. **Unknown is a grey rim and a hollow ring and never a
-  fill** (finding B03), and freshness drains the colour, so an icon nobody has fed in an hour
-  does not look as confident as one from a second ago. The seven hexes are copied from
-  `ui/theme.nazar.json` and a test parses that file and fails if they drift.
+  rasteriser, one drawing, four sizes: 16 px at 100 %, 32 at 200 %, 48 and 64 above that —
+  handed to the shell as raw RGBA with no PNG anywhere in the path. A deep-blue rim, a
+  **white chamber that is what "empty" looks like**, and a fill rising from the bottom row by
+  row with the **binding window across both providers**: yellow below 60 %, orange at 60, red
+  at 85, and a black pupil at 100 so a spent window survives a greyscale screenshot.
+  **Unknown is a grey rim and a hollow ring and never a fill** (finding B03), and freshness
+  drains the colour, so an icon nobody has fed in an hour does not look as confident as one
+  from a second ago. The seven hexes are copied from `ui/theme.nazar.json` and a test parses
+  that file and fails if they drift. *(Written in WP4 as four concentric circles; redrawn on
+  the pixel grid on 2026-09-09, and the fill, the severity colours and the fade taken out the
+  same evening — the shipped icon is the mark, or grey when nothing was read. See Changed.)*
 - **A tooltip that says something**: `Claude Fable week 88 % · Codex week 70 % (resets in
   2 h 10 m)`, or `nazar-tray: no data`. Each provider's binding window, named by its length
   rather than by its provider, with the model on a model-scoped weekly; the reset belongs to
@@ -368,9 +413,10 @@ person moves it.
   `--force-device-scale-factor` and the window is multiplied to match — rather than being
   upscaled screenshots.
 - **37 new tests in Rust (381 in the workspace) and 25 more in the panel (51).** The
-  rasteriser's are pixels: fill height per percentage, a colour per severity, no fill of any
-  kind for unknown, a pupil only when a window is spent, and pinned PNG bytes for three
-  cases. The panel's are pure functions — window names, durations, freshness sentences, the
+  rasteriser's are pixels — since 2026-09-09, cells: the render is the shipped artwork cell
+  for cell at every size, the pupil is always there, unknown is a grey rim and a hollow ring
+  and nothing else, and the PNG bytes are pinned for three cases. The panel's are pure
+  functions — window names, durations, freshness sentences, the
   theme toggle — plus the cross-language gate grown to cover the new commands and **every
   message key either language names**, in either direction.
 

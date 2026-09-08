@@ -70,9 +70,11 @@ purpose instead of by accident.
 
 ## Icons
 
-- [ ] One SVG as the source, rasterised by a script, then `tauri icon`. Both the artwork
-      in the interface and the application icon come from the same file, so they cannot
-      drift.
+- [ ] One SVG as the source, rasterised by a script. Both the artwork in the interface and
+      the application icon come from the same file, so they cannot drift. **Not
+      `tauri icon`** when the mark is pixel art: the CLI resamples one large PNG down with a
+      smooth filter, which blurs artwork authored on a grid. `scripts/render-app-icons.mjs`
+      renders every size from the grid instead and packs the same `.ico` and `.icns`.
 - [ ] Delete the iOS and Android output unless mobile is on the roadmap. It is a quarter
       of a megabyte of files nothing builds.
 

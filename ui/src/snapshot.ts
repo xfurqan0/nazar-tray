@@ -91,11 +91,14 @@ export function displayPercent(percent: number): number {
 /**
  * The provider whose binding window is the most alarming, if any window is known at all.
  *
- * The severity the tray icon takes, mirrored here so the panel and the icon cannot
- * disagree about what the worst thing on the machine is.
+ * This used to be the severity the tray icon took, mirrored here so the panel and the icon
+ * could not disagree about the worst thing on the machine. Since 2026-09-09 the icon takes
+ * no severity at all — it is the mark, or grey when nothing was read — so what is left is
+ * one place that answers "how bad is this machine" for the panel to draw on.
+ *
  * `unknown` sorts lowest, so a provider nobody could read never decides the answer on its
- * own — but it is also what comes back when nothing at all could be read, which is exactly
- * the grey state the audit's finding B03 asked for.
+ * own — but it is also what comes back when nothing at all could be read, which is still
+ * the grey state the audit's finding B03 asked for, and still what the icon shows then.
  */
 export function worstSeverity(view: SnapshotView): Severity {
   const order: readonly Severity[] = ["unknown", "ok", "warn", "critical", "exhausted"];
