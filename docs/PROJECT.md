@@ -123,6 +123,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP6 ✅ | **i18n**: ZH, KO, RU, ES translations (machine first), pluralization and RTL-safe layout check, language switch without restart | ~~Every UI string comes from locale files; no hard-coded text in code~~ — **landed 2026-09-07**, and the criterion is now two tests that grep the sources rather than a promise |
 | WP7 ✅ | **Distribution**: NSIS installer via the Tauri bundler, winget manifests, SignPath preparation, README (EN), CHANGELOG, first release checklist | ~~Fresh Windows VM: `winget install` → tray running in 2 minutes; uninstall leaves no files~~ — **landed 2026-09-07**. Measured on the maintainer's machine rather than a VM (see the log): silent install → **tray up in 4.4 s**, Start Menu entry, no elevation; silent uninstall → nothing left but the two directories that are kept on purpose and named in the README. MSI **builds cleanly** (2.70 MB, WiX downloaded by the bundler) but is **not shipped** — see the log. |
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
+| T-WP8 ✅ | **The status line that was installed and never ran** (from live use; the `T-` prefix is this repository's own late-package prefix, as `N-` is Nazar's, and this is not WP8 above). `install` writes the program path with **forward slashes** on Windows, because Claude Code runs `statusLine.command` through Git Bash and an unquoted backslash is bash's escape character; every earlier spelling is recognised as the same installation; a broken one is **repaired** rather than reported as "already installed"; `status` names the shell and the fix; a path out of a build directory is warned about. The data directory against the settings directory is written into `docs/limits-contract.md` as a contract rather than left to be inferred | ~~The wrapper produces a capture on a Windows machine with a fresh install~~ — **landed 2026-09-08**. `status` on the maintainer's machine printed `installed: yes` for a day while nothing was ever spawned; it now prints the warning, and `install --dry-run` shows the rewrite. 459 tests, from 451 |
 
 Going public happens after WP7, not before. **WP7 does not include going public**: the tag,
 the GitHub Release, the winget pull request, the SignPath application and the repository's
@@ -470,3 +471,87 @@ for the maintainer to run. Nothing in this repository runs them.
   `docs/CODE_SIGNING.md`, `docs/RELEASE.md`, `SECURITY.md` and `CONTRIBUTING.md`. **No tag, no
   release, no winget submission, no SignPath application, no visibility change** — the five
   one-way doors are commands in `docs/RELEASE.md` and nothing here runs them.
+- 2026-09-08 — **T-WP8: the status line that was installed, reported installed, and had
+  never once run** (`crates/nazar-statusline/src/settings.rs` — `command_for`,
+  `has_unquoted_backslash`, `same_command`, `looks_like_a_windows_path`;
+  `crates/nazar-statusline/src/install.rs` — `Installed`, `installed_state`, `bash_warning`,
+  `is_a_build_artifact`, the repair path through `chain.json`; `docs/statusline-wrapper.md`;
+  `docs/limits-contract.md`). Found in a day of live use, and the interesting part is that
+  **every diagnostic on the machine said it was fine**. `status` printed `installed: yes`.
+  The settings file held the right absolute path. `nazar doctor`, in the other repository,
+  said *no status-line tick yet — Claude Code runs it after a turn*, which is what a session
+  sitting at a prompt honestly looks like. Nothing anywhere said the command had never been
+  spawned.
+
+  **The cause is one character and one sentence of somebody else's documentation.** Claude
+  Code on Windows runs `statusLine.command` through **Git Bash** where it can find one, and
+  through PowerShell where it cannot. In `sh` a backslash outside quotes is the escape
+  character, so the path this installer wrote —
+  `C:\Users\…\AppData\Local\nazar-tray\nazar-statusline.exe` — arrived at the shell as
+  `C:UsersAppDataLocalnazar-traynazar-statusline.exe`, and a program by that name does not
+  exist. The maintainer's *previous* status line had survived the same treatment for months
+  because it happened to be written as `node "C:\…\statusline.js"`: the quotes were there for
+  the space in an earlier path, and they were the only reason it ever ran. Writing
+  `C:/Users/…/nazar-statusline.exe` into the file by hand fixed it in the time Claude Code
+  took to reload its settings.
+
+  **The fix is forward slashes, and the reason to prefer them over quotes is that they work
+  in both shells.** Quoting makes bash happy; a command line that is nothing but a quoted
+  string is, to PowerShell, a string expression rather than a command. Forward slashes are a
+  path separator to Windows itself, and neither shell touches them. A space still gets
+  quotes on top. A POSIX path is written exactly as it is, because a backslash in a POSIX
+  file name is part of the name — the rewrite is gated on the *string* looking like a
+  Windows path, not on `cfg!(windows)`, so the case that only happens on Windows is still a
+  case the tests reach from anywhere.
+
+  **`install` had to stop being idempotent in the way it was.** It asked "is this command
+  ours?", found that it was, and said *Already installed. Nothing to do.* — about a status
+  line that had never produced a capture. The question is now asked in the other order: a
+  command that the shell cannot start is **unrunnable first and ours second**, and an
+  unrunnable one is repaired, with the same diff every other edit is shown as. Two things
+  that are *not* repaired, deliberately: a quoted backslash path, which reaches the shell
+  intact, and another copy of the wrapper at a different path, which is somebody's choice
+  and writes into the same capture directory anyway. Every spelling of one path — slashes
+  either way, quoted or bare, either case — normalises to one installation, which is also
+  what lets `status` compare the settings file with `chain.json`'s `installedCommand`
+  without reporting a difference that is only spelling.
+
+  **The repair path is the one place this could have destroyed something.** A repair replaces
+  our own command with our own command, so the status line being displaced *is this program*
+  — and writing that into `chain.json` as `previous` would make `uninstall` restore the
+  broken command and lose the record of what the user really had, which is the one thing in
+  that directory that cannot be reconstructed. So a repair carries the existing record
+  forward and brings only `installedCommand` up to date, keeping the **old** backup named,
+  because the copy taken a moment ago holds the broken command rather than the original.
+
+  Two smaller things came with it. `status` prints a `warning:` line naming the shell and the
+  fix, because `installed: yes` next to an empty capture directory is two facts that look
+  unrelated until something says why. And `install` warns when the path it is about to write
+  comes out of `target/release` or `target/debug`: that path works until the next
+  `cargo clean`, and it is the path a developer installs by accident every day.
+
+  **The home-directory contract is now written down rather than inferred.** Nazar's
+  `docs/PROJECT.md` §7 carried an open decision about "two spellings of nazar-tray's home",
+  because its TypeScript resolves `<home>/.nazar` and its desktop shell resolves
+  `%APPDATA%\nazar`. They were never two spellings of one path: `paths.rs` has a **data**
+  directory holding everything a consumer reads (`limits.json`, `limits.lock`,
+  `tray.request`, `statusline/`) and a **settings** directory holding the two files that are
+  the user's rather than a consumer's (`config.json`, `alerts.json`), with `NAZAR_HOME`
+  overriding both. That is a sentence in `docs/limits-contract.md` now, on the side that owns
+  it.
+
+  **Not done, and why.** The single-instance lock still proves liveness by heartbeat alone,
+  so a tray killed with Task Manager keeps the lock for up to five minutes. Adding a
+  process-id probe means either a platform crate or hand-written FFI in the one crate whose
+  claim is that it builds and tests everywhere with two dependencies — and `lock.rs` argues
+  at length that a heartbeat catches a case a liveness probe cannot (a holder still running
+  but wedged). The failure it would fix costs five minutes of a stale reading after a hard
+  kill; the failure it could introduce is two writers on a home directory shared between
+  machines, which is the exact bug the module exists to prevent. Left alone.
+
+  **Tests: 459, from 451.** `settings.rs` grew the Windows and POSIX rewrites, the unquoted-
+  backslash scanner including the escaped-quote case, the three spellings of one path, and
+  what actually lands in the document; `install.rs` grew the three states of an existing
+  command on and off Windows, the warning's wording, and the build-directory check. No test
+  writes to a real settings file: every new one is a pure function, which is the same reason
+  the rest of this crate's tests never touch the machine they run on.

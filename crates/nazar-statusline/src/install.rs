@@ -9,7 +9,7 @@
 //! ```text
 //!   resolve directory ─▶ refuse on a lock file
 //!                     ─▶ parse settings.json      (invalid JSON: report, touch nothing)
-//!                     ─▶ already installed?       (yes: say so, touch nothing)
+//!                     ─▶ already installed?       (and runnable: say so, touch nothing)
 //!                     ─▶ build the new document   (only `statusLine` differs)
 //!                     ─▶ print the diff           (always, terminal or not)
 //!   ── --dry-run stops here, having written nothing ──
@@ -35,6 +35,31 @@ use crate::settings::{self, SETTINGS_FILE, Settings};
 /// Prefix of the untouched copy taken before an edit.
 pub const BACKUP_PREFIX: &str = "settings.json.nazar-bak-";
 
+/// What `status` says about a command Git Bash will never spawn.
+///
+/// The wording names the shell and names the fix, because the symptom names neither: a
+/// status line that shows nothing looks exactly like a status line that has not run yet,
+/// and the report used to say so.
+pub const BASH_WARNING: &str =
+    "this command will not run under Git Bash; run `nazar-statusline install` to rewrite it";
+
+/// What `install` says before it rewrites one.
+///
+/// Written as `concat!` rather than with a trailing backslash on each line, because Rust's
+/// line continuation eats the *leading* whitespace of the next line as well as the newline,
+/// and the indentation is what puts these lines under the command they are about.
+const UNRUNNABLE: &str = concat!(
+    "  Claude Code runs the status line through Git Bash on Windows, and a backslash\n",
+    "  outside quotes is bash's escape character — so the separators are eaten, no\n",
+    "  program is spawned, and no capture is ever written. Rewriting it with forward\n",
+    "  slashes, which Git Bash and PowerShell both read as separators."
+);
+
+/// What `install` says when it is about to write a path out of a build directory.
+const BUILD_ARTIFACT: &str = "Warning: installing a build artifact path; prefer the \
+                              installed app. A `cargo clean` would leave Claude Code \
+                              pointing at a program that is not there.";
+
 /// How the three subcommands were asked to behave.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -55,22 +80,47 @@ pub fn install(options: &Options, out: &mut dyn Write) -> Result<i32> {
     let path = settings::settings_path(&directory);
     let current = Settings::load(&path)?;
 
+    let program = settings::command_for(&program_path(options)?);
+
+    let mut repairing = false;
     if let Some(command) = current.status_line_command() {
         if settings::is_our_command(command) {
-            let _ = writeln!(out, "Already installed. Nothing to do.");
-            let _ = writeln!(out, "  settings:  {}", path.display());
-            let _ = writeln!(out, "  command:   {command}");
-            if let Some(previous) = chain::load()?.as_ref().and_then(Chain::command) {
-                let _ = writeln!(out, "  chains to: {previous}");
+            match installed_state(command, &program, cfg!(windows)) {
+                state @ (Installed::Ours | Installed::AnotherCopy) => {
+                    let _ = writeln!(out, "{}", state.headline());
+                    let _ = writeln!(out, "  settings:  {}", path.display());
+                    let _ = writeln!(out, "  command:   {command}");
+                    if state == Installed::AnotherCopy {
+                        let _ = writeln!(out, "  this one:  {program}");
+                        let _ = writeln!(
+                            out,
+                            "  Both write to the same capture directory, so there is nothing \
+                             to fix. Uninstall first if you meant to swap them."
+                        );
+                    }
+                    if let Some(previous) = chain::load()?.as_ref().and_then(Chain::command) {
+                        let _ = writeln!(out, "  chains to: {previous}");
+                    }
+                    return Ok(0);
+                }
+                // The case that looks installed, reports installed, and has never once run.
+                Installed::Unrunnable => {
+                    let _ = writeln!(out, "Installed, but the command as written never runs:");
+                    let _ = writeln!(out, "  command:   {command}");
+                    let _ = writeln!(out, "{UNRUNNABLE}");
+                    repairing = true;
+                }
             }
-            return Ok(0);
         }
     }
 
-    let program = settings::quote_program(&program_path(options)?);
     let previous = current.status_line().cloned();
     let patched =
         current.with_status_line(Some(settings::status_line_for(&program, previous.as_ref())));
+
+    if is_a_build_artifact(&program) {
+        let _ = writeln!(out, "{BUILD_ARTIFACT}");
+    }
 
     let before = current.before_text();
     let after = patched.render();
@@ -97,18 +147,47 @@ pub fn install(options: &Options, out: &mut dyn Write) -> Result<i32> {
         None
     };
 
-    let record = Chain {
-        schema_version: CHAIN_SCHEMA_VERSION,
-        installed_at: nazar_core::now_rfc3339(),
-        settings_path: path.display().to_string(),
-        backup_path: backup.as_ref().map(|path| path.display().to_string()),
-        installed_command: program.clone(),
-        previous,
+    // A repair replaces our own command with our own command, so the status line being
+    // displaced *is this program*. Writing that into `chain.json` as `previous` would make
+    // `uninstall` put the unrunnable command back and would throw away the record of what
+    // the user really had — which is the one thing in this directory that cannot be
+    // reconstructed. So a repair carries the existing record forward and brings only the
+    // spelling of `installedCommand` up to date. The old backup stays named, because it is
+    // the second witness `uninstall` checks the record against, and the copy taken a moment
+    // ago holds the broken command rather than the original.
+    let record = if repairing {
+        let existing = chain::load()?;
+        Chain {
+            schema_version: CHAIN_SCHEMA_VERSION,
+            installed_at: existing
+                .as_ref()
+                .map_or_else(nazar_core::now_rfc3339, |chain| chain.installed_at.clone()),
+            settings_path: path.display().to_string(),
+            backup_path: existing
+                .as_ref()
+                .and_then(|chain| chain.backup_path.clone()),
+            installed_command: program.clone(),
+            previous: existing.and_then(|chain| chain.previous),
+        }
+    } else {
+        Chain {
+            schema_version: CHAIN_SCHEMA_VERSION,
+            installed_at: nazar_core::now_rfc3339(),
+            settings_path: path.display().to_string(),
+            backup_path: backup.as_ref().map(|path| path.display().to_string()),
+            installed_command: program.clone(),
+            previous,
+        }
     };
     let record_path = chain::store(&record)?;
     let _ = writeln!(
         out,
-        "Recorded the previous status line in {}",
+        "{} in {}",
+        if repairing {
+            "Kept the previous status line recorded"
+        } else {
+            "Recorded the previous status line"
+        },
         record_path.display()
     );
 
@@ -231,6 +310,11 @@ pub fn status(options: &Options, out: &mut dyn Write) -> Result<i32> {
             Some(command) if settings::is_our_command(command) => {
                 let _ = writeln!(out, "installed: yes");
                 let _ = writeln!(out, "command:   {command}");
+                // The line the old report was missing. "installed: yes" and no captures is
+                // two facts that look unrelated until something says why.
+                if let Some(warning) = bash_warning(command, cfg!(windows)) {
+                    let _ = writeln!(out, "warning:   {warning}");
+                }
             }
             Some(command) => {
                 let _ = writeln!(out, "installed: no");
@@ -243,6 +327,14 @@ pub fn status(options: &Options, out: &mut dyn Write) -> Result<i32> {
         },
     }
 
+    // Kept for the chain block below, where the recorded command is compared with it.
+    let ours = loaded
+        .as_ref()
+        .ok()
+        .and_then(|current| current.status_line_command())
+        .filter(|command| settings::is_our_command(command))
+        .map(str::to_owned);
+
     match chain::load() {
         Ok(Some(record)) => {
             let _ = writeln!(
@@ -254,6 +346,19 @@ pub fn status(options: &Options, out: &mut dyn Write) -> Result<i32> {
             );
             if let Some(backup) = &record.backup_path {
                 let _ = writeln!(out, "backup:    {backup}");
+            }
+            // Compared through `same_command`, so the four spellings of one path do not
+            // read as two installations. A real difference is worth naming: it means the
+            // settings file runs a copy of the wrapper that this record is not about, and
+            // `uninstall` would restore that record's status line rather than that copy's.
+            if let Some(command) = &ours {
+                if !settings::same_command(command, &record.installed_command) {
+                    let _ = writeln!(
+                        out,
+                        "recorded:  {} — the settings file runs a different copy",
+                        record.installed_command
+                    );
+                }
             }
         }
         Ok(None) => {
@@ -339,6 +444,71 @@ fn refuse_on_lock(directory: &Path) -> Result<()> {
             lock.display()
         ))),
     }
+}
+
+/// What an existing `nazar-statusline` command in the settings file means for `install`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Installed {
+    /// This executable, spelled in a form the shell runs. Nothing to do.
+    Ours,
+    /// Another copy of the wrapper, also spelled runnably. Also nothing to do: a second
+    /// copy is a choice somebody made, and it writes to the same capture directory this
+    /// one would, so replacing it would change nothing except which file is on disk.
+    AnotherCopy,
+    /// The wrapper, spelled so that the shell will never spawn it.
+    Unrunnable,
+}
+
+impl Installed {
+    /// The first line `install` prints about it.
+    fn headline(self) -> &'static str {
+        match self {
+            Installed::Ours => "Already installed. Nothing to do.",
+            Installed::AnotherCopy => {
+                "Already installed, from another copy of the wrapper. Nothing to do."
+            }
+            Installed::Unrunnable => "Installed, but the command as written never runs:",
+        }
+    }
+}
+
+/// Which of the three an existing command is.
+///
+/// The unrunnable case is tested **first**, because a command can be this very executable
+/// and still be unrunnable: `C:\bin\nazar-statusline.exe` and `C:/bin/nazar-statusline.exe`
+/// are the same program, and only one of them is a program Git Bash will start. Asking
+/// "is it us?" first is what made `install` say "Already installed. Nothing to do." about a
+/// status line that had never produced a single capture.
+///
+/// `windows` is handed in rather than read from `cfg!`, so the case that only happens on
+/// Windows is still a case the tests can reach from anywhere.
+fn installed_state(command: &str, program: &str, windows: bool) -> Installed {
+    if windows && settings::has_unquoted_backslash(command) {
+        Installed::Unrunnable
+    } else if settings::same_command(command, program) {
+        Installed::Ours
+    } else {
+        Installed::AnotherCopy
+    }
+}
+
+/// The warning `status` prints about a command line, if there is one to print.
+///
+/// Same shape as [`installed_state`]: the platform is a parameter, so the sentence a
+/// Windows machine would print can be asserted on a machine that is not one.
+fn bash_warning(command: &str, windows: bool) -> Option<&'static str> {
+    (windows && settings::has_unquoted_backslash(command)).then_some(BASH_WARNING)
+}
+
+/// Whether the path about to be installed comes out of a `cargo` build directory.
+///
+/// `install` writes `current_exe()`, which is the right answer everywhere except the case a
+/// developer hits every day: running the binary straight out of `target`. That path works
+/// until the next `cargo clean`, and then Claude Code is pointing at a program that is not
+/// there — so it is said out loud now rather than discovered later.
+fn is_a_build_artifact(program: &str) -> bool {
+    let lowered = program.replace('\\', "/").to_lowercase();
+    lowered.contains("/target/release/") || lowered.contains("/target/debug/")
 }
 
 /// The command to install: whatever the caller asked for, or this executable.
@@ -434,6 +604,61 @@ mod tests {
             plain_path(Path::new("/usr/local/bin/nazar-statusline")),
             "/usr/local/bin/nazar-statusline"
         );
+    }
+
+    #[test]
+    fn the_same_program_spelled_unrunnably_is_repaired_rather_than_called_installed() {
+        let program = "C:/bin/nazar/nazar-statusline.exe";
+
+        // The live failure: one path, two spellings, and only one of them ever ran.
+        assert_eq!(
+            installed_state(r"C:\bin\nazar\nazar-statusline.exe", program, true),
+            Installed::Unrunnable
+        );
+        assert_eq!(installed_state(program, program, true), Installed::Ours);
+        assert_eq!(
+            installed_state("\"C:\\bin\\nazar\\nazar-statusline.exe\"", program, true),
+            Installed::Ours,
+            "quoted backslashes reach the shell intact, so there is nothing to repair"
+        );
+        assert_eq!(
+            installed_state("D:/other/nazar-statusline.exe", program, true),
+            Installed::AnotherCopy
+        );
+        // Off Windows a backslash is not evidence of anything, so the same pair is simply
+        // one program spelled two ways, and there is nothing to repair.
+        assert_eq!(
+            installed_state(r"C:\bin\nazar\nazar-statusline.exe", program, false),
+            Installed::Ours
+        );
+    }
+
+    #[test]
+    fn the_warning_names_the_shell_and_the_fix() {
+        let warning = bash_warning(r"C:\bin\nazar-statusline.exe", true).unwrap();
+        assert_eq!(warning, BASH_WARNING);
+        assert!(warning.contains("Git Bash"), "{warning}");
+        assert!(warning.contains("nazar-statusline install"), "{warning}");
+        assert_eq!(bash_warning("C:/bin/nazar-statusline.exe", true), None);
+        assert_eq!(bash_warning(r"C:\bin\nazar-statusline.exe", false), None);
+    }
+
+    #[test]
+    fn a_path_out_of_a_build_directory_is_worth_a_word() {
+        assert!(is_a_build_artifact(
+            "C:/src/nazar-tray/target/release/nazar-statusline.exe"
+        ));
+        assert!(is_a_build_artifact(
+            r"C:\src\nazar-tray\target\debug\nazar-statusline.exe"
+        ));
+        assert!(is_a_build_artifact(
+            "/home/build/nazar-tray/target/release/nazar-statusline"
+        ));
+        assert!(!is_a_build_artifact(
+            "C:/Users/somebody/AppData/Local/nazar-tray/nazar-statusline.exe"
+        ));
+        assert!(!is_a_build_artifact("/usr/local/bin/nazar-statusline"));
+        assert!(BUILD_ARTIFACT.contains("installing a build artifact path"));
     }
 
     #[test]

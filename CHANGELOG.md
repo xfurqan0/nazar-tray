@@ -237,6 +237,33 @@ person moves it.
 
 ### Fixed
 
+- **`nazar-statusline install` wrote a command Windows shells never ran.** Claude Code
+  hands `statusLine.command` to **Git Bash** on Windows where it can find one, and in `sh` a
+  backslash outside quotes is the escape character — so the absolute path this installer
+  wrote arrived at the shell with its separators eaten, no program was spawned, and no
+  capture was ever written. Nothing said so: `status` printed `installed: yes`, the settings
+  file held the right path, and the only symptom was a status line that showed nothing,
+  which is also what a session that has not refreshed yet looks like. The path is now
+  written with **forward slashes** — a separator to Windows itself, untouched by Git Bash
+  and by PowerShell — and still quoted when it contains a space. A POSIX path is written
+  exactly as it is.
+- **`install` repairs a broken command instead of reporting "already installed".** It used
+  to ask "is this command ours?" first, and a command can be this very executable and still
+  be one the shell cannot start. An unrunnable command is now detected before ownership and
+  rewritten, with the same diff every other edit is shown as; a quoted backslash path and
+  another copy of the wrapper elsewhere are both left alone, because both work. Every
+  spelling of one path — slashes either way, quoted or bare, either case — counts as one
+  installation, so `status` and `uninstall` recognise an installation made by any earlier
+  build. A repair keeps `chain.json`'s record of the status line the user really had and
+  updates only `installedCommand`: recording our own command as `previous` would have made
+  `uninstall` restore the broken one.
+- **`status` says why an installed status line produces nothing.** A command with an
+  unquoted backslash on Windows now prints a `warning:` line naming the shell that will not
+  run it and the command that rewrites it, and a settings file running a different copy of
+  the wrapper from the one `chain.json` records is named rather than silently ignored.
+- **`install` warns when it is about to write a build-directory path** (`target/release`,
+  `target/debug`). It still installs — that is what a developer running it from `target`
+  asked for — but the path stops working at the next `cargo clean`.
 - **A flaky test in the detailed-windows suite**, at the cause rather than with a wait.
   `MockServer` recorded a request **after** answering it, so a test that read `requests()` the
   moment `refresh()` returned could beat the worker thread to the push — about one full-suite

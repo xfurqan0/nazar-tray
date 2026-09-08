@@ -4,6 +4,17 @@ The one file nazar-tray writes for other programs to read. Frozen at `schemaVers
 Nazar's quota strip reads this file and nothing else from nazar-tray.
 
 - **Location:** `~/.nazar/limits.json` (`%USERPROFILE%\.nazar\limits.json` on Windows).
+- **The data directory and the settings directory are two different directories, and that
+  is the contract rather than an accident.** Everything a consumer reads lives under
+  `~/.nazar` — `limits.json`, `limits.lock`, `tray.request` and `statusline/` — while the
+  files that are the *user's* rather than a consumer's live in the platform's own settings
+  location, `%APPDATA%\nazar` on Windows and `$XDG_CONFIG_HOME/nazar` or `~/.config/nazar`
+  elsewhere: `config.json`, which the user edits, and `alerts.json`, which only nazar-tray
+  writes. `NAZAR_HOME` overrides **both**, which is what makes a whole installation
+  pointable at a throwaway directory. So a consumer that resolves `~/.nazar` for data and
+  never opens `%APPDATA%` is reading exactly the right places, and two resolvers that
+  disagree about Windows are not in disagreement if one of them is resolving settings.
+  (`crates/nazar-core/src/paths.rs`, `data_dir` against `settings_dir`.)
 - **Written by:** the nazar-tray process, and only it. One writer, many readers.
 - **Sample:** [`fixtures/limits.sample.json`](../fixtures/limits.sample.json). Consumers
   are expected to copy that file into their own test suite rather than hand-write one.

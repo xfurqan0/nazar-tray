@@ -111,8 +111,52 @@ Only `statusLine`. Every other key, and the order of all of them, survives:
 ```
 
 `padding`, `refreshInterval` and any other key the existing `statusLine` carried are kept:
-they configure the status line, not the command. The path written is absolute and quoted
-if it contains a space, because Claude Code hands the command to a shell.
+they configure the status line, not the command.
+
+### The path is written with forward slashes, and that is not cosmetic
+
+Claude Code hands `statusLine.command` to a shell, and on Windows that shell is **Git Bash**
+where it can find one and PowerShell where it cannot. In `sh`, a backslash outside quotes is
+the escape character — so an installed command reading
+
+```
+C:\Users\somebody\AppData\Local\nazar-tray\nazar-statusline.exe
+```
+
+arrives at the shell as `C:UserssomebodyAppDataLocalnazar-traynazar-statusline.exe`. Nothing
+is spawned, no capture is ever written, and the only symptom is a status line that shows
+nothing — which is indistinguishable, from the outside, from a session that has not
+refreshed yet. It was live on the maintainer's machine for a day with `status` reporting
+`installed: yes` the whole time.
+
+So the separators are written as forward slashes, and a path with a space in it is quoted
+on top of that:
+
+```
+C:/Users/somebody/AppData/Local/nazar-tray/nazar-statusline.exe
+"C:/Program Files/nazar/nazar-statusline.exe"
+```
+
+Windows has accepted forward slashes in a path for as long as it has had paths, and Git
+Bash and PowerShell both pass them through untouched. A POSIX path is written exactly as it
+is, because a backslash in a POSIX file name is part of the name.
+
+`status` says so when it finds the old spelling:
+
+```
+installed: yes
+command:   C:\Users\somebody\AppData\Local\nazar-tray\nazar-statusline.exe
+warning:   this command will not run under Git Bash; run `nazar-statusline install` to rewrite it
+```
+
+and `install` **repairs** it rather than reporting "already installed": it prints the reason,
+shows the diff like any other edit, and rewrites the command. A repair carries `chain.json`
+forward untouched apart from `installedCommand` — the status line being displaced is this
+program, and recording *that* as `previous` would make `uninstall` put the broken command
+back and lose the record of what the user really had.
+
+`install` also warns, without refusing, when the path it is about to write comes out of a
+`target/release` or `target/debug` directory: that path works until the next `cargo clean`.
 
 The install **refuses**, changing nothing, when:
 
@@ -120,7 +164,10 @@ The install **refuses**, changing nothing, when:
   replaced by `{}`;
 - the top level is not a JSON object;
 - a `settings.json.lock`-like file is in the directory;
-- it is already installed (it says so and stops — running it twice is safe).
+- it is already installed **in a form the shell can run** (it says so and stops — running
+  it twice is safe). Every spelling of one path is one installation: backslashes or forward
+  slashes, quoted or bare, upper case or lower. Another copy of the wrapper at a different
+  path is also left alone, because both copies write to the same capture directory.
 
 The order it writes in is deliberate: backup, then `chain.json`, then `settings.json`. A
 crash between the second and the third leaves a record of a status line that was never

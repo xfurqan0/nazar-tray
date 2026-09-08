@@ -222,6 +222,9 @@ pub fn status_line_for(command: &str, previous: Option<&Value>) -> Value {
 /// `C:\Program Files\…` — has to arrive quoted or the shell splits it. Windows path
 /// separators need no escaping inside double quotes; JSON encoding of the backslashes is
 /// `serde_json`'s job and happens after this.
+///
+/// Quoting alone is not enough on Windows, and [`command_for`] is what this is composed
+/// into. Nothing outside a test calls it on its own.
 #[must_use]
 pub fn quote_program(path: &str) -> String {
     if path.contains(' ') && !path.starts_with('"') {
@@ -231,11 +234,117 @@ pub fn quote_program(path: &str) -> String {
     }
 }
 
+/// A program path written as a command line the shell Claude Code uses will really run.
+///
+/// **This is the fix for a status line that never ran at all.** On Windows, Claude Code
+/// runs `statusLine.command` through **Git Bash** where it can find one, and through
+/// PowerShell where it cannot; in `sh` a backslash outside quotes is the escape character,
+/// so the perfectly ordinary-looking `C:\nazar\nazar-statusline.exe` reaches the shell as
+/// `C:nazarnazar-statusline.exe`. No program is spawned, no capture is written, and the
+/// only symptom is a status line that shows nothing — which is exactly how it presented on
+/// the maintainer's machine, with `status` cheerfully reporting `installed: yes`.
+///
+/// So the separators go in as forward slashes. Windows has accepted them in a path for as
+/// long as it has had paths, `sh` and PowerShell both pass them through untouched, and a
+/// path with a space in it is quoted on top of that, which the two of them also agree on.
+///
+/// Only a Windows-shaped path is rewritten. A POSIX file name is allowed to contain a
+/// backslash, and turning one into a separator there would name a different file.
+#[must_use]
+pub fn command_for(path: &str) -> String {
+    if looks_like_a_windows_path(path) {
+        quote_program(&path.replace('\\', "/"))
+    } else {
+        quote_program(path)
+    }
+}
+
+/// Whether a path is spelled the way Windows spells one: a drive letter, or a UNC root.
+///
+/// Deliberately not `cfg!(windows)`. The question is about the string, the answer has to be
+/// the same wherever the test runs, and a settings file written on Windows is still a
+/// settings file written on Windows when something else reads it.
+fn looks_like_a_windows_path(path: &str) -> bool {
+    if path.starts_with(r"\\") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Whether `sh` would eat a backslash in this command line.
+///
+/// The rule it follows: outside quotes a backslash escapes the next character and both
+/// disappear; inside double quotes it escapes only `"`, `\`, `$` and a backtick and is
+/// literal otherwise; inside single quotes it is always literal. So the only backslash
+/// worth a word is an **unquoted** one — which is every backslash in a Windows path that
+/// was written into `settings.json` without quotes around it.
+///
+/// This says nothing about whether a command works: a command line may carry a deliberate
+/// escape, and on a machine whose shell is not `sh` it carries none of this meaning at all.
+/// What the caller does with the answer is warn on Windows, where a backslash is a
+/// separator far more often than it is an escape.
+#[must_use]
+pub fn has_unquoted_backslash(command: &str) -> bool {
+    let mut characters = command.chars().peekable();
+    let mut single = false;
+    let mut double = false;
+    while let Some(character) = characters.next() {
+        match character {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '\\' if single => {}
+            // Consuming the escaped character is what keeps the quote state right for a
+            // command line that really does contain `"a\"b"`.
+            '\\' if double => {
+                if matches!(characters.peek(), Some('"' | '\\' | '$' | '`')) {
+                    characters.next();
+                }
+            }
+            '\\' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether two command strings name the same program, however each is spelled.
+///
+/// One executable can sit in `settings.json` as `C:\bin\nazar-statusline.exe`, as
+/// `"C:\bin\nazar-statusline.exe"`, or — after this build installs it — as
+/// `C:/bin/nazar-statusline.exe`. All three are one installation. An installer that could
+/// not see that would either rewrite a file needing no rewrite, or refuse to fix one that
+/// did; the same normalisation is what lets `status` compare the settings file with
+/// `chain.json`'s `installedCommand` without reporting a difference that is only spelling.
+///
+/// Case is folded, which is Windows's own rule for a path and the rule [`is_our_command`]
+/// already uses.
+#[must_use]
+pub fn same_command(left: &str, right: &str) -> bool {
+    normalised_command(left) == normalised_command(right)
+}
+
+/// One command string in the form [`same_command`] compares.
+fn normalised_command(command: &str) -> String {
+    let trimmed = command.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    unquoted.replace('\\', "/").to_lowercase()
+}
+
 /// Whether a command string is this program.
 ///
 /// Used for the idempotency check and for `uninstall`'s "is it even installed" question.
 /// A substring test on the file name rather than a path comparison, because the path in
-/// the file can be the installed copy, a build directory, or a copy the user moved.
+/// the file can be the installed copy, a build directory, or a copy the user moved — and
+/// because it has to recognise every spelling this program has ever written, backslashes
+/// and forward slashes, quoted and bare, so that an installation made by an older build is
+/// still an installation to `status` and to `uninstall`.
 #[must_use]
 pub fn is_our_command(command: &str) -> bool {
     command.to_lowercase().contains("nazar-statusline")
@@ -386,12 +495,109 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_path_is_installed_with_forward_slashes_so_git_bash_can_run_it() {
+        assert_eq!(
+            command_for(r"C:\bin\nazar\nazar-statusline.exe"),
+            "C:/bin/nazar/nazar-statusline.exe"
+        );
+        assert_eq!(
+            command_for(r"C:\Program Files\nazar\nazar-statusline.exe"),
+            "\"C:/Program Files/nazar/nazar-statusline.exe\"",
+            "a space still needs quotes; the slashes are not a substitute for them"
+        );
+        assert_eq!(
+            command_for(r"\\server\share\nazar-statusline.exe"),
+            "//server/share/nazar-statusline.exe"
+        );
+        assert_eq!(
+            command_for("D:/already/forward/nazar-statusline.exe"),
+            "D:/already/forward/nazar-statusline.exe"
+        );
+    }
+
+    #[test]
+    fn a_posix_path_is_left_exactly_as_it_is() {
+        assert_eq!(
+            command_for("/usr/local/bin/nazar-statusline"),
+            "/usr/local/bin/nazar-statusline"
+        );
+        // A backslash in a POSIX file name is part of the name, not a separator.
+        assert_eq!(
+            command_for("/opt/odd\\name/nazar-statusline"),
+            "/opt/odd\\name/nazar-statusline"
+        );
+        assert!(!looks_like_a_windows_path("/usr/local/bin"));
+        assert!(looks_like_a_windows_path(r"C:\bin"));
+        assert!(looks_like_a_windows_path("c:/bin"));
+        assert!(!looks_like_a_windows_path("C:"));
+    }
+
+    #[test]
+    fn an_unquoted_backslash_is_the_one_the_shell_eats() {
+        assert!(has_unquoted_backslash(r"C:\bin\nazar-statusline.exe"));
+        assert!(has_unquoted_backslash(r"node C:\bin\statusline.js"));
+        assert!(!has_unquoted_backslash("\"C:\\bin\\nazar-statusline.exe\""));
+        assert!(!has_unquoted_backslash("node \"C:\\bin\\statusline.js\""));
+        assert!(!has_unquoted_backslash("'C:\\bin\\nazar-statusline.exe'"));
+        assert!(!has_unquoted_backslash("C:/bin/nazar-statusline.exe"));
+        assert!(!has_unquoted_backslash("npx ccstatusline@latest"));
+        // An escaped quote inside a quoted run must not flip the quote state and turn the
+        // backslashes after it into unquoted ones.
+        assert!(!has_unquoted_backslash("\"a\\\"b\\c\""));
+    }
+
+    #[test]
+    fn one_program_spelled_three_ways_is_one_installation() {
+        let installed = "C:/bin/nazar/nazar-statusline.exe";
+        assert!(same_command(
+            installed,
+            r"C:\bin\nazar\nazar-statusline.exe"
+        ));
+        assert!(same_command(
+            installed,
+            "\"C:\\bin\\nazar\\nazar-statusline.exe\""
+        ));
+        assert!(same_command(
+            installed,
+            "  C:/BIN/nazar/nazar-statusline.exe  "
+        ));
+        assert!(!same_command(
+            installed,
+            "D:/bin/nazar/nazar-statusline.exe"
+        ));
+        assert!(!same_command(installed, "npx ccstatusline@latest"));
+    }
+
+    #[test]
+    fn what_is_written_into_the_document_is_the_runnable_spelling() {
+        let (_dir, settings) = load(CUSTOM);
+        let line = settings
+            .with_status_line(Some(status_line_for(
+                &command_for(r"C:\bin\nazar\nazar-statusline.exe"),
+                settings.status_line(),
+            )))
+            .status_line()
+            .unwrap()
+            .clone();
+        let command = line["command"].as_str().unwrap().to_owned();
+        assert_eq!(command, "C:/bin/nazar/nazar-statusline.exe");
+        assert!(!has_unquoted_backslash(&command));
+        assert_eq!(line["padding"], Value::from(0));
+    }
+
+    #[test]
     fn our_own_command_is_recognised_however_it_is_spelled() {
         assert!(is_our_command("C:\\bin\\nazar-statusline.exe"));
         assert!(is_our_command(
             "\"C:\\Program Files\\nazar\\NAZAR-STATUSLINE.EXE\""
         ));
         assert!(is_our_command("/usr/local/bin/nazar-statusline"));
+        // The spelling this build writes, and the one older builds wrote, are both ours:
+        // `uninstall` and `status` have to recognise an installation either way.
+        assert!(is_our_command("C:/bin/nazar/nazar-statusline.exe"));
+        assert!(is_our_command(
+            "\"C:/Program Files/nazar/nazar-statusline.exe\""
+        ));
         assert!(!is_our_command("npx ccstatusline@latest"));
         assert!(!is_our_command(
             "node \"C:\\projects\\example\\statusline.js\""
