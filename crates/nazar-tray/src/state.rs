@@ -242,8 +242,8 @@ impl SettingsForm {
     /// Write the form into a settings document, leaving every other key alone.
     ///
     /// `system` becomes the **absence** of `locale`: a setting nobody has chosen should not
-    /// be written down as a choice, or a user who picked "follow the system" in Turkey and
-    /// then moved would find their panel still in Turkish.
+    /// be written down as a choice, or a user who picked "follow the system" in one country
+    /// and then moved would find their panel still in the old language.
     pub fn apply_to(&self, config: &mut Config) {
         config.locale =
             (self.locale != nazar_core::config::LOCALE_SYSTEM).then(|| self.locale.clone());

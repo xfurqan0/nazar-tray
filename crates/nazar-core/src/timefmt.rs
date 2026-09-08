@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn an_offset_names_the_same_instant_as_the_utc_form() {
-        // 2026-09-07T03:17:24Z is 06:17:24 in Istanbul and 22:17:24 the previous day in
+        // 2026-09-07T03:17:24Z is 06:17:24 in Riyadh and 22:17:24 the previous day in
         // New York. All three have to be the same number of seconds.
         assert_eq!(
             unix_seconds_from_rfc3339("2026-09-07T03:17:24Z"),

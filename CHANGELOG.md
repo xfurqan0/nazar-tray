@@ -107,7 +107,7 @@ person moves it.
   `if: false` so the shape of the pipeline is reviewable now and turning it on is one reviewed
   line rather than a new file written on release day. Azure Trusted Signing is recorded as the
   one hard blocker: individuals are United States and Canada only, and the organisation list
-  does not include Türkiye.
+  does not include the maintainer's country.
 - **`docs/RELEASE.md`, `SECURITY.md`, `CONTRIBUTING.md`.** The first is the checklist, every
   command in it for the maintainer and none of it run by CI or by anything else; it marks
   where reversible stops. `SECURITY.md` is the file-by-file inventory — what is read, what is
@@ -440,7 +440,7 @@ person moves it.
 - **Property tests**, with a hand-rolled generator rather than `proptest`: ten thousand
   random window sets for the binding rule, three thousand random instants × six time-zone
   spellings for the countdown (plus fixed cases at both American daylight-saving boundaries
-  and at Istanbul's, which has none), and monotonicity for severity and freshness across
+  and at Riyadh's, which has none), and monotonicity for severity and freshness across
   their whole ranges. The severity boundaries are pinned at 59.9 / 60 / 84.9 / 85 / 100 / 101.
   A hygiene test backs the time-zone property with a grep: nothing in the workspace reads
   `TZ` or converts to local time, because a property test cannot see a dependency that has

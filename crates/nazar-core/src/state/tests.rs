@@ -369,7 +369,7 @@ fn a_reset_that_has_already_passed_counts_down_past_zero() {
 /// The same instant, written six ways. Every one has to produce the same countdown.
 #[test]
 fn the_countdown_does_not_depend_on_how_the_instant_was_spelled() {
-    // 2026-09-07T12:24:52Z is 15:24:52 in Istanbul (UTC+3, no daylight saving since 2016)
+    // 2026-09-07T12:24:52Z is 15:24:52 in Riyadh (UTC+3, no daylight saving at all)
     // and 08:24:52 in New York on that date (EDT, UTC−4).
     let spellings = [
         "2026-09-07T12:24:52Z",
@@ -422,8 +422,8 @@ fn daylight_saving_transitions_do_not_move_a_countdown() {
         remaining("2026-03-08T08:00:00Z", "2026-03-08T06:00:00Z"),
         Some(7_200_000)
     );
-    // Europe/Istanbul is UTC+3 all year, which is exactly why the same arithmetic works for
-    // it: the maintainer's own machine crosses no boundary, and this test would still catch
+    // Asia/Riyadh is UTC+3 all year, which is exactly why the same arithmetic works for
+    // it: a machine in a fixed-offset zone crosses no boundary, and this test would still catch
     // a change that made the answer depend on where it ran.
     assert_eq!(
         remaining("2026-03-29T04:00:00Z", "2026-03-29T00:00:00Z"),

@@ -101,7 +101,7 @@ installer would be the worst of both.
 | Option | Why not |
 |---|---|
 | **Certum Open Source** (~€25–69/yr) | The certificate lives on a hardware token, so signing cannot happen in CI — every release would be signed on a laptop, which is the thing SignPath's model exists to avoid. Their terms also allow revocation if the software is distributed commercially, which is a condition this project would rather not carry. |
-| **Azure Trusted Signing** | Individual developers are limited to the United States and Canada; the organisation route requires a verifiable legal entity in a list that does not include Türkiye. Checked twice, in two independent reviews. This is the one hard blocker. |
+| **Azure Trusted Signing** | Individual developers are limited to the United States and Canada; the organisation route requires a verifiable legal entity in a list that does not include the maintainer's country. Checked twice, in two independent reviews. This is the one hard blocker. |
 | **A commercial OV/EV certificate** (~$200–600/yr) | Above this project's whole budget ceiling, and since 2024 an EV certificate no longer buys an automatic SmartScreen pass anyway — reputation is built by downloads either way. |
 | **Ship unsigned for ever** | What 0.1.0 does, deliberately, with the warning documented rather than hidden. It is a starting point, not an answer. |
 
