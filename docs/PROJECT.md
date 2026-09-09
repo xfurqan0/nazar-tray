@@ -126,6 +126,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | T-WP8 ✅ | **The status line that was installed and never ran** (from live use; the `T-` prefix is this repository's own late-package prefix, as `N-` is Nazar's, and this is not WP8 above). `install` writes the program path with **forward slashes** on Windows, because Claude Code runs `statusLine.command` through Git Bash and an unquoted backslash is bash's escape character; every earlier spelling is recognised as the same installation; a broken one is **repaired** rather than reported as "already installed"; `status` names the shell and the fix; a path out of a build directory is warned about. The data directory against the settings directory is written into `docs/limits-contract.md` as a contract rather than left to be inferred | ~~The wrapper produces a capture on a Windows machine with a fresh install~~ — **landed 2026-09-08**. `status` on the maintainer's machine printed `installed: yes` for a day while nothing was ever spawned; it now prints the warning, and `install --dry-run` shows the rewrite. 459 tests, from 451 |
 | T-WP9 ✅ | **The toast storm on a jittering `resetsAt`** (from live use). `crate::alerts` rule 4 asked "is this the same reset period?" by comparing two strings; the usage endpoint answers the same weekly reset one second apart on alternating refreshes, so every flip read as a new week and re-fired the whole ladder. Two resets are now one period when they are **less than half a window apart** (an hour when the window's length is unknown), on both the in-memory and the on-disk half of the rule, and the Claude reader rounds `resets_at` **down to the whole minute** so both sources spell one instant one way | ~~A window whose `resetsAt` wobbles produces one toast per crossing and no more, and `alerts.json` stops being rewritten~~ — **landed 2026-09-08**. 32 toasts in two and a half hours on the maintainer's machine, all of them the same sentence; the sequence that produced them is now four tests. 465 tests, from 459 |
 | T-WP10 ✅ | **A window whose reset has passed, reported as current** (from live use; the narrow fix T-WP9 wrote down and left). The Codex reader marks a window whose `resets_at` is more than five minutes behind the current instant as `state: "stale"` — the percentage is kept, because it is still the last thing the server said, and the claim that it is current is not. `crate::alerts` gains rule 6: a period that has already ended cannot be crossed, so no toast is fired from one. Codex's `resets_at` goes through the same minute-flooring gate the Claude reader has used since T-WP9. The comparisons both rules rest on get named-point grids, and the readers get **captured** payloads to read: `crates/nazar-core/fixtures/captured/` is a real `~/.nazar` with its identity removed | ~~A machine nobody has opened Codex on for two days stops claiming a live 70 %, and does not warn about it~~ — **landed 2026-09-09**. The maintainer's own `limits.json` was the bug report. 490 tests, from 464 |
+| T-WP11 ✅ | **Release binaries that named the machine they were built on** (from a pre-release read-through). Panic locations are compiled in as string literals, so `strip = true` left every compile-time path in place: **310** copies of `C:\Users\<account>\.cargo\registry\src\…` in `nazar-tray.exe`, **7** in `nazar-statusline.exe`, and the NSIS package shipped both. `scripts/build-installer.mjs` passes `--remap-path-prefix` for the cargo registry, the git checkouts and this checkout to **every** cargo call it makes, the wrapper's included, and on every profile rather than release alone — so the debug bundle job can prove the remap on a pull request instead of the rule being discovered broken on release day. `scripts/check-binary-paths.mjs` reads the binaries back, in text and in both UTF-16 alignments, and the build deletes the bundle rather than leave an installer that failed it looking finished | ~~Both binaries count zero, and a run whose binaries carry the runner's path goes red~~ — **landed 2026-09-09**. 310 → 0 and 7 → 0; the check is a gate inside the build script and a named step in `ci.yml` and `release.yml`. No Rust changed, so still 490 tests |
 
 Going public happens after WP7, not before. **WP7 does not include going public**: the tag,
 the GitHub Release, the winget pull request, the SignPath application and the repository's
@@ -137,6 +138,7 @@ for the maintainer to run. Nothing in this repository runs them.
 - ~~Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework~~ → **closed 2026-09-07 in WP0: plain TypeScript, HTML and CSS, bundled by esbuild, no framework** (decision K2). The panel's only runtime dependency is `@tauri-apps/api`; `ui/` has two dev dependencies, esbuild and TypeScript.
 - ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set was one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is no dependency and, since 2026-09-09, not even arithmetic — sixteen rows of sixteen cells and a lookup. That evening's second revision cut the states to two, so a pre-rendered set would now be eight small files and the decision is no longer obvious; it stands because the theme hexes then live in one place instead of two, and because the shell asks for a size rather than picking one from a list. `crates/nazar-tray/src/icon.rs`.
 - **Does the expired-reset rule belong to Claude too?** T-WP10 gave it to the Codex reader only, because Claude Code's `five_hour` window renews while a session is open and is re-reported seconds later — the captured document in `crates/nazar-core/fixtures/captured/limits.json` has that window fifteen seconds past its own reset on a machine actively in use, and a rule applied there would have blinked it grey. The general form of the question — *is this reading about a period that is over?* — is already answered for the thing that matters, in `alerts` rule 6, which is provider-agnostic. What is left open is only whether the **panel** should dim such a window, and that is a rendering decision with a live example to try it against.
+- **`trim-paths` instead of T-WP11's remap flags.** `[profile.release] trim-paths = "all"` is one line in `Cargo.toml` and does the whole job, with no environment variable that every future cargo call has to remember to inherit — which is the one weakness of what landed: a build run some other way than `scripts/build-installer.mjs` gets no remap at all, and only `scripts/check-binary-paths.mjs` would say so. It is not hypothetical — `cargo test --release` rebuilds `nazar-statusline` and leaves an unremapped binary sitting in `target/release`, which is how this weakness was found rather than argued about, and which is why `docs/RELEASE.md` step 5 now says to rebuild if anything has touched that directory since step 2. It is nightly-only on the toolchain `rust-toolchain.toml` pins (Cargo 1.98), so this stays open until it is stable, at which point the change is a deletion. The checker stays either way; it is what would prove the swap. A related loose end with the same answer: there is no prefix for `.rustup`, because the standard library already arrives remapped by the Rust project as `/rustc/<hash>/…` and nothing here builds it from source — `.rustup` is a pattern in the checker instead, so a toolchain that ever did would go red rather than quietly ship.
 - Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
 
 ## 9. Log
@@ -868,3 +870,58 @@ for the maintainer to run. Nothing in this repository runs them.
   **Tests: 490, from 464.** `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
   warnings` and `cargo build --release` all clean. No installer built: the tray icon is being
   worked on in a parallel session and a bundle would have picked up a half-finished mark.
+- 2026-09-09 — **T-WP11: the installer was shipping the account name of the machine that
+  built it** (`scripts/build-installer.mjs`, `scripts/check-binary-paths.mjs`,
+  `.github/workflows/ci.yml`, `release.yml`, `docs/RELEASE.md`). Found by a pre-release
+  read-through of the artefact rather than of the tree.
+
+  **The greps could not have found it, and that is the whole point.** `docs/RELEASE.md`
+  step 5 asks git for `C:\Users`, `/home/` and the maintainer's name, and every one of
+  those came back clean — because they read files, and this was only ever inside a compiled
+  binary. Every `panic!`, every `unwrap()` and every `#[track_caller]` site carries the
+  source path it was compiled from as a **string literal**, which is exactly the kind of
+  thing `[profile.release] strip = true` does not remove. `target\release\nazar-tray.exe`
+  held **310** copies of `C:\Users\<account>\.cargo\registry\src\index.crates.io-…\` and
+  `nazar-statusline.exe` **7**, and the NSIS package carried both to anyone who downloaded
+  it. One of the 310 was this checkout's own absolute path, from Tauri's generated context.
+
+  **The fix already existed one repository over.** Nazar's `scripts/build-desktop.mjs` has
+  passed `--remap-path-prefix` since its own first release build, for the same reason and
+  after the same measurement; this is that approach carried across, with two deliberate
+  differences. The registry maps to `cargo` rather than to nazar's `crates`, because this
+  workspace *keeps its own code* in `crates/` and a dependency panicking from
+  `crates\serde_json-1.0.x\src\…` would read like one of ours. And it applies on **every
+  profile**, not release only: nazar's release-only rule keeps `cargo test` and the release
+  build on one fingerprint, but it also means nothing can check the rule until release day,
+  and CI's bundle job builds `--debug`. Paying one fingerprint split buys a gate that runs
+  on every pull request.
+
+  Three prefixes — the registry, git checkouts, this checkout — which is every one that
+  appears in practice: the standard library already arrives remapped by the Rust project as
+  `/rustc/<hash>/…`. `trim-paths = "all"` would replace all of it with one line in
+  `Cargo.toml` and is still nightly-only on the pinned toolchain, so it is written down in
+  §8 as a deletion waiting to happen rather than done twice.
+
+  **The check is a script, not a paragraph.** `scripts/check-binary-paths.mjs` reads the
+  binaries back and counts `\Users\`, `/Users/`, `/home/`, `.cargo\registry`, `.rustup` and
+  this checkout's absolute path — in text and in **both** UTF-16 alignments, because
+  resource data is wide and is not aligned to anything in particular. Deliberately not the
+  bare string `nazar-tray\`: after the remap this workspace's own panics read
+  `crates\nazar-tray\src\icon.rs`, which is relative, identical on every machine, and the
+  thing you want to keep. `build-installer.mjs` runs it and **deletes the bundle** if it
+  fails, because an installer sitting on disk looking finished is one somebody will upload;
+  `ci.yml` and `release.yml` each run it as a named step of their own, where a red cross
+  says what broke without anybody opening a log, and where the runner's own
+  `C:\Users\runneradmin` is held to exactly the same rule.
+
+  **310 → 0 and 7 → 0**, measured with the same reader either side. The 310 panic locations
+  are still there and still useful — they now read
+  `cargo\index.crates.io-…\tauri-2.11.5\src\webview\mod.rs`. Installer rebuilt at
+  `target\release\bundle\nsis\nazar-tray_0.1.0_x64-setup.exe`, 1.95 MB, **not installed**.
+  No Rust changed: still 490 tests, and `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -D warnings` and `cargo test --release` clean.
+
+  **The copy already installed under `%LOCALAPPDATA%\nazar-tray` is still the leaky one.**
+  It came from a build made before this, on the maintainer's own machine, where the string
+  is the maintainer's own — nothing to fix and nobody to tell. It stops being true the next
+  time the installer is run.

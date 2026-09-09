@@ -280,6 +280,22 @@ person moves it.
 
 ### Fixed
 
+- **Release binaries no longer carry the build machine's user profile path.** Every panic
+  location and every `#[track_caller]` site is compiled in as a **string literal** naming the
+  source file it came from, which is why `[profile.release] strip = true` never touched them:
+  `nazar-tray.exe` carried **310** copies of `C:\Users\<account>\.cargo\registry\src\…` and
+  `nazar-statusline.exe` **7**, and the NSIS package shipped both. No grep in
+  `docs/RELEASE.md` could have found it — those read the working tree, and this existed only
+  inside the artefact. `scripts/build-installer.mjs` now passes `--remap-path-prefix` to
+  every cargo invocation it makes, the wrapper's build included, so a dependency's panic
+  reads `cargo\serde_json-1.0.x\src\…` and one of this workspace's own reads
+  `crates\nazar-tray\src\…` wherever it was built. Both counts are now **0**, and they stay
+  there: `scripts/check-binary-paths.mjs` reads the binaries back in text and in UTF-16, the
+  build **deletes the bundle** rather than hand over an installer that fails the check, and
+  both workflows run it as a step of their own — a GitHub runner's `C:\Users\runneradmin` is
+  held to the same rule, which is what makes this checkable on a pull request instead of on
+  release day. `[profile.release] trim-paths` would be the tidy version of all of it and is
+  still nightly-only on the pinned toolchain.
 - **A Codex window whose reset had passed was reported as a current reading.** Codex writes
   its quota into the session log it is already keeping, so it only ever says anything while it
   is running — and on a machine nobody had opened it on for two days, `limits.json` said

@@ -130,6 +130,14 @@ jobs:
       - name: Build
         run: node scripts/build-installer.mjs
 
+      # These are the binaries people download. Panic locations are compiled in as string
+      # literals and `strip` does not remove them, so a release build can carry the path
+      # every crate was compiled from — an account name, published. The build script passes
+      # `--remap-path-prefix` and runs this itself; naming it here means the release stops at
+      # a step that says why, before anything is hashed, attested or attached to a draft.
+      - name: Check the binaries for build-machine paths
+        run: node scripts/check-binary-paths.mjs
+
       # The version in the tag and the version in the tree must be the same thing. A tag that
       # says v0.1.1 over a tree that says 0.1.0 produces a release whose file names do not
       # match its own name, and nobody notices until somebody downloads it.

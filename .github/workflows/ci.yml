@@ -155,6 +155,16 @@ jobs:
       - name: Build the installer
         run: node scripts/build-installer.mjs --debug
 
+      # The build script has already run this and would have deleted the bundle if it had
+      # failed. It is a step of its own anyway, for two reasons: a red cross against a named
+      # step says *what* broke without anybody opening the log, and the check outlives any
+      # future change to the line above it. This is also the only job that proves the remap
+      # works on a machine that is not the maintainer's — the runner's own
+      # `C:\Users\runneradmin` is held to exactly the same rule, on every pull request,
+      # rather than the rule being discovered broken on release day.
+      - name: Check the binaries for build-machine paths
+        run: node scripts/check-binary-paths.mjs --profile debug
+
       - uses: actions/upload-artifact@v4
         with:
           name: nazar-tray-debug-windows

@@ -76,18 +76,24 @@ third-party notices, the sidecar, then `cargo tauri build` — and prints the
 artefacts with their sizes and SHA-256 at the end. Keep that output; step 6 uses
 it.
 
+Before it prints any of that it reads the two binaries back
+(`scripts/check-binary-paths.mjs`) and, if either one carries the path of the
+machine it was built on, **deletes the bundle** rather than leave an installer on
+disk looking finished. So an installer that exists at this point is one that
+passed. Step 5 runs the same check by hand.
+
 Expected, for 0.1.0 on `x86_64-pc-windows-msvc`:
 
 | Artefact | Size |
 |---|---|
-| `nazar-tray.exe` | 4.79 MB |
-| `nazar-statusline.exe` | 335 KB |
-| `nazar-tray_0.1.0_x64-setup.exe` | 1.99 MB |
+| `nazar-tray.exe` | 4.74 MB |
+| `nazar-statusline.exe` | 340 KB |
+| `nazar-tray_0.1.0_x64-setup.exe` | 1.95 MB |
 
-Measured 2026-09-07 with the release profile in `Cargo.toml` (`opt-level = "s"`,
-`lto`, one codegen unit, stripped, `panic = "abort"`). Cargo's stock release
-settings give 11.95 MB, 497 KB and 3.06 MB for the same source, which is what
-those four lines are worth.
+Measured 2026-09-09 with the release profile in `Cargo.toml` (`opt-level = "s"`,
+`lto`, one codegen unit, stripped, `panic = "abort"`) and the path remapping this
+script passes. Cargo's stock release settings gave 11.95 MB, 497 KB and 3.06 MB
+for the same source on 2026-09-07, which is what those four lines are worth.
 
 An installer that is suddenly 10 MB means something got into the bundle. Look at
 `bundle.resources` in `tauri.conf.json` first.
@@ -187,7 +193,41 @@ cd ui; npm test; cd ..
 
 All of it must come back empty or green. The only expected hits are the
 maintainer's own name in `LICENSE`, `tauri.conf.json` and the winget manifests,
-and the forbidden patterns written into the gate tests themselves.
+the forbidden patterns written into the gate tests themselves, and — since
+T-WP11 — the placeholder paths in `scripts/check-binary-paths.mjs`,
+`scripts/build-installer.mjs`, the two workflows and the prose describing them.
+Read those: `C:\Users\<account>` and `C:\Users\runneradmin` are the shapes being
+looked for, and neither names anybody.
+
+**And inside the binaries, which none of the greps above can see.** Panic
+locations are compiled in as string literals, so `strip = true` does not remove
+them and a release build can carry the path every crate was compiled from — the
+account name of whoever built it, shipped to everyone who downloads the
+installer. `scripts/build-installer.mjs` passes `--remap-path-prefix` for exactly
+this reason; here is the check that it worked:
+
+```powershell
+node scripts/check-binary-paths.mjs        # or: cd ui; npm run check-binaries
+```
+
+Expected, and the only acceptable answer:
+
+```
+target\release\nazar-tray.exe                       4.74 MB  0 match(es)
+target\release\nazar-statusline.exe                339.5 KB  0 match(es)
+no machine-specific paths in any of them
+```
+
+Any non-zero count is a release stopper, and the script prints the first five
+hits in context so the escaped prefix names itself.
+
+Two things to know about what it is reading. It reads the binaries **in
+`target/`**, not the copy already installed under `%LOCALAPPDATA%\nazar-tray` —
+that one came from whichever build put it there. And only
+`scripts/build-installer.mjs` passes the remap, so **any release build made
+another way replaces these files with unremapped ones** — `cargo test --release`
+rebuilds `nazar-statusline.exe` and does exactly that. If anything has touched
+`target/release` since step 2, rerun the build before the check means anything.
 
 Also confirm by eye:
 
@@ -222,7 +262,8 @@ git push origin v0.1.0
 ```
 
 The tag starts `.github/workflows/release.yml`: it re-runs the whole gate, builds
-the installer on a GitHub runner, writes `SHA256SUMS`, attests the build
+the installer on a GitHub runner, checks the binaries for build-machine paths
+before anything is hashed or attached, writes `SHA256SUMS`, attests the build
 provenance, and creates a **draft** release with both files attached. It does not
 publish.
 
