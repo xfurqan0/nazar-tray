@@ -117,7 +117,7 @@ needs to know how long a window is.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `percent` | number | **no** | 0–100, unrounded. **Absent when the value is unknown.** See rule 2. |
-| `resetsAt` | string | no | RFC 3339, as the source reported it. Countdowns are computed locally in the user's time zone. |
+| `resetsAt` | string | no | RFC 3339, **rounded down to the whole minute**. Both sources report to the second and at least one of them wobbles by one; nothing downstream counts down in less than a minute, so flooring makes two spellings of one instant into one string. Down, never to the nearest: a reset is a deadline. Countdowns are computed locally in the user's time zone. |
 | `windowMinutes` | integer | no | `300` for five-hour windows, `10080` for weekly ones. Written for **both** providers so consumers need no provider-specific logic. |
 | `state` | string | **yes** | `ok` \| `stale` \| `error`. There is no safe default, so it is required rather than assumed. |
 | `error` | string | no | Short reason the window is stale or in error. Never file contents, never a response body. |
@@ -229,10 +229,11 @@ question a consumer actually has. What produced the block as a whole is `source`
 
 ```json
 {
-  "percent": 54,
-  "windowMinutes": 300,
+  "percent": 70,
+  "resetsAt": "2026-09-07T12:24:00Z",
+  "windowMinutes": 10080,
   "state": "stale",
-  "error": "no rollout log written since 2026-09-06T18:40:00Z"
+  "error": "the window reset at 2026-09-07T12:24:00Z and Codex has written nothing since"
 }
 ```
 
@@ -244,7 +245,30 @@ question a consumer actually has. What produced the block as a whole is `source`
 }
 ```
 
-The second window has no `percent` at all. That is the point.
+The second window has no `percent` at all. That is the point. The first keeps its
+percentage and loses the claim that it is current, which is the difference between the two
+states: **`error` means nobody read a number; `stale` means the number was read and should
+not be acted on.** A consumer draws a stale window greyed or dimmed, next to the reset that
+has gone by, and never decides anything from it.
+
+### `stale` on a window whose reset has passed
+
+A source only speaks while it is running. Codex writes its quota into the session log it
+already keeps, so on a machine nobody has opened Codex on for two days the newest log still
+parses perfectly and still reports the weekly window at 70 % — for a week that ended
+yesterday. The writer marks any Codex window whose `resetsAt` is **more than five minutes**
+behind the current instant as `stale` for exactly that reason. The five minutes are grace
+for a window that has just turned over and whose new numbers are one log line away.
+
+**This applies to Codex and not to Claude**, and the asymmetry is deliberate rather than an
+omission. Claude Code's `five_hour` window renews while a session is open and is re-reported
+on the next status-line refresh: a captured document from a live machine really does carry
+a `five_hour` window fifteen seconds past its own reset, and a rule that greyed it out would
+blink a live window on a machine actively in use.
+
+A consumer that wants the general rule can compute it: `resetsAt` is in the file, the
+current instant is free, and "this window's period is over" is one subtraction — which is
+also how the tray's own notifications decide not to warn about a period nobody is in.
 
 ## Schema
 
@@ -312,8 +336,9 @@ operating system for the current offset, so a local offset would cost either a r
 dependency or hand-written daylight-saving code in the crate that is meant to be boring.
 A UTC timestamp names the same instant, a countdown — which is what a consumer actually
 draws — is offset-independent, and rendering local time is one call in every language that
-reads this file. `resetsAt` is written as the source reported it, converted to UTC: both
-Codex and Claude Code report Unix seconds.
+reads this file. `resetsAt` is written as the source reported it, converted to UTC and floored to the
+whole minute: both Codex and Claude Code report Unix seconds, and the opt-in usage endpoint
+reports text with microseconds and a numeric offset.
 
 Decided in WP1 and applied to the samples in WP2; the reasoning in full is in
 [`pinned-internal-formats.md`](pinned-internal-formats.md).

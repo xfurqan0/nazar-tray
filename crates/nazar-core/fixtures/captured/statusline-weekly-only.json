@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-08T02:38:25Z",
+  "wrapper": "nazar-statusline/0.1.0",
+  "sessionId": "00000000-0000-4000-8000-00000000beef",
+  "payload": {
+    "session_id": "00000000-0000-4000-8000-00000000beef",
+    "transcript_path": "C:\\claude-home\\projects\\C--work-project\\00000000-0000-4000-8000-00000000beef.jsonl",
+    "cwd": "C:\\work\\project",
+    "scratchpad_dir": "C:\\claude-home\\tmp\\C--work-project\\00000000-0000-4000-8000-00000000beef\\scratchpad",
+    "prompt_id": "00000000-0000-4000-8000-000000000091",
+    "effort": {
+      "level": "high"
+    },
+    "session_name": "session-a",
+    "model": {
+      "id": "claude-fable-5-1",
+      "display_name": "Fable 5.1"
+    },
+    "workspace": {
+      "current_dir": "C:\\work\\project",
+      "project_dir": "C:\\work\\project",
+      "added_dirs": [],
+      "repo": {
+        "host": "github.com",
+        "owner": "example-owner",
+        "name": "example-repo"
+      }
+    },
+    "version": "2.1.263",
+    "output_style": {
+      "name": "default"
+    },
+    "cost": {
+      "total_cost_usd": 21.54779425,
+      "total_duration_ms": 93308585,
+      "total_api_duration_ms": 1968769,
+      "total_lines_added": 319,
+      "total_lines_removed": 5
+    },
+    "context_window": {
+      "total_input_tokens": 135709,
+      "total_output_tokens": 84,
+      "context_window_size": 1000000,
+      "current_usage": {
+        "input_tokens": 2,
+        "output_tokens": 84,
+        "cache_creation_input_tokens": 649,
+        "cache_read_input_tokens": 135058
+      },
+      "used_percentage": 14,
+      "remaining_percentage": 86
+    },
+    "exceeds_200k_tokens": false,
+    "prompt_cache": {
+      "warm": false,
+      "caching_observed": true,
+      "ttl": "1h",
+      "expires_at": 1788788047,
+      "requests": 32,
+      "misses": 1,
+      "expected_rebuilds": 0,
+      "hit_ratio": 0.9439653671991386,
+      "cache_write_tokens": 189225,
+      "miss_recache_tokens": 92982,
+      "last_miss_at": 1788783235,
+      "last_miss_cause": {
+        "causes": [
+          "ttl_expired_1h"
+        ]
+      },
+      "miss_causes": {
+        "ttl_expired_1h": 1
+      },
+      "recache_tokens_if_cold": 135709
+    },
+    "fast_mode": false,
+    "thinking": {
+      "enabled": true
+    },
+    "rate_limits": {
+      "seven_day": {
+        "used_percentage": 42,
+        "resets_at": 1789178400
+      }
+    }
+  }
+}

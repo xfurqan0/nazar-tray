@@ -797,3 +797,287 @@ fn nothing_is_written_when_nothing_crossed() {
         "a machine that has never crossed a threshold has no alerts.json"
     );
 }
+
+// ------------------------------------------------------- the grid over time comparisons
+
+/// Half of the weekly window, in seconds: the tolerance `same_period` uses for `10080`.
+const HALF_WEEK: i64 = 10_080 * 60 / 2;
+/// Half of the five-hour window.
+const HALF_FIVE_HOURS: i64 = 300 * 60 / 2;
+
+/// An instant `offset_seconds` from [`RESET_A`].
+///
+/// So that a row of the grid below can say "half a window, minus one" instead of a
+/// timestamp somebody has to check by hand.
+fn at(offset_seconds: i64) -> String {
+    let origin = crate::timefmt::unix_seconds_from_rfc3339(RESET_A).unwrap();
+    crate::timefmt::rfc3339_from_unix_seconds(origin + offset_seconds)
+}
+
+/// The weekly window, walked across `same_period`'s tolerance one named point at a time.
+///
+/// A grid rather than a generator, and the reason is repeatability. The comparisons this
+/// module rests on are a subtraction against a threshold, and every bug either of them has
+/// had was **at the threshold**: a second of jitter read as a new week (T-WP9), a reset
+/// that had passed read as current (T-WP10). A random property test would have found those
+/// eventually and told a different story every run. So the interesting points are named:
+/// nothing apart, one second either way, either side of a minute, either side of half a
+/// window, and a whole window on. No `proptest` dependency — a table is cheaper to read
+/// than a generator and never flakes.
+#[test]
+fn the_same_period_grid_over_a_weekly_window() {
+    let week = Some(10080u32);
+    for (offset, expected, why) in [
+        (0, true, "the same instant"),
+        (1, true, "one second later: the jitter T-WP9 was about"),
+        (
+            -1,
+            true,
+            "one second earlier: the same jitter, the other way",
+        ),
+        (59, true, "just under a minute"),
+        (61, true, "just over a minute"),
+        (-61, true, "a minute backwards is not a new week either"),
+        (3599, true, "an hour is nothing against a week"),
+        (3601, true, "and neither is an hour and a second"),
+        (
+            HALF_WEEK - 1,
+            true,
+            "half a window minus one: still one period",
+        ),
+        (
+            HALF_WEEK,
+            false,
+            "half a window exactly: the boundary is exclusive",
+        ),
+        (HALF_WEEK + 1, false, "past half a window: a different week"),
+        (-HALF_WEEK, false, "and the same going backwards"),
+        (
+            7 * 86_400,
+            false,
+            "a whole window on: the renewal this rule is for",
+        ),
+    ] {
+        assert_eq!(
+            same_period(Some(RESET_A), Some(&at(offset)), week),
+            expected,
+            "{offset} s apart: {why}"
+        );
+        // The comparison is symmetric: which of two readings arrived first is not a fact
+        // about the period, and a rule that answered differently would fire on alternate
+        // polls, which is exactly the shape of the bug it was written for.
+        assert_eq!(
+            same_period(Some(&at(offset)), Some(RESET_A), week),
+            expected,
+            "{offset} s apart, the other way round: {why}"
+        );
+    }
+}
+
+/// The same walk for every window length, including the two that mean "no length".
+#[test]
+fn the_same_period_grid_over_the_shorter_windows_and_none_at_all() {
+    for (window, tolerance, name) in [
+        (Some(300u32), HALF_FIVE_HOURS, "the five-hour window"),
+        (Some(10080u32), HALF_WEEK, "the weekly window"),
+        (None, 3600, "a window with no stated length"),
+        (Some(0u32), 3600, "a window whose length is a nonsense zero"),
+    ] {
+        assert!(
+            same_period(Some(RESET_A), Some(&at(0)), window),
+            "{name}: nothing apart"
+        );
+        assert!(
+            same_period(Some(RESET_A), Some(&at(tolerance - 1)), window),
+            "{name}: one second inside the tolerance"
+        );
+        assert!(
+            !same_period(Some(RESET_A), Some(&at(tolerance)), window),
+            "{name}: the tolerance itself is already outside"
+        );
+    }
+}
+
+/// The places arithmetic on instants goes wrong on its own.
+#[test]
+fn the_same_period_grid_where_arithmetic_on_instants_goes_wrong() {
+    let week = Some(10080u32);
+
+    // A zone offset names an instant, and two spellings of one instant are one period.
+    assert!(same_period(
+        Some("2026-09-12T02:00:00Z"),
+        Some("2026-09-12T05:00:00+03:00"),
+        week
+    ));
+    assert!(same_period(
+        Some("2026-09-12T02:00:00Z"),
+        Some("2026-09-11T22:00:00-04:00"),
+        week
+    ));
+
+    // The night Europe puts its clocks forward. In UTC nothing happens at all, which is
+    // the point of storing UTC: 00:59:59Z and 01:00:00Z are one second apart on the
+    // 29th of March exactly as they are on any other day.
+    assert!(same_period(
+        Some("2026-03-29T00:59:59Z"),
+        Some("2026-03-29T01:00:00Z"),
+        week
+    ));
+    // And the local hour that does not exist that night is still an hour of real time.
+    // Two local times two hours and two minutes apart on their faces — 01:59+01:00 is
+    // 00:59Z, 04:01+03:00 is 01:01Z — are two minutes apart in reality, and one period.
+    assert!(same_period(
+        Some("2026-03-29T01:59:00+01:00"),
+        Some("2026-03-29T04:01:00+03:00"),
+        week
+    ));
+
+    // Before the epoch, where a subtraction that rounded towards zero would go wrong.
+    assert!(same_period(
+        Some("1969-12-31T23:59:59Z"),
+        Some("1970-01-01T00:00:00Z"),
+        week
+    ));
+    assert!(!same_period(
+        Some("1969-12-31T23:00:00Z"),
+        Some("1970-01-01T00:00:01Z"),
+        None
+    ));
+
+    // Fractional seconds are below the resolution of every window there is.
+    assert!(same_period(
+        Some("2026-09-12T02:00:00.999999Z"),
+        Some("2026-09-12T02:00:00Z"),
+        week
+    ));
+
+    // Text that will not parse falls back to comparing the strings, which is where this
+    // rule started: with nothing to subtract there is nothing to be tolerant with.
+    for (left, right, expected) in [
+        ("in about a week", "in about a week", true),
+        ("in about a week", "in about two weeks", false),
+        ("2026-09-12T02:00:00Z", "soon", false),
+        ("", "", true),
+        ("2026-02-30T02:00:00Z", "2026-02-30T02:00:01Z", false),
+    ] {
+        assert_eq!(
+            same_period(Some(left), Some(right), week),
+            expected,
+            "{left:?} against {right:?}"
+        );
+    }
+
+    // A window that has never carried a reset is one period; one that had a reset and
+    // lost it is telling us something changed.
+    assert!(same_period(None, None, week));
+    assert!(!same_period(Some(RESET_A), None, week));
+    assert!(!same_period(None, Some(RESET_A), week));
+}
+
+// ------------------------------------------------- rule 6: a period that has ended
+
+#[test]
+fn a_window_whose_reset_has_already_passed_never_fires() {
+    // The machine T-WP10 came from: Codex last opened two days earlier, the newest rollout
+    // log still parsing perfectly, the weekly window still reported at 70 % — for a week
+    // that had ended the day before.
+    let mut alerts = Alerts::in_memory();
+    let expired = view_of(
+        Window::stale(86.0)
+            .with_window_minutes(10080)
+            .with_resets_at("2026-09-07T11:00:00Z"),
+        NOW,
+    );
+
+    assert!(
+        alerts.evaluate(&expired, &rules()).is_empty(),
+        "a crossing cannot happen inside a period that is over"
+    );
+    assert!(
+        alerts.log().windows.is_empty(),
+        "and nothing is written down about it"
+    );
+}
+
+#[test]
+fn a_reset_one_second_away_still_fires_and_one_second_gone_does_not() {
+    // The boundary from both sides, with everything else held still.
+    let just_alive = view_of(
+        Window::ok(86.0)
+            .with_window_minutes(10080)
+            .with_resets_at("2026-09-07T12:00:01Z"),
+        NOW,
+    );
+    assert_eq!(
+        thresholds(&Alerts::in_memory().evaluate(&just_alive, &rules())),
+        vec![85.0],
+        "a second of window left is still a window"
+    );
+
+    let just_gone = view_of(
+        Window::ok(86.0)
+            .with_window_minutes(10080)
+            .with_resets_at("2026-09-07T11:59:59Z"),
+        NOW,
+    );
+    assert!(
+        Alerts::in_memory()
+            .evaluate(&just_gone, &rules())
+            .is_empty(),
+        "a second past the reset is a different period"
+    );
+
+    // Exactly on it: a window runs *up to* its reset, and zero remaining is not negative
+    // remaining. The contract's own countdown column says the same thing.
+    let exactly = view_of(
+        Window::ok(86.0)
+            .with_window_minutes(10080)
+            .with_resets_at(NOW),
+        NOW,
+    );
+    assert_eq!(
+        thresholds(&Alerts::in_memory().evaluate(&exactly, &rules())),
+        vec![85.0],
+        "zero remaining is not negative remaining"
+    );
+}
+
+#[test]
+fn a_window_with_no_reset_at_all_is_not_treated_as_expired() {
+    // "I do not know when this resets" is not "this has reset". A source that stopped
+    // reporting `resets_at` must not silence every warning the tray has.
+    let mut alerts = Alerts::in_memory();
+    let no_reset = view_of(Window::ok(86.0).with_window_minutes(10080), NOW);
+    assert_eq!(
+        thresholds(&alerts.evaluate(&no_reset, &rules())),
+        vec![85.0]
+    );
+}
+
+#[test]
+fn the_period_after_an_expired_one_starts_from_nothing() {
+    // Rule 6 forgets as well as silences, so the first reading of the new period is a
+    // first observation rather than a continuation of the old one.
+    let mut alerts = Alerts::in_memory();
+
+    let expired = view_of(
+        Window::stale(86.0)
+            .with_window_minutes(10080)
+            .with_resets_at("2026-09-07T11:00:00Z"),
+        NOW,
+    );
+    assert!(alerts.evaluate(&expired, &rules()).is_empty());
+
+    // Codex is opened again: a new week, and real usage in it.
+    assert_eq!(
+        thresholds(&alerts.evaluate(&view_at(90.0, RESET_B, NOW), &rules())),
+        vec![85.0],
+        "the new period gets its warning"
+    );
+    assert!(
+        alerts
+            .evaluate(&view_at(90.0, RESET_B, NOW), &rules())
+            .is_empty(),
+        "and gets it once"
+    );
+}

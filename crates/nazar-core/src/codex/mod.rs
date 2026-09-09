@@ -36,6 +36,24 @@
 //! were read, computed here, never taken from a flag: Codex's payload has no such flag,
 //! and the prototype inventing one is why its own note called the 52 % window binding
 //! while a 70 % window sat next to it.
+//!
+//! ## What it will not keep pretending
+//!
+//! A rollout log is the last thing the server said, and Codex only ever says anything while
+//! it is running. On a machine nobody has opened Codex on for two days the newest log still
+//! parses perfectly and still reports `70 %` — for a window that reset yesterday. That is
+//! the reading being **out of date**, not the file being unreadable, and the contract has a
+//! word for it: a window whose `resets_at` is more than [`RESET_GRACE_SECONDS`] behind the
+//! current instant is written `state: "stale"`, keeps its percentage, and stops counting as
+//! current for anything downstream — no threshold notification, and a panel that draws it
+//! the way it draws every other stale window. See [`readable`].
+//!
+//! The grace period is what keeps that from firing on a window that has *just* turned over:
+//! the log is appended a few seconds after the reset with the new period's numbers, and a
+//! reading in that gap is late rather than wrong. **This rule is the Codex reader's alone.**
+//! Claude Code's `five_hour` window crosses its own reset every day while a session is open
+//! and is re-reported seconds later, so the same rule there would blink a perfectly live
+//! window grey once a day.
 
 pub mod locate;
 pub mod parse;
@@ -46,9 +64,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::error::Result;
-use crate::limits::{Provider, Source, Window};
+use crate::limits::{Provider, Source, Window, WindowState};
 use crate::paths::home_dir;
-use crate::timefmt::rfc3339_from_system_time;
+use crate::timefmt::{now_rfc3339, rfc3339_from_system_time, unix_seconds_from_rfc3339};
 
 use locate::MAX_FILES_OPENED;
 use parse::{Outcome, Quota};
@@ -65,6 +83,15 @@ pub const SECONDARY_WINDOW_MINUTES: u32 = 10_080;
 
 /// Environment variable that moves Codex's home directory.
 pub const CODEX_HOME_VAR: &str = "CODEX_HOME";
+
+/// How far past its own reset a window may be and still count as current.
+///
+/// Five minutes. A window that has just turned over is re-reported within seconds of the
+/// next thing Codex does, so the honest reading of a reset that passed thirty seconds ago
+/// is "the log has not caught up yet" rather than "these numbers are from last week". A
+/// reset that passed **an hour** ago means nobody has run Codex since, and the percentage
+/// standing on it is about a period that has ended.
+pub const RESET_GRACE_SECONDS: i64 = 5 * 60;
 
 /// `$CODEX_HOME`, or `~/.codex` when it is not set.
 ///
@@ -166,10 +193,26 @@ impl CodexReader {
         self.warnings
     }
 
-    /// Read the newest quota and render it as a `limits.json` provider block.
+    /// Read the newest quota and render it as a `limits.json` provider block, for `now`.
+    ///
+    /// `now` is RFC 3339, and it is a parameter rather than a clock reading because it is
+    /// the one thing here that is not on disk: whether a window is past its reset is a
+    /// question about the current instant, and the refresh loop already holds the answer
+    /// (`crate::refresh::sources::Reader::read`). A `now` this function cannot parse leaves
+    /// every window exactly as the log reported it, which is the same rule the rest of the
+    /// crate follows when it cannot read a time.
+    #[must_use]
+    pub fn refresh_at(&mut self, now: &str) -> Provider {
+        provider(&self.status(), now)
+    }
+
+    /// [`CodexReader::refresh_at`] against the system clock, for a caller that has none.
+    ///
+    /// The one-shot `--print` path, which reads the clock once and exits. Everything that
+    /// runs in a loop passes its own instant in.
     #[must_use]
     pub fn refresh(&mut self) -> Provider {
-        provider(&self.status())
+        self.refresh_at(&now_rfc3339())
     }
 
     /// Look for the newest usable quota line, updating the reader's state.
@@ -291,8 +334,8 @@ fn newest_usable(
     Some((quota, source_at))
 }
 
-/// Render a status as the `providers.codex` block of `limits.json`.
-fn provider(status: &Status) -> Provider {
+/// Render a status as the `providers.codex` block of `limits.json`, as of `now`.
+fn provider(status: &Status, now: &str) -> Provider {
     match status {
         Status::NoHome => Provider {
             configured: false,
@@ -302,7 +345,7 @@ fn provider(status: &Status) -> Provider {
         Status::NoQuotaLine => unreadable(&format!(
             "no rate_limits line in the newest {MAX_FILES_OPENED} rollouts"
         )),
-        Status::Read(quota, source_at) => readable(quota, source_at),
+        Status::Read(quota, source_at) => readable(quota, source_at, now),
     }
 }
 
@@ -331,8 +374,17 @@ fn unreadable(reason: &str) -> Provider {
     }
 }
 
-/// A provider built from a reading.
-fn readable(quota: &Quota, source_at: &str) -> Provider {
+/// A provider built from a reading, as of `now`.
+///
+/// The percentages are the source's; the only judgement made here is the one the source
+/// cannot make about itself — whether the period the numbers belong to is still running.
+/// A window past its reset by more than [`RESET_GRACE_SECONDS`] is `stale`: it **keeps its
+/// percentage**, because that is still the last thing the server said and rule 2 of the
+/// contract is about not inventing numbers rather than about hiding them, and it stops
+/// being current, because a consumer that draws it as a live reading is telling the user
+/// they have used 70 % of a week that ended yesterday.
+fn readable(quota: &Quota, source_at: &str, now: &str) -> Provider {
+    let now_seconds = unix_seconds_from_rfc3339(now);
     let mut windows = BTreeMap::new();
     for (key, window) in [
         (WINDOW_PRIMARY, quota.primary.as_ref()),
@@ -348,6 +400,12 @@ fn readable(quota: &Quota, source_at: &str) -> Provider {
         }
         if let Some(resets_at) = &reported.resets_at {
             rendered = rendered.with_resets_at(resets_at.as_str());
+            if past_its_reset(resets_at, now_seconds) {
+                rendered.state = WindowState::Stale;
+                rendered.error = Some(format!(
+                    "the window reset at {resets_at} and Codex has written nothing since"
+                ));
+            }
         }
         windows.insert(key.to_owned(), rendered);
     }
@@ -361,6 +419,23 @@ fn readable(quota: &Quota, source_at: &str) -> Provider {
         windows,
         ..Provider::default()
     }
+}
+
+/// Whether a reset is far enough behind `now` that the reading standing on it is over.
+///
+/// Strictly more than [`RESET_GRACE_SECONDS`], so a reset exactly five minutes old is still
+/// within the grace period rather than one second outside it — an inclusive boundary in the
+/// other direction would make the constant's name a lie by a second.
+///
+/// Answers `false` when either side is not a timestamp. That is the crate's standing rule
+/// for a time it cannot read: a `now` the caller could not produce, or a `resets_at` a
+/// future Codex spells some other way, is not evidence that a window has expired, and
+/// greying out a live reading because of it would be the worse of the two mistakes.
+fn past_its_reset(resets_at: &str, now_seconds: Option<i64>) -> bool {
+    let (Some(resets), Some(now)) = (unix_seconds_from_rfc3339(resets_at), now_seconds) else {
+        return false;
+    };
+    now - resets > RESET_GRACE_SECONDS
 }
 
 /// Key of the window with the highest percentage.

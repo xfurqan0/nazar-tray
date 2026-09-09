@@ -280,6 +280,30 @@ person moves it.
 
 ### Fixed
 
+- **A Codex window whose reset had passed was reported as a current reading.** Codex writes
+  its quota into the session log it is already keeping, so it only ever says anything while it
+  is running — and on a machine nobody had opened it on for two days, `limits.json` said
+  `codex.secondary: percent 70, resetsAt 2026-09-07T12:24:52Z, state: "ok"`. A confident
+  number for a week that had ended the day before. Such a window is now `state: "stale"`: it
+  **keeps its percentage**, because that is still the last thing the server said and the panel
+  should still show it, and it stops counting as current. The threshold is five minutes past
+  the reset, which is grace for a window that has just turned over and whose new numbers are
+  one log line away. The rule is the **Codex** reader's alone — Claude Code's five-hour window
+  renews while a session is open and is re-reported seconds later, so the same rule there
+  would grey out a live window once a day.
+- **A threshold notification is no longer fired for a period that has already ended.** Rule 6
+  of the notification state machine: a window whose `resetsAt` is behind the current instant
+  produces nothing and forgets what it last saw, so the first reading of the next period
+  starts from nothing. Written against `resetsAt` rather than against `state`, because a
+  window can be `stale` and still be about the week you are in — the opt-in endpoint goes
+  stale fifteen minutes after a fetch with its weekly reset three days away, and silencing
+  *that* would drop the 85 % warning the feature exists for.
+- **Codex's `resetsAt` is rounded down to the whole minute, like Claude's.** The Claude reader
+  has done this since the toast-storm fix; Codex was still writing seconds
+  (`2026-09-09T02:31:59Z`), so `limits.json` carried two spellings of one kind of value and
+  one reader was permanently a fix behind the other. Nothing downstream consumes sub-minute
+  precision: the panel counts down in minutes, and the notification state machine only asks
+  whether two readings name the same period.
 - **The toast storm on ±1 s `resetsAt` jitter.** On 2026-09-08 the maintainer's machine
   showed **32 identical toasts** in two and a half hours — *Claude Code · weekly window 60 %* —
   one every five minutes, most of them doubled, and rewrote `%APPDATA%\nazar\alerts.json` every

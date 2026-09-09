@@ -207,8 +207,13 @@ impl Reader for CodexSource {
         "codex"
     }
 
-    fn read(&mut self, _clock: &dyn Clock, _now: &str) -> Provider {
-        self.reader.refresh()
+    fn read(&mut self, _clock: &dyn Clock, now: &str) -> Provider {
+        // `now` is not decoration here. A rollout log is written only while Codex is
+        // running, so on a machine nobody has opened it on for two days the newest log
+        // still parses to a confident percentage — for a window that reset yesterday. The
+        // reader compares each window's reset against this instant and marks the expired
+        // ones stale rather than reporting them as current.
+        self.reader.refresh_at(now)
     }
 
     fn warnings(&self) -> u64 {

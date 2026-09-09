@@ -59,6 +59,21 @@
 //!    nothing and *forgets* what it last saw, so the reading that comes after it is a first
 //!    observation rather than a continuation of a number nobody can vouch for. Finding B03
 //!    of the audit, arriving through a new door.
+//! 6. **A period that has ended cannot be crossed.** A window whose `resetsAt` is already
+//!    behind `now` is silent, whatever its percentage says. Added in T-WP10, for a machine
+//!    nobody had opened Codex on in two days: the newest rollout log still parsed perfectly
+//!    and still reported the weekly window at **70 %, resetting the day before**. The
+//!    number is real — it is the last thing the server said, and the panel goes on showing
+//!    it — but a toast fired from it warns about a week the user is not in any more.
+//!
+//!    > **Why here and not by looking at `state`.** The Codex reader marks such a window
+//!    > `stale`, so silencing every non-`ok` state would have worked for this case and
+//!    > broken another: Claude's opt-in endpoint goes `stale` fifteen minutes after a
+//!    > fetch while its weekly reset is still three days away, and *that* number is
+//!    > current in the only sense that matters — you were at 86 % twenty minutes ago, so
+//!    > you are at 86 % or more now. Silencing it would drop the 85 % warning this whole
+//!    > module exists to deliver. What makes a reading unusable is not that it is old; it
+//!    > is that the period it measures is over, and `resetsAt` is where that is written.
 //!
 //! **One toast per crossing, naming the most severe threshold reached.** A window that goes
 //! from 10 % to 91 % in one step crosses 60 and 85 together; two toasts stacked on top of
@@ -110,6 +125,14 @@ const EPSILON: f64 = 1e-9;
 fn same(left: f64, right: f64) -> bool {
     (left - right).abs() < EPSILON
 }
+
+/// The window state that means nobody read a number at all.
+///
+/// Spelled here rather than compared against [`crate::limits::WindowState`] because the
+/// derived view carries the state as the *text the writer wrote*: rule 4 of the contract
+/// preserves a value this build does not know, and this module has to compare against the
+/// string either way.
+const STATE_ERROR: &str = "error";
 
 /// How far two `resetsAt` values may sit apart and still be one period, when the window's
 /// length is not known.
@@ -433,12 +456,22 @@ impl Alerts {
         // Rule 5. An unknown window says nothing and forgets what it saw, so that the
         // reading after it is a first observation rather than a continuation.
         let percent = match window.percent.filter(|value| value.is_finite()) {
-            Some(percent) if window.state != "error" => percent,
+            Some(percent) if window.state != STATE_ERROR => percent,
             _ => {
                 self.seen.remove(key);
                 return None;
             }
         };
+
+        // Rule 6. A period that has already ended cannot be crossed. The percentage is
+        // real — it is the last thing the source said — but it is about a window that is
+        // over, and a toast fired from it warns about a week the user is no longer in.
+        // Forgotten as well as silent, for rule 5's reason: the reading that comes after
+        // belongs to the next period and starts from nothing.
+        if window.remaining_ms.is_some_and(|remaining| remaining < 0) {
+            self.seen.remove(key);
+            return None;
+        }
 
         let reset = window.resets_at.as_deref();
         // Both halves of rule 4 ask the same question of the same window, so they ask it

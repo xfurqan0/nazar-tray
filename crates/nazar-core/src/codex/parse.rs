@@ -24,7 +24,10 @@
 
 use serde_json::Value;
 
-use crate::timefmt::{rfc3339_from_unix_auto, sanitize_plan, sanitize_timestamp};
+use crate::timefmt::{
+    floor_to_minute, rfc3339_from_unix_seconds, sanitize_plan, sanitize_timestamp,
+    unix_seconds_auto, unix_seconds_from_rfc3339,
+};
 
 /// The byte string a line must contain before it is worth parsing.
 pub const NEEDLE: &[u8] = b"\"rate_limits\"";
@@ -156,22 +159,43 @@ fn window(value: &Value) -> Option<QuotaWindow> {
     })
 }
 
-/// Read `resets_at` as RFC 3339 text.
+/// Read `resets_at` as RFC 3339 text, **rounded down to the whole minute**.
 ///
 /// Codex writes Unix seconds (verified over 652 windows). An integer too large to be
 /// seconds is read as milliseconds; a string is accepted only if it already looks like a
 /// timestamp, so a future format change degrades rather than breaks.
+///
+/// ## Why the minute, on this side too
+///
+/// T-WP9 flattened the Claude reader to the minute because the usage endpoint reported the
+/// same weekly reset one second apart on alternating refreshes and the notification state
+/// machine read every flip as a new week. Codex has not been seen to jitter — but its
+/// resets are written to the second (`2026-09-09T02:31:59Z`), and leaving one provider at
+/// second precision while the other is at minute precision means `limits.json` carries two
+/// spellings of the same kind of value, two panels rendering the same countdown differently,
+/// and one reader that is one bug fix behind the other. Nothing downstream consumes
+/// sub-minute precision: the panel counts down in minutes and [`crate::alerts`] only asks
+/// whether two readings name the same period. So both sources go through the same gate,
+/// [`floor_to_minute`], and produce the same text for the same instant.
+///
+/// **Down, never to the nearest**: a reset is a deadline, and rounding `12:24:52` up to
+/// `12:25:00` would show eight seconds of quota that are not there.
 fn resets_at(value: &Value) -> Option<String> {
-    if let Some(seconds) = value.as_i64() {
-        return Some(rfc3339_from_unix_auto(seconds));
-    }
-    if let Some(seconds) = value.as_f64() {
-        if seconds.is_finite() && seconds.abs() < 9e18 {
-            return Some(rfc3339_from_unix_auto(seconds as i64));
+    let seconds = if let Some(seconds) = value.as_i64() {
+        unix_seconds_auto(seconds)
+    } else if let Some(seconds) = value.as_f64() {
+        if !seconds.is_finite() || seconds.abs() >= 9e18 {
+            return None;
         }
-        return None;
-    }
-    value.as_str().and_then(sanitize_timestamp)
+        unix_seconds_auto(seconds as i64)
+    } else {
+        // A string is read back to seconds and written out again, which converts an offset
+        // and drops fractions, so a source that switches to text lands in the same spelling
+        // as one that writes numbers. `unix_seconds_from_rfc3339` is `sanitize_timestamp`
+        // plus arithmetic, so the shape check is still the first thing that happens.
+        unix_seconds_from_rfc3339(value.as_str()?)?
+    };
+    Some(rfc3339_from_unix_seconds(floor_to_minute(seconds)))
 }
 
 #[cfg(test)]
@@ -204,12 +228,12 @@ mod tests {
         let primary = quota.primary.unwrap();
         assert_eq!(primary.used_percent, 54.0);
         assert_eq!(primary.window_minutes, Some(300));
-        assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:24Z"));
+        assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:00Z"));
 
         let secondary = quota.secondary.unwrap();
         assert_eq!(secondary.used_percent, 70.0);
         assert_eq!(secondary.window_minutes, Some(10080));
-        assert_eq!(secondary.resets_at.as_deref(), Some("2026-09-07T12:24:52Z"));
+        assert_eq!(secondary.resets_at.as_deref(), Some("2026-09-07T12:24:00Z"));
     }
 
     #[test]
@@ -273,7 +297,7 @@ mod tests {
         let primary = quota(line).primary.unwrap();
         assert_eq!(primary.used_percent, 40.0);
         assert_eq!(primary.window_minutes, None);
-        assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:24Z"));
+        assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:00Z"));
     }
 
     #[test]
@@ -351,14 +375,14 @@ mod tests {
             "resets_at":1788751044000}}}}"#;
         assert_eq!(
             quota(millis).primary.unwrap().resets_at.as_deref(),
-            Some("2026-09-07T03:17:24Z")
+            Some("2026-09-07T03:17:00Z")
         );
 
         let iso = r#"{"payload":{"rate_limits":{"primary":{"used_percent":1,
             "resets_at":"2026-09-07T03:17:24Z"}}}}"#;
         assert_eq!(
             quota(iso).primary.unwrap().resets_at.as_deref(),
-            Some("2026-09-07T03:17:24Z")
+            Some("2026-09-07T03:17:00Z")
         );
 
         let prose = r#"{"payload":{"rate_limits":{"primary":{"used_percent":1,
@@ -424,7 +448,7 @@ mod tests {
         assert_eq!(quota.secondary.as_ref().unwrap().used_percent, 70.0);
         assert_eq!(
             quota.primary.as_ref().unwrap().resets_at.as_deref(),
-            Some("2026-09-07T03:17:24Z")
+            Some("2026-09-07T03:17:00Z")
         );
         // Both strings failed their shape check, so neither came through.
         assert_eq!(quota.plan, None);

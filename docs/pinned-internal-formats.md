@@ -80,7 +80,7 @@ Every line of a rollout log is one JSON object with four keys: `timestamp` (stri
 | `rate_limits.primary` / `.secondary` | object **or `null`** | object 652, `null` 6 | The five-hour and weekly windows. Both are `null` on the three `premium` lines. |
 | `…primary.used_percent` | **float** | 652/652 float, range 0.0 – 98.0 | Always a float here; the parser also accepts an integer. |
 | `…primary.window_minutes` | integer | `300` 326, `10080` 326 | 300 on `primary`, 10080 on `secondary`, without exception. |
-| `…primary.resets_at` | **integer, Unix seconds, UTC** | 652/652, range 1787866049 – 1788783894 | **Confirmed against a second source:** the weekly window's `resets_at` of 1788783892 is `2026-09-07T12:24:52Z`, the same second the official usage endpoint reported for the same window in an independent fetch. Milliseconds would have put it in 1970. The parser still reads a value above 10¹² as milliseconds, so a future switch degrades instead of breaking. |
+| `…primary.resets_at` | **integer, Unix seconds, UTC** | 652/652, range 1787866049 – 1788783894 | **Confirmed against a second source:** the weekly window's `resets_at` of 1788783892 is `2026-09-07T12:24:52Z`, the same second the official usage endpoint reported for the same window in an independent fetch. Milliseconds would have put it in 1970. The parser still reads a value above 10¹² as milliseconds, so a future switch degrades instead of breaking. **Written into `limits.json` rounded down to the whole minute** (T-WP10), the same gate the Claude reader has been through since T-WP9, so the two providers spell one instant one way: this window becomes `2026-09-07T12:24:00Z`. Down, never to the nearest — a reset is a deadline. |
 | `rate_limits.credits` | object with `has_credits`, `unlimited`, `balance` (string) | 329/329 | Not read. |
 | `rate_limits.{individual_limit, spend_control_reached, rate_limit_reached_type}` | null | 329/329 | Not read. **`rate_limit_reached_type` is worth watching**: it is the field a future "you are out of quota" flag would appear in, and it has never been non-null here. |
 
@@ -311,7 +311,7 @@ threshold does not have one.
   "schemaVersion": 1,
   "windows": {
     "codex/secondary": {
-      "resetsAt": "2026-09-07T12:24:52Z",
+      "resetsAt": "2026-09-07T12:24:00Z",
       "fired": [60.0]
     }
   }

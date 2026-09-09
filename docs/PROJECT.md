@@ -125,6 +125,7 @@ Added after the Nazar data-layer audit (2026-09-07 04:40): every window carries 
 | WP8 | **Nazar handoff**: contract doc, sample files, a `nazar-tray --print` CLI that dumps `limits.json` (also the Linux story) | Nazar canvas reads the file on the maintainer's machine |
 | T-WP8 ✅ | **The status line that was installed and never ran** (from live use; the `T-` prefix is this repository's own late-package prefix, as `N-` is Nazar's, and this is not WP8 above). `install` writes the program path with **forward slashes** on Windows, because Claude Code runs `statusLine.command` through Git Bash and an unquoted backslash is bash's escape character; every earlier spelling is recognised as the same installation; a broken one is **repaired** rather than reported as "already installed"; `status` names the shell and the fix; a path out of a build directory is warned about. The data directory against the settings directory is written into `docs/limits-contract.md` as a contract rather than left to be inferred | ~~The wrapper produces a capture on a Windows machine with a fresh install~~ — **landed 2026-09-08**. `status` on the maintainer's machine printed `installed: yes` for a day while nothing was ever spawned; it now prints the warning, and `install --dry-run` shows the rewrite. 459 tests, from 451 |
 | T-WP9 ✅ | **The toast storm on a jittering `resetsAt`** (from live use). `crate::alerts` rule 4 asked "is this the same reset period?" by comparing two strings; the usage endpoint answers the same weekly reset one second apart on alternating refreshes, so every flip read as a new week and re-fired the whole ladder. Two resets are now one period when they are **less than half a window apart** (an hour when the window's length is unknown), on both the in-memory and the on-disk half of the rule, and the Claude reader rounds `resets_at` **down to the whole minute** so both sources spell one instant one way | ~~A window whose `resetsAt` wobbles produces one toast per crossing and no more, and `alerts.json` stops being rewritten~~ — **landed 2026-09-08**. 32 toasts in two and a half hours on the maintainer's machine, all of them the same sentence; the sequence that produced them is now four tests. 465 tests, from 459 |
+| T-WP10 ✅ | **A window whose reset has passed, reported as current** (from live use; the narrow fix T-WP9 wrote down and left). The Codex reader marks a window whose `resets_at` is more than five minutes behind the current instant as `state: "stale"` — the percentage is kept, because it is still the last thing the server said, and the claim that it is current is not. `crate::alerts` gains rule 6: a period that has already ended cannot be crossed, so no toast is fired from one. Codex's `resets_at` goes through the same minute-flooring gate the Claude reader has used since T-WP9. The comparisons both rules rest on get named-point grids, and the readers get **captured** payloads to read: `crates/nazar-core/fixtures/captured/` is a real `~/.nazar` with its identity removed | ~~A machine nobody has opened Codex on for two days stops claiming a live 70 %, and does not warn about it~~ — **landed 2026-09-09**. The maintainer's own `limits.json` was the bug report. 490 tests, from 464 |
 
 Going public happens after WP7, not before. **WP7 does not include going public**: the tag,
 the GitHub Release, the winget pull request, the SignPath application and the repository's
@@ -135,6 +136,7 @@ for the maintainer to run. Nothing in this repository runs them.
 - ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
 - ~~Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework~~ → **closed 2026-09-07 in WP0: plain TypeScript, HTML and CSS, bundled by esbuild, no framework** (decision K2). The panel's only runtime dependency is `@tauri-apps/api`; `ui/` has two dev dependencies, esbuild and TypeScript.
 - ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set was one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is no dependency and, since 2026-09-09, not even arithmetic — sixteen rows of sixteen cells and a lookup. That evening's second revision cut the states to two, so a pre-rendered set would now be eight small files and the decision is no longer obvious; it stands because the theme hexes then live in one place instead of two, and because the shell asks for a size rather than picking one from a list. `crates/nazar-tray/src/icon.rs`.
+- **Does the expired-reset rule belong to Claude too?** T-WP10 gave it to the Codex reader only, because Claude Code's `five_hour` window renews while a session is open and is re-reported seconds later — the captured document in `crates/nazar-core/fixtures/captured/limits.json` has that window fifteen seconds past its own reset on a machine actively in use, and a rule applied there would have blinked it grey. The general form of the question — *is this reading about a period that is over?* — is already answered for the thing that matters, in `alerts` rule 6, which is provider-agnostic. What is left open is only whether the **panel** should dim such a window, and that is a rendering decision with a live example to try it against.
 - Linux: CLI-only in v1 docs, or ship an AppIndicator without popup. Leaning: CLI-only, revisit with Nazar.
 
 ## 9. Log
@@ -614,7 +616,8 @@ for the maintainer to run. Nothing in this repository runs them.
   `crate::alerts` forget its previous reading — which is a *new* way to produce the toast this
   package exists to stop. The right fix is narrower and belongs to the Codex reader: a rollout
   log that has gone quiet past its own reset should say `state: "stale"` at the point where it is
-  read, where the clock already is. Written down rather than done.
+  read, where the clock already is. Written down rather than done — and done the next day, as
+  T-WP10, in exactly that shape.
 
   **Tests: 465, from 459.** Five in `alerts/tests.rs` — the live sequence (70 % at `02:00:00Z`,
   the same window at `01:59:59Z`, and back, sixteen more times, with the file compared byte for
@@ -798,3 +801,70 @@ for the maintainer to run. Nothing in this repository runs them.
   and still show the round bead in the panel header — `wp4-100-*`, `wp4-150-*`, `wp4-200-*`,
   `wp5-100-*`, `wp6-100-*` and `wp7-100-statusline`. Re-shooting them is a separate pass with
   `scripts/screenshot.ps1`; nothing about them is wrong except the mark.
+
+- 2026-09-09 — **T-WP10: a window whose reset has passed, and the readers finally read
+  something real** (`crates/nazar-core/src/codex/mod.rs`, `parse.rs`, `alerts.rs`,
+  `crates/nazar-core/fixtures/captured/`). The narrow fix T-WP9 wrote down and left, plus the
+  two pieces of test debt it exposed.
+
+  **The bug was a sentence in a file that was true yesterday.** On this machine Codex had not
+  been opened since the 6th, and `~/.nazar/limits.json` said
+  `codex.secondary: percent 70, resetsAt 2026-09-07T12:24:52Z, state: "ok"` — a confident
+  number for a week that had ended. Nothing was broken: the rollout log parses perfectly and
+  says exactly that, because Codex writes its quota into the session log it is already
+  keeping and a source that is not running says nothing at all. The reader had no way to
+  notice, because it had no clock.
+
+  **The fix is one comparison, at the point where the clock already is.** `CodexReader::refresh_at(now)`
+  is the entry point the refresh loop calls — `Reader::read` has been handed `now` since WP3
+  and the Codex source was throwing it away — and a window whose `resets_at` is more than
+  **five minutes** behind it is written `state: "stale"`, with the reset named in the reason.
+  The percentage stays: it is still the last thing the server said, the panel still draws it,
+  and `binding` still sees it. What it loses is the claim that it is current. Five minutes of
+  grace, because a window that has *just* turned over is a log that has not caught up — the
+  new numbers are one line away — and not a reading from last week. `refresh()` without an
+  instant survives for the one-shot `--print` path and is `refresh_at` with the system clock.
+
+  **The rule is the Codex reader's alone, and the captured fixtures are why.** Claude Code's
+  `five_hour` window renews while a session is open and is re-reported on the next status-line
+  refresh: `crates/nazar-core/fixtures/captured/limits.json` — a real document off this
+  machine — has `claude.five_hour` **fifteen seconds past its own reset** while the tray was
+  running and the session was live. The same rule there would blink a live window grey once a
+  day, which is T-WP9's toast storm arriving through the icon.
+
+  **`crate::alerts` gets the general form of it as rule 6**: a period that has already ended
+  cannot be crossed, so a window whose `resetsAt` is behind `now` fires nothing and forgets
+  what it saw. Deliberately *not* "silence anything that is not `ok`": the opt-in endpoint
+  goes `stale` fifteen minutes after a fetch with its weekly reset three days away, and that
+  number is current in the only sense that matters — you were at 86 % twenty minutes ago, so
+  you are at 86 % or more now. Silencing it would drop the 85 % warning the whole feature
+  exists to deliver. What makes a reading unusable is not that it is old; it is that the
+  period it measures is over, and `resetsAt` is where that is written.
+
+  **Codex's `resets_at` now goes through the same minute-flooring gate as Claude's** (T-WP9
+  did the Claude half). Codex writes to the second — `2026-09-09T02:31:59Z` was on disk while
+  this was being written — and leaving one provider at second precision and the other at
+  minute precision means the contract carries two spellings of one kind of value and one
+  reader is permanently a bug fix behind the other.
+
+  **The test debt, both halves of it.** *Named-point grids* for the two comparisons these
+  rules rest on — `alerts::same_period` and `lock::LockRecord::is_stale` — because every bug
+  either has ever had was at a threshold: nothing apart, ±1 s, either side of a minute,
+  either side of half a window, a zone offset, the night the clocks go forward, an instant
+  before 1970, and text that is not a time. Sixteen rows of table rather than a generator: no
+  `proptest` dependency, nothing random, the same answers on every machine. *Captured
+  payloads*, which is the direct answer to "these tests test the world their author
+  imagined": `crates/nazar-core/fixtures/captured/` is five real status-line captures and the
+  real `limits.json` written from them, with identity replaced and **every number and every
+  date kept**. They are not decoration — three shapes in them are things no test had:
+  `context_window` comes through with four nulls before a session's first API response, a
+  payload **drops** `five_hour` once that window has reset instead of reporting zero, and the
+  weekly reset really is spelled `02:00:00Z` and `01:59:59Z` one refresh apart, which floors
+  to two *different* minutes and is why T-WP9's flooring was never the whole fix.
+  `tests/hygiene.rs` greps the directory for identity on every run, and its shared check
+  learned the escaped Windows path `C:\\Users\\` — the spelling every path in a status-line
+  payload actually arrives in, which the gate had been waving through.
+
+  **Tests: 490, from 464.** `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
+  warnings` and `cargo build --release` all clean. No installer built: the tray icon is being
+  worked on in a parallel session and a bundle would have picked up a half-finished mark.

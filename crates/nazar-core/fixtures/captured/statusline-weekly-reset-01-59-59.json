@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-08T22:21:45Z",
+  "wrapper": "nazar-statusline/0.1.0",
+  "sessionId": "00000000-0000-4000-8000-00000000c0de",
+  "payload": {
+    "session_id": "00000000-0000-4000-8000-00000000c0de",
+    "transcript_path": "C:\\claude-home\\projects\\C--work-project\\00000000-0000-4000-8000-00000000c0de.jsonl",
+    "cwd": "C:\\work\\project",
+    "scratchpad_dir": "C:\\claude-home\\tmp\\C--work-project\\00000000-0000-4000-8000-00000000c0de\\scratchpad",
+    "prompt_id": "00000000-0000-4000-8000-000000000091",
+    "effort": {
+      "level": "high"
+    },
+    "session_name": "session-a",
+    "model": {
+      "id": "claude-fable-5-1",
+      "display_name": "Fable 5.1"
+    },
+    "workspace": {
+      "current_dir": "C:\\work\\project",
+      "project_dir": "C:\\work\\project",
+      "added_dirs": [],
+      "repo": {
+        "host": "github.com",
+        "owner": "example-owner",
+        "name": "example-repo"
+      }
+    },
+    "version": "2.1.263",
+    "output_style": {
+      "name": "default"
+    },
+    "cost": {
+      "total_cost_usd": 47.78056639999999,
+      "total_duration_ms": 8484489,
+      "total_api_duration_ms": 4418923,
+      "total_lines_added": 1651,
+      "total_lines_removed": 327
+    },
+    "context_window": {
+      "total_input_tokens": 206267,
+      "total_output_tokens": 958,
+      "context_window_size": 1000000,
+      "current_usage": {
+        "input_tokens": 32,
+        "output_tokens": 958,
+        "cache_creation_input_tokens": 872,
+        "cache_read_input_tokens": 205363
+      },
+      "used_percentage": 21,
+      "remaining_percentage": 79
+    },
+    "exceeds_200k_tokens": true,
+    "prompt_cache": {
+      "warm": true,
+      "caching_observed": true,
+      "ttl": "1h",
+      "expires_at": 1788909688,
+      "requests": 75,
+      "misses": 0,
+      "expected_rebuilds": 0,
+      "hit_ratio": 0.9827540056713309,
+      "cache_write_tokens": 169721,
+      "miss_recache_tokens": 0,
+      "last_miss_at": null,
+      "last_miss_cause": null,
+      "miss_causes": {},
+      "recache_tokens_if_cold": 206267
+    },
+    "fast_mode": false,
+    "thinking": {
+      "enabled": true
+    },
+    "rate_limits": {
+      "five_hour": {
+        "used_percentage": 15,
+        "resets_at": 1788915000
+      },
+      "seven_day": {
+        "used_percentage": 74,
+        "resets_at": 1789178399
+      }
+    }
+  }
+}

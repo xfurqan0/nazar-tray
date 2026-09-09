@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-08T21:15:44Z",
+  "wrapper": "nazar-statusline/0.1.0",
+  "sessionId": "00000000-0000-4000-8000-00000000face",
+  "payload": {
+    "session_id": "00000000-0000-4000-8000-00000000face",
+    "transcript_path": "C:\\claude-home\\projects\\C--work-project\\00000000-0000-4000-8000-00000000face.jsonl",
+    "cwd": "C:\\work\\project",
+    "scratchpad_dir": "C:\\claude-home\\tmp\\C--work-project\\00000000-0000-4000-8000-00000000face\\scratchpad",
+    "effort": {
+      "level": "high"
+    },
+    "model": {
+      "id": "claude-fable-5-1",
+      "display_name": "Fable 5.1"
+    },
+    "workspace": {
+      "current_dir": "C:\\work\\project",
+      "project_dir": "C:\\work\\project",
+      "added_dirs": []
+    },
+    "version": "2.1.265",
+    "output_style": {
+      "name": "default"
+    },
+    "cost": {
+      "total_cost_usd": 0,
+      "total_duration_ms": 2812,
+      "total_api_duration_ms": 0,
+      "total_lines_added": 0,
+      "total_lines_removed": 0
+    },
+    "context_window": {
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "context_window_size": 1000000,
+      "current_usage": null,
+      "used_percentage": null,
+      "remaining_percentage": null
+    },
+    "exceeds_200k_tokens": false,
+    "fast_mode": false,
+    "thinking": {
+      "enabled": true
+    }
+  }
+}

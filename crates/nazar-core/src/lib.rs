@@ -49,6 +49,10 @@ pub mod state;
 pub mod timefmt;
 pub mod writer;
 
+/// The readers, run against payloads a real installation produced rather than against
+/// payloads their author imagined. See the module's own documentation.
+#[cfg(test)]
+mod captured;
 #[cfg(test)]
 pub(crate) mod testutil;
 

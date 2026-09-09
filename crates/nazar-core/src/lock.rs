@@ -590,4 +590,141 @@ mod tests {
         let rewritten: LockRecord = serde_json::from_str(&render(&record).unwrap()).unwrap();
         assert_eq!(rewritten, record);
     }
+
+    // ------------------------------------------------------- the grid over the heartbeat
+
+    /// The heartbeat threshold, walked one named point at a time.
+    ///
+    /// The same shape of test as `alerts::tests::the_same_period_grid_over_a_weekly_window`
+    /// and for the same reason: this is a subtraction against a threshold, and the way a
+    /// subtraction against a threshold goes wrong is **at the threshold** or at one of the
+    /// handful of instants where arithmetic on time is not arithmetic on numbers. So the
+    /// points are named rather than generated — no `proptest`, nothing random, the same
+    /// sixteen answers on every machine and every run.
+    ///
+    /// What is being protected: a holder evicted one second early loses `limits.json` to a
+    /// second writer, and a holder never evicted leaves the file unwritten until a reboot.
+    #[test]
+    fn the_heartbeat_grid_around_the_five_minute_threshold() {
+        let beat = "2026-09-07T10:00:00Z";
+        let record = LockRecord::new(4242, START, beat);
+        let stale_after = STALE_AFTER.as_secs() as i64;
+
+        let at = |silence: i64| {
+            crate::timefmt::rfc3339_from_unix_seconds(
+                crate::timefmt::unix_seconds_from_rfc3339(beat).unwrap() + silence,
+            )
+        };
+
+        for (silence, expected, why) in [
+            (0, false, "the heartbeat is this instant"),
+            (1, false, "one second of silence"),
+            (59, false, "just under a minute"),
+            (61, false, "just over a minute"),
+            (stale_after - 1, false, "one second inside the grace"),
+            (
+                stale_after,
+                false,
+                "exactly five minutes is not more than five",
+            ),
+            (stale_after + 1, true, "one second past it, and no longer"),
+            (3600, true, "an hour"),
+            (86_400, true, "a day"),
+            (-1, false, "a heartbeat one second in the future"),
+            (-3600, false, "a clock corrected backwards by an hour"),
+            (-86_400, false, "and by a day: still not a reason to evict"),
+        ] {
+            assert_eq!(
+                record.is_stale(&at(silence), STALE_AFTER),
+                expected,
+                "{silence} s of silence: {why}"
+            );
+            assert_eq!(
+                record.silence_seconds(&at(silence)),
+                Some(silence),
+                "{silence} s of silence: the gap is signed, not absolute"
+            );
+        }
+    }
+
+    /// The instants where arithmetic on time is not arithmetic on numbers.
+    #[test]
+    fn the_heartbeat_grid_where_arithmetic_on_instants_goes_wrong() {
+        // A zone offset names an instant. A holder that wrote its heartbeat with a local
+        // offset — which nothing in this crate does, and a future writer might — is
+        // measured on the instant rather than on the digits.
+        let offset_beat = LockRecord::new(1, START, "2026-09-07T13:00:00+03:00");
+        assert_eq!(
+            offset_beat.silence_seconds("2026-09-07T10:00:00Z"),
+            Some(0),
+            "13:00+03:00 is 10:00Z, so no time has passed at all"
+        );
+        assert!(!offset_beat.is_stale("2026-09-07T10:04:00Z", STALE_AFTER));
+        assert!(offset_beat.is_stale("2026-09-07T10:06:00Z", STALE_AFTER));
+
+        // The night the clocks go forward. Nothing happens in UTC, and the lock is UTC.
+        let dst = LockRecord::new(1, START, "2026-03-29T00:59:59Z");
+        assert_eq!(dst.silence_seconds("2026-03-29T01:00:00Z"), Some(1));
+        assert!(!dst.is_stale("2026-03-29T01:00:00Z", STALE_AFTER));
+        // Two local times written on either side of the hour that does not exist locally,
+        // two hours and a minute apart on their faces, one minute apart in reality:
+        // 01:59+01:00 is 00:59Z and 04:00+03:00 is 01:00Z.
+        assert_eq!(
+            LockRecord::new(1, START, "2026-03-29T01:59:00+01:00")
+                .silence_seconds("2026-03-29T04:00:00+03:00"),
+            Some(60)
+        );
+
+        // Before the epoch, where a division that rounded towards zero would go wrong.
+        let ancient = LockRecord::new(1, START, "1969-12-31T23:59:59Z");
+        assert_eq!(ancient.silence_seconds("1970-01-01T00:00:00Z"), Some(1));
+        assert!(!ancient.is_stale("1970-01-01T00:00:00Z", STALE_AFTER));
+        assert!(ancient.is_stale("1970-01-01T00:06:00Z", STALE_AFTER));
+
+        // Fractional seconds are read and dropped; a heartbeat is not measured in them.
+        assert_eq!(
+            LockRecord::new(1, START, "2026-09-07T10:00:00.999Z")
+                .silence_seconds("2026-09-07T10:00:01Z"),
+            Some(1)
+        );
+
+        // Text that is not an instant is "cannot tell", and cannot tell is never "dead":
+        // a damaged record is reclaimed by the age of its file instead, which is the one
+        // measure that does not depend on believing what the record says.
+        for unreadable in [
+            "",
+            "just now",
+            "2026-09-07T10:00:00",
+            "2026-02-30T10:00:00Z",
+            "2026-09-07 10:00:00Z",
+        ] {
+            let record = LockRecord::new(1, START, unreadable);
+            assert_eq!(record.silence_seconds("2026-09-07T10:00:00Z"), None);
+            assert!(
+                !record.is_stale("2027-01-01T00:00:00Z", STALE_AFTER),
+                "{unreadable:?} must not be evicted by this rule"
+            );
+        }
+        // And a `now` nobody can read is the same answer from the other side.
+        let live = LockRecord::new(1, START, "2026-09-07T10:00:00Z");
+        assert_eq!(live.silence_seconds("whenever"), None);
+        assert!(!live.is_stale("whenever", STALE_AFTER));
+    }
+
+    /// A threshold of zero, and one of a whole day, mean what they say.
+    ///
+    /// `STALE_AFTER` is a constant today and a setting the moment somebody needs it to be;
+    /// the rule must not have five minutes baked into it anywhere but the constant.
+    #[test]
+    fn the_heartbeat_threshold_is_the_one_it_is_given() {
+        let record = LockRecord::new(1, START, "2026-09-07T10:00:00Z");
+
+        assert!(!record.is_stale("2026-09-07T10:00:00Z", Duration::from_secs(0)));
+        assert!(record.is_stale("2026-09-07T10:00:01Z", Duration::from_secs(0)));
+
+        let a_day = Duration::from_secs(86_400);
+        assert!(!record.is_stale("2026-09-08T09:59:59Z", a_day));
+        assert!(!record.is_stale("2026-09-08T10:00:00Z", a_day));
+        assert!(record.is_stale("2026-09-08T10:00:01Z", a_day));
+    }
 }

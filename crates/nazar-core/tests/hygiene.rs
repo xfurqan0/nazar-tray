@@ -356,6 +356,57 @@ fn the_claude_fixtures_carry_nothing_that_identifies_a_machine() {
     assert_eq!(settings, 3, "three settings shapes are pinned");
 }
 
+/// The captured fixtures are real files off a running installation, and the bar is higher.
+///
+/// `crates/nazar-core/fixtures/captured/` holds `~/.nazar` as it stood on one machine on
+/// 2026-09-09: five status-line captures and the `limits.json` written from them. Their
+/// whole value is that nothing about their *shape* was invented — which means nothing about
+/// their shape may be edited to make a test pass either. The only thing that was changed in
+/// one is identity, so identity is the only thing this checks, plus the placeholders that
+/// prove the sanitising was run at all.
+#[test]
+fn the_captured_fixtures_carry_nothing_that_identifies_a_machine() {
+    let root = repo_root()
+        .join("crates")
+        .join("nazar-core")
+        .join("fixtures")
+        .join("captured");
+    let fixtures = files_under(&root, &["json"]);
+    assert!(
+        fixtures.len() >= 6,
+        "expected the six captured fixtures, found {}",
+        fixtures.len()
+    );
+
+    for path in &fixtures {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_carries_no_identity(path);
+
+        let text = std::fs::read_to_string(path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|_| panic!("{name} is not valid JSON"));
+        assert!(value.is_object(), "{name} is not a JSON object");
+        assert!(text.ends_with('\n'), "{name} has no trailing newline");
+
+        // The placeholders the sanitiser writes. A capture added later and committed raw
+        // is then a failing test rather than a file nobody looked at twice.
+        if name.starts_with("statusline-") {
+            assert!(
+                text.contains("C:\\\\work\\\\project"),
+                "{name} does not carry the placeholder working directory"
+            );
+            assert!(
+                !text.contains("\"repo\"") || text.contains("example-owner"),
+                "{name} names a real repository"
+            );
+            assert!(
+                !text.contains("session_name") || text.contains("\"session-a\""),
+                "{name} carries a real session name"
+            );
+        }
+    }
+}
+
 /// The shared bar: no home path, no e-mail, no long identifier, not the tester's name.
 fn assert_carries_no_identity(path: &Path) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -365,6 +416,10 @@ fn assert_carries_no_identity(path: &Path) {
     for fragment in [
         "C:\\Users\\",
         "C:/Users/",
+        // The same path as JSON writes it, with every separator escaped. A status-line
+        // payload is made of Windows paths and every one of them arrives in this spelling,
+        // so a gate that knew only the unescaped one would have waved them all through.
+        "C:\\\\Users\\\\",
         "/home/",
         "/Users/",
         "%USERPROFILE%",

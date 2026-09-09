@@ -17,6 +17,20 @@ const NO_QUOTA: &str = include_str!("../../../../fixtures/codex/rollout-no-rate-
 /// Hand-written damage: truncated JSON, wrong types, a stray blank line.
 const MALFORMED: &str = include_str!("../../../../fixtures/codex/rollout-malformed.jsonl");
 
+/// The instant these tests are run at.
+///
+/// Fixed, and passed in explicitly, because half of what the reader decides is now a
+/// comparison against the current time: the fixtures' windows reset on 2026-09-07, so a
+/// suite that read the real clock would turn from green to `stale` on its own on the eighth
+/// and stay that way for ever. This instant sits before both fixture resets (`03:17:24Z`
+/// and `12:24:52Z` in the log, `03:17:00Z` and `12:24:00Z` once the reader has floored
+/// them to the minute), which is what makes the happy path the happy path.
+const NOW: &str = "2026-09-07T00:00:00Z";
+
+/// Two days after both fixture resets: the machine of somebody who has not opened Codex
+/// since, where every window's period has ended and the log still says otherwise.
+const LATER: &str = "2026-09-09T00:00:00Z";
+
 /// Write `contents` to `<home>/sessions/<date>/rollout-<label>.jsonl`.
 fn plant(home: &Path, date: &str, label: &str, contents: &str) -> PathBuf {
     let dir = locate::sessions_dir(home).join(date.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -89,7 +103,7 @@ fn an_overridden_home_is_read_end_to_end() {
     let dir = TempDir::new("codex-override");
     plant(&dir.path, "2026/09/07", "session", SAMPLE);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert!(provider.configured);
     assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
 
@@ -97,7 +111,7 @@ fn an_overridden_home_is_read_end_to_end() {
     let elsewhere = TempDir::new("codex-override-empty");
     assert!(
         !CodexReader::new(elsewhere.join("absent"))
-            .refresh()
+            .refresh_at(NOW)
             .configured
     );
 }
@@ -108,7 +122,7 @@ fn an_overridden_home_is_read_end_to_end() {
 fn an_absent_codex_home_is_unconfigured() {
     let dir = TempDir::new("codex-absent");
     let mut reader = CodexReader::new(dir.join("no-codex-here"));
-    let provider = reader.refresh();
+    let provider = reader.refresh_at(NOW);
 
     assert!(!provider.configured);
     assert!(provider.windows.is_empty());
@@ -121,7 +135,7 @@ fn a_codex_home_without_logs_is_configured_but_unreadable() {
     let dir = TempDir::new("codex-no-logs");
     std::fs::create_dir_all(locate::sessions_dir(&dir.path)).unwrap();
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
 
     assert!(provider.configured);
     assert_eq!(provider.source, Some(Source::Rollout));
@@ -140,7 +154,7 @@ fn logs_without_a_quota_line_report_the_reason_and_no_percentage() {
     let dir = TempDir::new("codex-no-quota");
     plant(&dir.path, "2026/09/07", "stub", NO_QUOTA);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
 
     assert!(provider.configured);
     assert_eq!(provider.windows.len(), 2);
@@ -162,7 +176,7 @@ fn the_real_sample_maps_to_the_contract() {
     let dir = TempDir::new("codex-sample");
     plant(&dir.path, "2026/09/07", "session", SAMPLE);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
 
     assert!(provider.configured);
     assert_eq!(provider.plan.as_deref(), Some("plus"));
@@ -176,13 +190,13 @@ fn the_real_sample_maps_to_the_contract() {
     let primary = &provider.windows[WINDOW_PRIMARY];
     assert_eq!(primary.percent, Some(54.0));
     assert_eq!(primary.window_minutes, Some(PRIMARY_WINDOW_MINUTES));
-    assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:24Z"));
+    assert_eq!(primary.resets_at.as_deref(), Some("2026-09-07T03:17:00Z"));
     assert_eq!(primary.state, WindowState::Ok);
 
     let secondary = &provider.windows[WINDOW_SECONDARY];
     assert_eq!(secondary.percent, Some(70.0));
     assert_eq!(secondary.window_minutes, Some(SECONDARY_WINDOW_MINUTES));
-    assert_eq!(secondary.resets_at.as_deref(), Some("2026-09-07T12:24:52Z"));
+    assert_eq!(secondary.resets_at.as_deref(), Some("2026-09-07T12:24:00Z"));
     assert_eq!(secondary.state, WindowState::Ok);
 }
 
@@ -191,7 +205,7 @@ fn the_provider_block_serialises_the_way_the_contract_document_says() {
     let dir = TempDir::new("codex-serialise");
     plant(&dir.path, "2026/09/07", "session", SAMPLE);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     let json = serde_json::to_string_pretty(&provider).unwrap();
 
     for expected in [
@@ -201,7 +215,7 @@ fn the_provider_block_serialises_the_way_the_contract_document_says() {
         "\"binding\": \"secondary\"",
         "\"percent\": 54",
         "\"windowMinutes\": 300",
-        "\"resetsAt\": \"2026-09-07T12:24:52Z\"",
+        "\"resetsAt\": \"2026-09-07T12:24:00Z\"",
         "\"state\": \"ok\"",
     ] {
         assert!(json.contains(expected), "missing {expected} in\n{json}");
@@ -230,7 +244,7 @@ fn the_newest_log_wins_even_when_an_older_one_has_higher_numbers() {
     age(&old, 90_000);
     age(&new, 5);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(3.0));
     assert_eq!(
         provider.source_at.as_deref(),
@@ -248,7 +262,7 @@ fn a_stub_log_falls_through_to_the_next_candidate() {
     age(&real, 600);
     age(&stub, 5);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
     assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
 }
@@ -265,7 +279,7 @@ fn the_search_stops_after_the_cap_even_if_the_answer_is_one_file_further() {
         age(&stub, (index as u64) + 1);
     }
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, None);
     assert_eq!(provider.windows[WINDOW_PRIMARY].state, WindowState::Error);
 }
@@ -292,7 +306,7 @@ fn a_null_window_line_arriving_last_does_not_erase_the_reading() {
         &format!("{SAMPLE}{PREMIUM}"),
     );
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
     assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
     assert_eq!(
@@ -307,7 +321,7 @@ fn malformed_lines_are_skipped_and_counted() {
     plant(&dir.path, "2026/09/07", "session", MALFORMED);
 
     let mut reader = CodexReader::new(&dir.path);
-    let provider = reader.refresh();
+    let provider = reader.refresh_at(NOW);
 
     assert_eq!(
         provider.windows[WINDOW_PRIMARY].percent,
@@ -331,7 +345,7 @@ fn a_missing_secondary_leaves_one_window_rather_than_inventing_two() {
         "{\"timestamp\":\"2026-09-07T09:00:00.000Z\",\"payload\":{\"rate_limits\":{\"plan_type\":\"plus\",\"primary\":{\"used_percent\":12,\"window_minutes\":300}}}}\n",
     );
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows.len(), 1);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(12.0));
     assert_eq!(provider.binding.as_deref(), Some(WINDOW_PRIMARY));
@@ -348,7 +362,7 @@ fn a_window_without_minutes_keeps_the_window_and_drops_the_field() {
         "{\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":7.5}}}}\n",
     );
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     let window = &provider.windows[WINDOW_PRIMARY];
     assert_eq!(window.percent, Some(7.5));
     assert_eq!(window.window_minutes, None);
@@ -367,7 +381,7 @@ fn a_line_without_a_timestamp_falls_back_to_the_file_time() {
     );
     age(&path, 0);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     let source_at = provider.source_at.unwrap();
     assert!(
         crate::timefmt::sanitize_timestamp(&source_at).is_some(),
@@ -387,13 +401,19 @@ fn the_binding_window_is_the_fullest_one() {
         &line_with(54.0, 70.0, "2026-09-07T09:00:00.000Z"),
     );
     assert_eq!(
-        CodexReader::new(&dir.path).refresh().binding.as_deref(),
+        CodexReader::new(&dir.path)
+            .refresh_at(NOW)
+            .binding
+            .as_deref(),
         Some(WINDOW_SECONDARY)
     );
 
     std::fs::write(&path, line_with(91.0, 70.0, "2026-09-07T09:01:00.000Z")).unwrap();
     assert_eq!(
-        CodexReader::new(&dir.path).refresh().binding.as_deref(),
+        CodexReader::new(&dir.path)
+            .refresh_at(NOW)
+            .binding
+            .as_deref(),
         Some(WINDOW_PRIMARY)
     );
 }
@@ -408,7 +428,10 @@ fn a_tie_binds_the_shorter_window() {
         &line_with(61.0, 61.0, "2026-09-07T09:00:00.000Z"),
     );
     assert_eq!(
-        CodexReader::new(&dir.path).refresh().binding.as_deref(),
+        CodexReader::new(&dir.path)
+            .refresh_at(NOW)
+            .binding
+            .as_deref(),
         Some(WINDOW_PRIMARY),
         "equally full windows: the five-hour one is the one you hit first"
     );
@@ -424,7 +447,7 @@ fn a_zero_percent_window_still_counts_as_read() {
         &line_with(0.0, 35.0, "2026-09-07T09:00:00.000Z"),
     );
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(
         provider.windows[WINDOW_PRIMARY].percent,
         Some(0.0),
@@ -447,10 +470,13 @@ fn a_second_poll_sees_a_line_appended_since_the_first() {
     );
 
     let mut reader = CodexReader::new(&dir.path);
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(10.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(10.0)
+    );
 
     append(&path, &line_with(30.0, 40.0, "2026-09-07T09:05:00.000Z"));
-    let provider = reader.refresh();
+    let provider = reader.refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(30.0));
     assert_eq!(
         provider.source_at.as_deref(),
@@ -469,10 +495,10 @@ fn a_poll_that_finds_nothing_new_keeps_the_last_reading() {
     );
 
     let mut reader = CodexReader::new(&dir.path);
-    let first = reader.refresh();
+    let first = reader.refresh_at(NOW);
     // Nothing appended, and a line that is not a quota line.
     append(&path, NO_QUOTA);
-    let second = reader.refresh();
+    let second = reader.refresh_at(NOW);
 
     assert_eq!(first.windows, second.windows);
     assert_eq!(first.source_at, second.source_at);
@@ -490,7 +516,10 @@ fn a_new_session_log_takes_over_from_the_one_being_followed() {
     age(&first, 60);
 
     let mut reader = CodexReader::new(&dir.path);
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(10.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(10.0)
+    );
 
     let second = plant(
         &dir.path,
@@ -500,7 +529,10 @@ fn a_new_session_log_takes_over_from_the_one_being_followed() {
     );
     age(&second, 1);
 
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(80.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(80.0)
+    );
 }
 
 #[test]
@@ -518,11 +550,17 @@ fn a_truncated_log_is_read_again_from_the_start() {
     );
 
     let mut reader = CodexReader::new(&dir.path);
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(11.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(11.0)
+    );
 
     // Same name, shorter file: a new session reused the path.
     std::fs::write(&path, line_with(2.0, 3.0, "2026-09-07T10:00:00.000Z")).unwrap();
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(2.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(2.0)
+    );
 }
 
 #[test]
@@ -531,7 +569,7 @@ fn a_log_written_with_crlf_reads_the_same() {
     let contents = SAMPLE.replace('\n', "\r\n");
     plant(&dir.path, "2026/09/07", "session", &contents);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
     assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
 }
@@ -544,14 +582,17 @@ fn a_line_still_being_written_is_read_once_it_is_whole() {
 
     let path = plant(&dir.path, "2026/09/07", "session", head);
     let mut reader = CodexReader::new(&dir.path);
-    let provider = reader.refresh();
+    let provider = reader.refresh_at(NOW);
     assert_eq!(
         provider.windows[WINDOW_PRIMARY].percent, None,
         "half a line must not become a reading"
     );
 
     append(&path, tail_bytes);
-    assert_eq!(reader.refresh().windows[WINDOW_PRIMARY].percent, Some(77.0));
+    assert_eq!(
+        reader.refresh_at(NOW).windows[WINDOW_PRIMARY].percent,
+        Some(77.0)
+    );
 }
 
 #[test]
@@ -569,7 +610,7 @@ fn a_quota_line_far_from_the_end_of_a_long_log_is_still_found() {
     }
     plant(&dir.path, "2026/09/07", "session", &contents);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(64.0));
 }
 
@@ -585,7 +626,7 @@ fn no_source_text_reaches_the_provider_block() {
     );
     plant(&dir.path, "2026/09/07", "session", &line);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
 
     let json = serde_json::to_string(&provider).unwrap();
@@ -601,7 +642,7 @@ fn no_path_from_the_machine_reaches_the_provider_block() {
     let dir = TempDir::new("codex-paths");
     plant(&dir.path, "2026/09/07", "session", NO_QUOTA);
 
-    let provider = CodexReader::new(&dir.path).refresh();
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
     let json = serde_json::to_string(&provider).unwrap();
 
     // The error path is the one that historically leaked a path into a tooltip: the
@@ -623,7 +664,7 @@ fn the_mapping_is_a_pure_function_of_the_reading() {
         primary: Some(parse::QuotaWindow {
             used_percent: 54.0,
             window_minutes: Some(300),
-            resets_at: Some("2026-09-07T03:17:24Z".to_owned()),
+            resets_at: Some("2026-09-07T13:17:00Z".to_owned()),
         }),
         secondary: Some(parse::QuotaWindow {
             used_percent: 70.5,
@@ -632,7 +673,7 @@ fn the_mapping_is_a_pure_function_of_the_reading() {
         }),
     };
 
-    let provider = readable(&quota, "2026-09-07T09:00:00Z");
+    let provider = readable(&quota, "2026-09-07T09:00:00Z", "2026-09-07T09:00:00Z");
     assert_eq!(provider.binding.as_deref(), Some(WINDOW_SECONDARY));
     assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.5));
     assert_eq!(provider.windows[WINDOW_SECONDARY].resets_at, None);
@@ -642,4 +683,172 @@ fn the_mapping_is_a_pure_function_of_the_reading() {
     // decision, and the contract says so.
     let json = serde_json::to_string(&provider).unwrap();
     assert!(json.contains("70.5"), "got {json}");
+}
+
+// ---------------------------------------------------------------- a window past its reset
+
+#[test]
+fn a_window_whose_reset_has_passed_is_stale_and_keeps_its_percentage() {
+    // The maintainer's own machine on 2026-09-08: Codex last used on the sixth, the newest
+    // rollout log still parsing perfectly, and `secondary` reported as `percent 70,
+    // resetsAt 2026-09-07T12:24:52Z, state ok` — a confident number for a week that had
+    // ended the day before.
+    let dir = TempDir::new("codex-expired");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let provider = CodexReader::new(&dir.path).refresh_at(LATER);
+
+    for key in [WINDOW_PRIMARY, WINDOW_SECONDARY] {
+        let window = &provider.windows[key];
+        assert_eq!(window.state, WindowState::Stale, "{key} should be stale");
+        assert!(
+            window.percent.is_some(),
+            "{key} lost its percentage; stale is not unknown"
+        );
+        let reason = window.error.clone().unwrap_or_default();
+        assert!(
+            reason.contains("reset"),
+            "{key} says nothing useful: {reason}"
+        );
+    }
+
+    assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
+    assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
+    assert_eq!(
+        provider.binding.as_deref(),
+        Some(WINDOW_SECONDARY),
+        "a stale window is still the fullest one; the panel greys it, it does not vanish"
+    );
+    assert!(provider.configured, "the provider is installed either way");
+}
+
+#[test]
+fn the_grace_period_is_five_minutes_and_it_is_a_boundary_not_a_feeling() {
+    // Both fixture windows reset at 03:17:00Z and 12:24:00Z once floored; the primary is
+    // the one this walks across. A window that has *just* turned over is a log that has
+    // not caught up, not a reading from last week.
+    let dir = TempDir::new("codex-grace");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let state_at = |now: &str| {
+        CodexReader::new(&dir.path).refresh_at(now).windows[WINDOW_PRIMARY]
+            .state
+            .clone()
+    };
+
+    assert_eq!(state_at("2026-09-07T03:16:59Z"), WindowState::Ok, "before");
+    assert_eq!(state_at("2026-09-07T03:17:00Z"), WindowState::Ok, "on it");
+    assert_eq!(
+        state_at("2026-09-07T03:21:59Z"),
+        WindowState::Ok,
+        "a second inside the grace period"
+    );
+    assert_eq!(
+        state_at("2026-09-07T03:22:00Z"),
+        WindowState::Ok,
+        "exactly five minutes past is still within a five-minute grace"
+    );
+    assert_eq!(
+        state_at("2026-09-07T03:22:01Z"),
+        WindowState::Stale,
+        "a second past the grace period is a second too old"
+    );
+    assert_eq!(RESET_GRACE_SECONDS, 300);
+}
+
+#[test]
+fn one_window_can_be_stale_while_the_other_is_current() {
+    // The ordinary shape of a Codex machine at four in the morning: the five-hour window
+    // has turned over and nothing has been run since, the weekly one has days left.
+    let dir = TempDir::new("codex-half-stale");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let provider = CodexReader::new(&dir.path).refresh_at("2026-09-07T06:00:00Z");
+
+    assert_eq!(provider.windows[WINDOW_PRIMARY].state, WindowState::Stale);
+    assert_eq!(provider.windows[WINDOW_SECONDARY].state, WindowState::Ok);
+    assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
+}
+
+#[test]
+fn a_window_with_no_reset_is_never_stale_and_neither_is_one_read_at_an_unreadable_now() {
+    // Two ways not to know, and the same answer to both: a time nobody can read is not
+    // evidence that a window has expired.
+    let dir = TempDir::new("codex-no-reset");
+    plant(
+        &dir.path,
+        "2026/09/07",
+        "session",
+        "{\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":7.5}}}}\n",
+    );
+    assert_eq!(
+        CodexReader::new(&dir.path).refresh_at(LATER).windows[WINDOW_PRIMARY].state,
+        WindowState::Ok,
+        "no reset to be past"
+    );
+
+    let dated = TempDir::new("codex-bad-now");
+    plant(&dated.path, "2026/09/07", "session", SAMPLE);
+    for now in ["", "whenever you like", "2026-13-45T99:99:99Z"] {
+        assert_eq!(
+            CodexReader::new(&dated.path).refresh_at(now).windows[WINDOW_PRIMARY].state,
+            WindowState::Ok,
+            "a `now` of {now:?} must not condemn a window"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_provider_is_error_rather_than_stale_however_old_it_is() {
+    // The two states are not degrees of the same thing. `stale` carries a number nobody
+    // should act on; `error` carries no number at all, and no passage of time turns one
+    // into the other.
+    let dir = TempDir::new("codex-stale-vs-error");
+    plant(&dir.path, "2026/09/07", "stub", NO_QUOTA);
+
+    let provider = CodexReader::new(&dir.path).refresh_at(LATER);
+    for window in provider.windows.values() {
+        assert_eq!(window.state, WindowState::Error);
+        assert_eq!(window.percent, None);
+    }
+}
+
+#[test]
+fn the_reset_a_stale_window_names_is_a_time_and_nothing_from_the_machine() {
+    // The reason text is the one new string this reader writes, and it goes into a file
+    // that is meant to be safe to paste into a bug report.
+    let dir = TempDir::new("codex-stale-reason");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let provider = CodexReader::new(&dir.path).refresh_at(LATER);
+    let reason = provider.windows[WINDOW_SECONDARY].error.clone().unwrap();
+
+    assert!(reason.contains("2026-09-07T12:24:00Z"), "got {reason}");
+    let directory = dir.path.to_string_lossy().into_owned();
+    assert!(
+        !reason.contains(&directory),
+        "leaked a local path: {reason}"
+    );
+    assert!(
+        !reason.contains(".codex"),
+        "leaked a path fragment: {reason}"
+    );
+    assert!(reason.len() < 120, "the reason is a sentence, not a report");
+}
+
+#[test]
+fn the_clock_reading_entry_point_agrees_with_the_one_that_is_told_the_time() {
+    // `refresh` is `refresh_at(now)` with the system clock, and the one-shot `--print`
+    // path is the only caller that needs it. Fixtures from 2026-09-07 are long past on any
+    // machine running this, so the two must agree that they are stale.
+    let dir = TempDir::new("codex-system-clock");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let provider = CodexReader::new(&dir.path).refresh();
+    assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
+    assert_eq!(
+        provider.windows[WINDOW_SECONDARY].state,
+        WindowState::Stale,
+        "these fixtures reset in September 2026; no clock this runs on is before that"
+    );
 }
