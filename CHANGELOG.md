@@ -6,7 +6,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-09-13
 
 The first release, and everything in it: the WP0 skeleton, the WP1 Codex reader, the WP2
 Claude reader with its status-line wrapper, the WP2b detailed-windows mode, the WP3 state
@@ -16,10 +16,16 @@ something you can leave running**, and it is now something you can hand to someb
 per-user NSIS package with no administrator prompt, winget manifests, a release workflow that
 drafts rather than publishes, and an uninstaller that takes the residue with it.
 
-**Not published.** No tag, no GitHub Release, no winget submission, no code-signing
-application — all four are a person's job and all four are written down in
-[docs/RELEASE.md](docs/RELEASE.md). The version stays `unreleased` in this file until that
-person moves it.
+**Published unsigned, which is a decision rather than an omission.** SignPath Foundation asks
+that a project already be released and actively maintained before it applies, so 0.1.0 ships
+with a `SHA256SUMS` file and a GitHub build attestation where a signature would go; the whole
+reasoning, and what you can check instead, is in [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md).
+The winget package is a pull request against `microsoft/winget-pkgs` and is reviewed a day or
+two after the release, so `winget install xfurqan0.nazar-tray` starts answering then rather
+than on the day the tag is pushed — until it does, the installer is on the
+[Releases](https://github.com/xfurqan0/nazar-tray/releases) page. Every step of a release, in
+the order it happens and with the one-way doors marked, is in
+[docs/RELEASE.md](docs/RELEASE.md).
 
 ### Added
 

@@ -31,7 +31,9 @@ gh run list --branch main --limit 3
 
 ## 1. Set the version
 
-Four files carry it, and a test asserts they agree.
+Six files carry it — the three manifests and the three winget files — and
+`ui/test/version.test.mjs` asserts all six agree, so a half-done bump fails the
+gate rather than the release.
 
 ```powershell
 # Edit by hand, all in the same commit:
@@ -44,9 +46,10 @@ Select-String -Path Cargo.toml, crates\nazar-tray\tauri.conf.json, ui\package.js
 Select-String -Path packaging\winget\*.yaml -Pattern 'PackageVersion'
 ```
 
-Move the `## [0.1.0] — unreleased` heading in `CHANGELOG.md` to `## [0.1.0] — YYYY-MM-DD`
-with today's date, and set the README status line to the released wording (drop
-"release candidate (WP7) — not yet published").
+Move the `## [Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`
+with today's date, and read the README's status line and the CHANGELOG's opening
+paragraph back: both have to describe a release that exists rather than one that
+is coming.
 
 The `Cargo.lock` moves with the version. Let cargo do it rather than editing it:
 
@@ -365,9 +368,13 @@ repository a little history first, then apply at
 - `.github/workflows/release.yml` as the CI that builds from source;
 - the release itself, with its attestation.
 
-If it is approved: add the four repository secrets, delete `if: false` from the
-`sign` job, and change the README's "unsigned" paragraph. Three lines, in one
-reviewed commit.
+If it is approved: add the four repository secrets, replace the `sign` job's
+`if: false` with `github.event_name == 'workflow_dispatch' && inputs.sign` — the
+condition is written out in a comment directly above it, and the `sign` input it
+reads is already declared — and change the README's "unsigned" paragraph. Three
+lines, in one reviewed commit. Replace rather than delete: a `sign` job with no
+condition at all would sign on every tag push, which is the opposite of the
+manual approval `docs/CODE_SIGNING.md` promises.
 
 ---
 

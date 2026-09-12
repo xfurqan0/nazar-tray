@@ -64,7 +64,7 @@ the deadline would be theirs.)*
 | Published signing policy | This page. |
 | Two-factor authentication on the source repository account | On for `xfurqan0`. |
 | Named author / reviewer / approver roles | One person holds all three today, which SignPath permits for a single-maintainer project and which this page states rather than hides. If the project gains a second regular contributor, author and approver are split — the approver is the one who must not be the one who pushed the tag. |
-| Manual approval per release | The signing job is `workflow_dispatch` with an explicit input, never automatic on tag push. A release that nobody approved is a release that does not get signed. |
+| Manual approval per release | The signing job is switched off today, and the condition that turns it on — written in a comment directly above it — is `github.event_name == 'workflow_dispatch' && inputs.sign`: a dispatch somebody chose, with the `sign` input ticked, never a tag push. The `sign` input is already declared in the workflow. A release that nobody approved is a release that does not get signed. |
 | "SignPath Foundation" visible as publisher | Accepted. The README will say who signs and why the name is not the maintainer's. |
 | Already released, actively maintained | The reason this is step two. |
 
@@ -74,6 +74,16 @@ the deadline would be theirs.)*
 that the shape of the pipeline is reviewable now — the artefact it would sign, where the
 signature would go, which secrets it would need — and so that turning it on is a one-line
 change reviewed on its own rather than a new file written under time pressure.
+
+That one line is a replacement, not a deletion: `if: false` becomes
+
+```yaml
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+```
+
+which is the condition written out in a comment immediately above it, so the job that is off
+already says what "on" means. Deleting `if: false` outright would sign on every tag push,
+which is the one thing this table's *manual approval per release* row promises it does not do.
 
 What it will need when it is turned on:
 

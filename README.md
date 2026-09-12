@@ -4,15 +4,20 @@
 
 A pixel bead sits in your tray. Hover it for your most-constrained window; click it for the full picture: every window, its percentage, and when it resets. Orange at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **release candidate (WP7) — not yet published.** Everything is here: both readers,
-> the refresh loop inside the tray process, `~/.nazar/limits.json` written atomically by one
-> process and only when the numbers have moved, the icon and the panel, notifications,
-> autostart, settings, six languages, and now the installer, the winget manifests and the
-> release pipeline. What has not happened is the release itself — no tag, no GitHub Release,
-> no winget package — so the commands below describe the first release rather than one you can
-> run today. Windows first; macOS and Linux builds later from the same codebase. See
-> [docs/PROJECT.md](docs/PROJECT.md) for the v1 plan, [CHANGELOG.md](CHANGELOG.md) for what
-> has landed, and [docs/RELEASE.md](docs/RELEASE.md) for what is left.
+> Status: **0.1.0, released.** Everything is here: both readers, the refresh loop inside the
+> tray process, `~/.nazar/limits.json` written atomically by one process and only when the
+> numbers have moved, the icon and the panel, notifications, autostart, settings, six
+> languages, the installer, the winget manifests and the release pipeline. Windows first;
+> macOS and Linux builds later from the same codebase.
+>
+> **winget takes a day or two to catch up.** The package is submitted as a pull request
+> against `microsoft/winget-pkgs` once the release is out, and a reviewer there merges it. So
+> until `winget install xfurqan0.nazar-tray` resolves, take the installer from
+> [Releases](https://github.com/xfurqan0/nazar-tray/releases) — the same file, with its hash
+> and its attestation.
+>
+> [docs/PROJECT.md](docs/PROJECT.md) has the v1 plan, [CHANGELOG.md](CHANGELOG.md) what has
+> landed, and [docs/RELEASE.md](docs/RELEASE.md) how a release is made.
 
 ![The nazar-tray panel: Claude Code and Codex, their windows, percentages and reset countdowns](docs/screenshots/wp4-100-nazar-dark.png)
 

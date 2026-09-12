@@ -182,12 +182,19 @@ jobs:
   # short version is that SignPath Foundation asks a project to be released and maintained
   # before it applies, so the first release ships unsigned and this job waits.
   #
-  # Turning it on is: delete `if: false`, add the four repository secrets, and change the
-  # README's "unsigned" paragraph. Three lines, reviewed on their own, rather than a new file
-  # written on release day.
+  # Turning it on is: replace `if: false` with the condition written directly above it, add
+  # the four repository secrets, and change the README's "unsigned" paragraph. Three lines,
+  # reviewed on their own, rather than a new file written on release day.
   sign:
     name: Sign with SignPath (not enabled)
     needs: build
+    # When SignPath approves, `if: false` is replaced by exactly this:
+    #
+    #     if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+    #
+    # which is what `docs/CODE_SIGNING.md` promises: signing is a dispatch somebody chose,
+    # never something a tag push sets off. The `sign` input it reads is already declared at
+    # the top of this file, so the condition is the only line that changes.
     if: false
     runs-on: windows-latest
     permissions:
