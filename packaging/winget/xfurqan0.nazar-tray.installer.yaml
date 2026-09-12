@@ -2,9 +2,9 @@
 
 # The installer manifest.
 #
-# `InstallerSha256` is a placeholder until the release exists — a manifest cannot be finished
-# before the file it describes has been built and uploaded. `docs/RELEASE.md` step 6 is where
-# the real value is pasted in, from the same `SHA256SUMS` the release carries.
+# `InstallerSha256` is copied from the `SHA256SUMS` the release itself carries — the hash of
+# the installer the GitHub runner built, not of one built on a laptop. `docs/RELEASE.md` step 6
+# is where it is pasted in, once per release, after the draft exists.
 #
 # Two choices worth their explanation:
 #
@@ -46,7 +46,7 @@ ProductCode: nazar-tray
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/xfurqan0/nazar-tray/releases/download/v0.1.0/nazar-tray_0.1.0_x64-setup.exe
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 3C8E2756BBE22EA5C27316B6D2E9419CA78FC432C9F91B4D954EBC8985CAFD7C
 
 ManifestType: installer
 ManifestVersion: 1.6.0
