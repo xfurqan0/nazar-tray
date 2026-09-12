@@ -261,6 +261,8 @@ left in English.
   already be released — [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md)
 - v2: macOS build, multiple accounts, more providers
 - Linux: CLI output and the Nazar canvas; a tray popup is not reliably possible on Linux today
+- Wanted, not scheduled: usage history — tokens per day for the week, per week for all time.
+  The list of such things is [docs/FUTURE.md](docs/FUTURE.md)
 
 ## Development
 
