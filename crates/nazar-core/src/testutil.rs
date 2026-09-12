@@ -49,17 +49,52 @@ impl Drop for TempDir {
 /// whole seconds from the same origin — so that a test that wants them to *disagree*, which
 /// is how a sleeping machine looks, has to say so with [`ManualClock::sleep_through`].
 ///
-/// The wall reading starts at the **real** current instant rather than at a fixed one. A
-/// test that writes a file and then asks how old it is compares a filesystem timestamp with
-/// this clock, and a fixed origin would make that comparison meaningless.
+/// # Which constructor
+///
+/// There is deliberately no `new`. A clock has to say where its wall reading starts,
+/// because the two answers are not interchangeable and the wrong one rots:
+///
+/// * [`ManualClock::at`] pins the wall reading to an instant the test names. **This is the
+///   one to reach for.** Every test that also uses a fixed timestamp — a `resetsAt`, a
+///   captured document, one of this module's `2026-…` constants — needs its "now" to keep
+///   the same relationship to those fixtures on every run, in CI, next year.
+/// * [`ManualClock::at_real_now`] starts at the real current instant. Only for a test that
+///   compares this clock with a **filesystem** timestamp, which the real clock writes
+///   whatever this one says.
+///
+/// Seeding from the real clock used to be the default, and it planted a time bomb:
+/// `alerts::tests::a_crossing_that_happened_during_a_sleep_fires_once_when_the_machine_wakes`
+/// sleeps nine hours forward from "now" and then evaluates a view whose `resetsAt` is the
+/// fixed `RESET_A`. It passed for as long as real now plus nine hours landed *before* that
+/// instant and went red the day it did not, because a window past its reset is stale and a
+/// stale view fires nothing. The test was right and the clock was wrong: nothing about the
+/// behaviour under test depends on the calendar, so nothing about the harness should.
 pub(crate) struct ManualClock {
     monotonic_ms: std::sync::Mutex<u64>,
     wall_seconds: std::sync::Mutex<i64>,
 }
 
 impl ManualClock {
-    /// A clock at monotonic zero and the current wall instant.
-    pub(crate) fn new() -> Self {
+    /// A clock at monotonic zero and the wall instant the caller names.
+    ///
+    /// Pass the same instant the test's other fixtures are written around; the result is a
+    /// run that cannot change with the date.
+    pub(crate) fn at(instant: &str) -> Self {
+        let wall = crate::timefmt::unix_seconds_from_rfc3339(instant)
+            .expect("a pinned test clock needs an instant this crate can parse");
+        ManualClock {
+            monotonic_ms: std::sync::Mutex::new(0),
+            wall_seconds: std::sync::Mutex::new(wall),
+        }
+    }
+
+    /// A clock at monotonic zero and the **real** current wall instant.
+    ///
+    /// The narrow case: a test that writes a file and then asks the code under test how old
+    /// it is — [`crate::refresh`]'s request marker measures `now − mtime`, and the mtime
+    /// comes from the operating system. Pinning such a clock would make the age meaningless.
+    /// Anything else wants [`ManualClock::at`].
+    pub(crate) fn at_real_now() -> Self {
         let wall = crate::timefmt::unix_seconds_from_rfc3339(&crate::timefmt::now_rfc3339())
             .unwrap_or(1_788_775_200);
         ManualClock {

@@ -594,8 +594,10 @@ fn quiet_hours_suppress_the_toast_and_still_consume_the_key() {
 
 #[test]
 fn a_crossing_that_happened_during_a_sleep_fires_once_when_the_machine_wakes() {
-    // The clock the refresh loop uses, moved the way a suspended laptop moves it.
-    let clock = ManualClock::new();
+    // The clock the refresh loop uses, moved the way a suspended laptop moves it. Pinned to
+    // the same `NOW` the rest of this module evaluates against, so the nine hours below stay
+    // on this side of `RESET_A` whatever day the suite runs.
+    let clock = ManualClock::at(NOW);
     let dir = TempDir::new("alerts-sleep");
     let path = dir.join("alerts.json");
     let mut alerts = Alerts::open(&path);

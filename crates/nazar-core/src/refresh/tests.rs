@@ -119,7 +119,10 @@ impl Harness {
     fn new(label: &str) -> Self {
         Harness {
             dir: TempDir::new(label),
-            clock: ManualClock::new(),
+            // The real instant, not a pinned one: `take_request` ages the request marker by
+            // comparing this clock with the file's modification time, and the filesystem
+            // stamps that from the system clock. See `ManualClock::at_real_now`.
+            clock: ManualClock::at_real_now(),
             events: Arc::new(Mutex::new(Vec::new())),
         }
     }
