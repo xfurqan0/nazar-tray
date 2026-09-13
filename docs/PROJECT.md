@@ -1623,3 +1623,60 @@ its first two items belong in the same commit as the readers they describe, beca
   routes the button, Esc and the focus through one `usageBack()`. The state-machine test also
   now asserts `closeDetail` of a list is that list, because the single button reads
   `state.detail` to decide what it means. `npm test` and `npm run typecheck` green.
+- 2026-09-13 23:40 — **T-WP24 landed: a lock whose process is gone is stale now, not in five
+  minutes.** The maintainer upgraded 0.1.0 to 0.2.0 with the NSIS installer and ended up with
+  no tray at all. The installer had killed pid 19932; `~/.nazar/limits.lock` was still on disk
+  with a `heartbeatAt` three minutes old; the new `nazar-tray.exe` printed *"nazar-tray is
+  already running; asked it to show its panel"* and exited. Deleting the lock by hand made it
+  start. **Every upgrading user hits this**, because the installer's own *launch after install*
+  fires seconds after its own kill — well inside the five-minute window the lock judged a
+  holder by.
+  **The reversal is the point.** The 2026-09-08 entry above says, under *Not done, and why*,
+  that the lock proves liveness by heartbeat alone and that adding a process-id probe was not
+  worth a platform crate or hand-written FFI for a failure costing "five minutes of a stale
+  reading after a hard kill". That estimate of the cost was wrong in one specific way: after an
+  **upgrade** the five minutes are not a stale reading, they are **no application**, and the
+  user has no way to know why. So `nazar-core::process` is a new module with four `kernel32`
+  entry points and one `libc` one, by hand — `OpenProcess` + `GetExitCodeProcess` on Windows,
+  `kill(pid, 0)` on POSIX — and **no new dependency**: the crate still builds and tests
+  everywhere on serde and serde_json, and this is the only `unsafe` in it.
+  **The other half of that old argument still stands, and shapes the design.** It said a
+  probe could introduce two writers, and it was right, so the probe answers *three* things,
+  not two: `Running`, `Gone`, and `Unknown` for every case where the operating system will
+  not say — no permission to open the process, no probe on this platform, a call that
+  failed. **Unknown is not dead.** It hands the decision straight back to the heartbeat, which
+  is what the lock did before this package existed, so the probe can only ever *shorten* a
+  wait and never start a second writer. The wedged-holder case the heartbeat catches and a
+  probe cannot is untouched.
+  **The pid-reuse guard.** A pid the kernel does own is still not proof it is the same
+  process. Where the platform can name a creation time (`GetProcessTimes`), a running holder
+  whose process started **after** its own `startedAt` is a reused id and its record is stale;
+  where it cannot, the heartbeat decides. `startedAt` is written a few milliseconds after the
+  kernel created the process, so a genuine holder's creation time is always at or before what
+  its record claims — two seconds of slack for the second the two readings can be floored
+  either side of, and nothing more.
+  **"Already running" can no longer lie**, which was the second half of the bug: the sentence
+  and the show-panel request now happen only when the holder could not be shown to be gone,
+  and the line names the holder's pid so it can be checked. A start-up that displaced somebody
+  says so in one line — whose lock it took and how old that holder's last heartbeat was —
+  because "the tray took over a dead lock" is the whole explanation for a restart that
+  otherwise looks like nothing happened.
+  **The installer got one line as well**, and it is belt rather than braces.
+  `NSIS_HOOK_POSTINSTALL` deletes `$PROFILE\.nazar\limits.lock` — that one named file, never
+  the directory. It is safe in `POSTINSTALL` and would not be in `PREINSTALL`, which runs
+  *before* the template's `CheckIfAppIsRunning`: by the time the post hook runs the kill is
+  done and no process of this user's holds the file. There is no graceful quit to send
+  instead; Tauri's template terminates the process, and reaching in to change that is more
+  custom NSIS than the fix above is worth. A user who moved the directory with `NAZAR_HOME`
+  is not covered by the line and does not need to be.
+  **445 core tests where there were 436**, fmt and clippy clean, `--no-default-features`
+  builds. Five of the new ones are the probe's own — this process is `Running`, a child that
+  has exited is `Gone`, the blind probe never claims to know, and a creation time that is
+  neither in the future nor a day old. Four are the lock's: a record with a **real** dead pid
+  and a heartbeat written that instant is taken over at once and remembers whose record it
+  deleted; a record with this process's own pid and start is left alone; a live pid whose
+  process is younger than its own record is a reused id (Windows, the only platform that can
+  tell); and an unknown presence over a fresh heartbeat changes nothing, then ages out at five
+  minutes exactly as before. The crash-sweep test that was already there passes untouched,
+  because `acquire_as` — the tests' way in, with invented pids that name nothing on the
+  machine — probes blind by construction.

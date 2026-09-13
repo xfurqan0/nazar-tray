@@ -449,8 +449,8 @@ is listed here anyway, because Nazar reads `~/.nazar` too and a file that appear
 | Field | Meaning |
 |---|---|
 | `schemaVersion` | `1`. Unknown keys are preserved through a heartbeat, like everywhere else. |
-| `pid` | The holder's process id. **A diagnostic, never a liveness proof** — see below. |
-| `startedAt` | When the holder took the lock. Together with `pid` it is how a holder recognises its own record. |
+| `pid` | The holder's process id. **Asked about before the heartbeat is** — see below. |
+| `startedAt` | When the holder took the lock. Together with `pid` it is how a holder recognises its own record, and it is what the pid-reuse guard measures a running process against. |
 | `heartbeatAt` | When the holder last said it was still there. Rewritten on **every** refresh, roughly once a minute, whether or not the numbers changed. |
 
 **Acquisition is one operation, not two.** `OpenOptions::create_new` either creates the file
@@ -459,13 +459,30 @@ the code audit was a lock whose check and whose write were separate, and the log
 refreshers passing that check four seconds apart — which is what produced the observed
 HTTP 429.
 
-**Liveness is the heartbeat, not the process id.** There is no portable way to ask the
-operating system whether a given process is running, and buying one would cost a platform
-crate in the crate that is meant to be boring. A heartbeat costs nothing extra — the holder
-is awake every sixty seconds anyway — and it covers a case a process-id check cannot: a
-holder that is still running but wedged stops beating and is replaced, where a liveness
-probe would wait for ever on a process that will never write again. A record whose heartbeat
-is more than **five minutes** old (five missed ticks) may be deleted and retaken.
+**Liveness is the process first, then the heartbeat** *(changed 2026-09-13, T-WP24; it used
+to be the heartbeat alone)*. Two questions, and the cheap one goes first:
+
+1. **Is the process there?** `nazar-core::process` asks the operating system about `pid` —
+   `OpenProcess` plus `GetExitCodeProcess` on Windows, `kill(pid, 0)` on POSIX, four
+   `kernel32` entry points by hand rather than a platform crate in the crate that is meant
+   to be boring. A pid nothing owns is a holder that is **gone**, and its record may be
+   deleted and retaken at once.
+2. **Otherwise, the heartbeat.** A record whose `heartbeatAt` is more than **five minutes**
+   old (five missed ticks) may be deleted and retaken. This still covers the case a
+   liveness probe cannot: a holder that is running but wedged stops beating and is
+   replaced, where a probe alone would wait for ever on a process that will never write
+   again.
+
+**The probe only ever shortens the wait.** "No permission to look", "no probe on this
+platform" and "the call failed" are one answer — *cannot tell* — and cannot tell is not
+dead: the heartbeat decides, exactly as it did before the probe existed. Guessing the other
+way would put two writers on one `limits.json`, which is what this file is for.
+
+**The pid-reuse guard.** A pid the operating system *does* own is not proof it is the same
+process, since ids are reused. Where the platform can name a process's creation time
+(`GetProcessTimes` on Windows), a holder whose process started **after** its own `startedAt`
+is a reused id and the record is stale. Where it cannot — every POSIX platform here — the
+heartbeat decides.
 
 **An unreadable lock file is respected until it ages out.** Between `create_new` and the
 record being written there is a moment when the file is empty; a competitor that read it then
@@ -478,10 +495,15 @@ whether it still names this process. A tray whose lock was reclaimed while its m
 finds out at the top of its next refresh and stops writing — before the write, not after it.
 
 **Consequence worth knowing:** a tray that is *killed* rather than quit does not release its
-lock, so a relaunch within five minutes defers to a process that is gone. WP4's `Quit` is the
-graceful exit that avoids it; when a tray really has been killed, deleting
-`~/.nazar/limits.lock` by hand is the manual escape, and doing so is safe when no tray is
-running.
+lock — but the next launch reads the record, finds the pid is nobody's, and takes it over
+straight away, saying so in one line on stderr. That is what an installer upgrade needs:
+the NSIS package terminates the running tray and offers to launch the new one seconds
+later, and before T-WP24 the new one saw a fresh heartbeat, said "already running", asked a
+dead process to open a panel, and exited. WP4's `Quit` is still the graceful exit, and
+deleting `~/.nazar/limits.lock` by hand is still the manual escape on a platform whose
+processes cannot be asked about; both are now the belt rather than the braces. The
+installer's `NSIS_HOOK_POSTINSTALL` deletes that one file after its own kill, for the same
+reason and with the same standing.
 
 ## The request marker
 

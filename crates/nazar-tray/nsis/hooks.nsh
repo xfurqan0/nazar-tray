@@ -1,8 +1,10 @@
-; Uninstall hooks for the NSIS package.
+; Install and uninstall hooks for the NSIS package.
 ;
 ; Tauri's own installer template already removes the program, the shortcuts, the Add/Remove
 ; entry and the `Run` value that "start with Windows" writes. Three things it cannot know
-; about are this application's, and they are here.
+; about are this application's, and they are here. A fourth is on the install side, and it
+; is the only line in this file that runs during an install: the advisory lock an upgrade's
+; own kill leaves behind. See `NSIS_HOOK_POSTINSTALL`.
 ;
 ; 1. **The status-line wrapper.** If the user asked for it from the settings page, Claude
 ;    Code's `settings.json` now points at `$INSTDIR\nazar-statusline.exe`, and the next line
@@ -39,17 +41,40 @@
 ;    above, this is data a person chose, not a note the installer left itself.
 ;    `docs/RELEASE.md` says how to remove it by hand.
 ;
-; **`~/.nazar` is never touched, by any path through this file.** It holds `limits.json`,
-; which is not ours alone: Nazar reads it, and a user may be running Nazar without ever
-; having had this tray installed. It also holds the status-line captures the wrapper writes
-; and the record of what the wrapper replaced, which is the only machine-readable copy of
-; the status line the user had before. Deleting any of that on uninstall would be this
-; program removing another program's input.
+; **No uninstall path through this file touches `~/.nazar`, and the install path touches
+; exactly one file in it.** The directory holds `limits.json`, which is not ours alone:
+; Nazar reads it, and a user may be running Nazar without ever having had this tray
+; installed. It also holds the status-line captures the wrapper writes and the record of
+; what the wrapper replaced, which is the only machine-readable copy of the status line the
+; user had before. Deleting any of that on uninstall would be this program removing another
+; program's input. `limits.lock` is the exception because it is the one file in there that
+; is nobody's but ours, and because an install is the one moment we know its holder is
+; dead — we killed it.
 
 !macro NSIS_HOOK_PREINSTALL
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; **The lock an upgrade leaves behind.** A few lines above this hook, the template's
+  ; `CheckIfAppIsRunning` terminates the running tray — there is no graceful quit in it, it
+  ; is `TerminateProcess` — and the finish page then offers to launch the new build, seconds
+  ; later. A terminated tray never releases `~/.nazar/limits.lock`. The new one used to find
+  ; a lock whose heartbeat was seconds old, conclude a tray was already running, ask a
+  ; process that no longer exists to show its panel, and exit: no icon, no window, no error
+  ; anybody could act on, until the heartbeat aged out five minutes later. Measured
+  ; upgrading 0.1.0 to 0.2.0 on the maintainer's machine.
+  ;
+  ; T-WP24 fixed that where it belongs — the lock now asks the operating system whether the
+  ; pid its record names still exists, and a holder that is gone is stale at once rather
+  ; than in five minutes — so this line is not the fix. It is one file's worth of belt to
+  ; that pair of braces, for the case the probe has to answer "cannot tell".
+  ;
+  ; It is safe here and would not be in `NSIS_HOOK_PREINSTALL`, which runs *before* the
+  ; kill: by this point no process of this user's is holding the file, so deleting it cannot
+  ; take a lock away from something that is still writing. Named file, never the directory.
+  ; A user who moved the directory with `NAZAR_HOME` is not covered by this line and does
+  ; not need to be — the probe covers them.
+  Delete "$PROFILE\.nazar\limits.lock"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

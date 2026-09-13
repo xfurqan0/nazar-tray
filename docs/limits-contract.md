@@ -359,7 +359,11 @@ three sentences:
   changed.
 - A reader may look at it to answer "is the tray running", which `updatedAt` cannot answer
   since the writer only writes on change. A heartbeat older than five minutes means nobody
-  is maintaining the file.
+  is maintaining the file — and so does a `pid` the operating system says nothing owns,
+  which is the faster of the two answers and the one nazar-tray now asks for first. A
+  killed tray leaves a lock that is stale at once rather than in five minutes; a process
+  that cannot be asked about is judged by the heartbeat, exactly as before. "Cannot tell"
+  is never "nobody is there".
 - **Nothing but nazar-tray should write either file.** A consumer that wants a refresh runs
   `nazar-tray --print --write`, which takes the same lock and defers to the tray if it is
   already running.

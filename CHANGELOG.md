@@ -184,6 +184,29 @@ two late; until it does, the installer is on the
   in the file they are written to. A promise that has to be read carefully to stay true has
   already broken.
 
+### Fixed
+
+- **An upgrade could leave the tray refusing to start for five minutes.** The installer kills
+  the running tray and then offers to launch the new build seconds later; the killed one never
+  released `~/.nazar/limits.lock`, and the new one read a heartbeat that was seconds old,
+  decided a tray was already running, asked a process that no longer existed to open its
+  panel, and exited. No icon, no window, no error — until the heartbeat aged out five minutes
+  later. **The lock now asks the operating system whether the process it names still exists**,
+  before it looks at the heartbeat at all, so a holder that is gone is stale at once. "Already
+  running" is only said when there really is one, and it names the pid. A start-up that took
+  over somebody's abandoned lock says so, once, on stderr.
+  Three things this deliberately does **not** do. It adds no dependency: four `kernel32` entry
+  points and one `libc` one, by hand, and `nazar-core` still builds and tests everywhere on
+  serde and serde_json. It never guesses — a process the system will not discuss (no
+  permission, no probe on that platform) is *unknown*, and unknown is judged by the heartbeat
+  exactly as before, because guessing "dead" there would put two writers on one `limits.json`.
+  And it still catches a holder that is running but wedged, which no liveness probe can: that
+  one stops beating and is replaced on the five-minute rule that has not changed.
+  A process id can be reused, so a **running** pid whose process started later than the lock
+  record claims is treated as a different process on platforms that can name a creation time.
+  The Windows installer also removes that one file after its own kill, which is belt to the
+  same braces.
+
 ### Notes
 
 - **The counters are the provider's own reported numbers, and there is no cost anywhere.** No

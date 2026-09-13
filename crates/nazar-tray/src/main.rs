@@ -130,15 +130,33 @@ fn main() {
     } else {
         match claim_the_writer_role(&now) {
             Instance::Only(lock) => lock,
-            Instance::Second => {
+            Instance::Second(holder) => {
                 // A tray is already running and has been asked to show itself. Saying so is
                 // for a terminal; from Explorer nobody sees it, and the panel opening is
-                // the answer.
-                eprintln!("nazar-tray is already running; asked it to show its panel");
+                // the answer. The pid is named because this sentence used to be able to
+                // lie — see `claim_the_writer_role` — and a pid is what a user checks.
+                match holder {
+                    Some(pid) => eprintln!(
+                        "nazar-tray is already running (pid {pid}); asked it to show its panel"
+                    ),
+                    None => eprintln!("nazar-tray is already running; asked it to show its panel"),
+                }
                 return;
             }
         }
     };
+
+    // One line when this start-up displaced somebody. A tray that was killed — by an
+    // installer upgrade, by Task Manager, by the power going out — leaves its lock behind,
+    // and taking it over is the difference between a tray that starts and one that does
+    // not. Saying whose it was, and how old its last heartbeat was, is the whole
+    // explanation for anybody who later wonders what happened.
+    if let Some(previous) = lock.as_ref().and_then(LimitsLock::swept) {
+        eprintln!(
+            "nazar-tray: took over the lock left by pid {} (last heartbeat {})",
+            previous.pid, previous.heartbeat_at
+        );
+    }
 
     // The same claim decides both files. The usage store is written by whoever holds
     // `~/.nazar/limits.lock` and by nobody else — one writer, many readers, no second lock —
@@ -341,8 +359,9 @@ fn force_device_scale_factor(scale: Option<f64>) {
 enum Instance {
     /// This process is the tray. `Some` when it may also write `limits.json`.
     Only(Option<LimitsLock>),
-    /// A tray is already running, and has been asked to show its panel.
-    Second,
+    /// A tray is already running, and has been asked to show its panel. The pid is the
+    /// holder's own, when the lock record could be read.
+    Second(Option<u32>),
 }
 
 /// Take the advisory lock, or defer to whoever has it.
@@ -363,6 +382,12 @@ enum Instance {
 ///
 /// Reaching the running instance is a marker file it is already watching: see
 /// [`nazar_core::paths::request_path`].
+///
+/// **"Already running" is not allowed to be a guess.** `Taken` means the lock's own holder
+/// could not be shown to be gone: [`nazar_core::lock`] asks the operating system about the
+/// record's pid before it looks at the heartbeat at all, so a killed tray — which is what
+/// an installer upgrade leaves behind — is stale the instant its lock is read, and this
+/// process starts normally instead of asking a dead one to open a panel.
 fn claim_the_writer_role(now: &str) -> Instance {
     let Ok(path) = paths::lock_path() else {
         // No home directory. An unusual environment, and the honest behaviour is to run,
@@ -372,11 +397,11 @@ fn claim_the_writer_role(now: &str) -> Instance {
 
     match LimitsLock::acquire(&path, now) {
         Ok(Acquisition::Held(lock)) => Instance::Only(Some(lock)),
-        Ok(Acquisition::Taken(_)) => {
+        Ok(Acquisition::Taken(holder)) => {
             if let Ok(request) = paths::request_path() {
                 let _ = refresh::place_request(&request, now);
             }
-            Instance::Second
+            Instance::Second(holder.map(|record| record.pid))
         }
         // The lock could not be taken for a reason that is not "somebody has it": a
         // read-only home directory, say. Starting without writing beats not starting.

@@ -23,19 +23,38 @@
 //!
 //! ## What proves a holder is alive
 //!
-//! The **heartbeat**, not the process id. There is no portable way to ask the operating
-//! system whether a given process is still running, and buying one would cost a platform
-//! crate in the crate that is meant to be boring. A heartbeat costs nothing extra: the
-//! holder is already awake every sixty seconds, so it rewrites this file while it is there.
-//! A record whose heartbeat is older than [`STALE_AFTER`] is reclaimable.
+//! Two things, and the cheap one is asked first.
 //!
-//! That also covers a case a process-id check cannot: a holder that is still running but
-//! wedged stops heart-beating and gets replaced, where a liveness probe would wait for ever
-//! on a process that will never write again.
+//! 1. **Is the process there?** [`crate::process`] asks the operating system about the
+//!    record's `pid`. A pid the kernel says nothing owns is a holder that is **gone**, and
+//!    its record is stale the instant it is read — not five minutes later.
+//! 2. **Otherwise, the heartbeat.** The holder is awake every sixty seconds anyway and
+//!    rewrites the file while it is there, so a record whose heartbeat is older than
+//!    [`STALE_AFTER`] is reclaimable. This is what catches the case a liveness probe
+//!    cannot: a holder still running but wedged stops beating and gets replaced, where a
+//!    probe alone would wait for ever on a process that will never write again.
 //!
-//! `pid` and `startedAt` are written for the human reading the file — "which process, since
-//! when" is the first question anyone asks — and for a holder to recognise its own record.
-//! Neither is trusted as a liveness proof.
+//! The probe only ever **shortens** the wait, and it only speaks when it is certain. "No
+//! permission to look", "no probe on this platform", "the call failed" are all
+//! [`Presence::Unknown`], and unknown is not dead: the heartbeat decides, exactly as it did
+//! before the probe existed. Guessing the other way would put two writers on one
+//! `limits.json`, which is the failure this whole module is here to prevent.
+//!
+//! Why it was worth adding, having once been argued against: **an upgrade kills the tray.**
+//! The NSIS installer terminates the running process and then offers to launch the new one,
+//! seconds later — and the new one used to find a lock whose heartbeat was fresh, say "it
+//! is already running", ask a dead process to show a panel, and exit. No tray, no icon, no
+//! error anybody could act on, for five minutes, for every upgrading user. Measured on the
+//! maintainer's machine upgrading 0.1.0 to 0.2.0.
+//!
+//! **The pid-reuse guard.** A pid the kernel *does* own is still not proof that it is the
+//! same process: ids are reused, quickly on Windows after a kill. So when the platform can
+//! name a process's creation time, a holder whose process started **after** the record says
+//! it did is a reused id, and the record is stale. When the creation time cannot be read —
+//! every POSIX platform — the heartbeat decides, which is the conservative answer.
+//!
+//! `pid` and `startedAt` are also what a holder recognises its own record by, and what the
+//! human reading `~/.nazar` by hand wants first: which process, since when.
 //!
 //! ## What a loser does
 //!
@@ -54,6 +73,7 @@ use serde_json::{Map, Value};
 
 use crate::atomic;
 use crate::error::{Error, Result};
+use crate::process::{BlindProbe, Presence, Probe, SystemProbe};
 use crate::timefmt::{seconds_between, unix_seconds_from_rfc3339};
 
 /// Version of the lock record this build writes.
@@ -65,6 +85,16 @@ pub const LOCK_SCHEMA_VERSION: u32 = 1;
 /// lose its lock to itself, short enough that a tray killed with the task manager does not
 /// keep the next one out for a coffee break.
 pub const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// How much later than its own record a holder's process may have started and still be
+/// believed.
+///
+/// `startedAt` is written from [`crate::clock::process_start_rfc3339`], which is the first
+/// time anything in the process asked the clock — a few milliseconds *after* the kernel
+/// created it. So a genuine holder's creation time is at or before what its record claims,
+/// and the only way round it is a reused id. The slack is for the second the two readings
+/// can be floored either side of, not for a doubt about whose process it is.
+const START_SLACK: i64 = 2;
 
 /// How many times an acquisition will reclaim a stale record before giving up.
 ///
@@ -170,6 +200,7 @@ pub enum Heartbeat {
 pub struct LimitsLock {
     path: PathBuf,
     record: LockRecord,
+    swept: Option<Box<LockRecord>>,
 }
 
 impl LimitsLock {
@@ -178,19 +209,27 @@ impl LimitsLock {
     /// `now` is RFC 3339 in UTC and is both the heartbeat this process writes and the
     /// instant an existing record is judged against.
     pub fn acquire(path: &Path, now: &str) -> Result<Acquisition> {
-        LimitsLock::acquire_as(
+        LimitsLock::acquire_probing(
             path,
             std::process::id(),
             &crate::clock::process_start_rfc3339(),
             now,
             STALE_AFTER,
+            &SystemProbe,
         )
     }
 
-    /// [`acquire`](LimitsLock::acquire) with everything about "this process" handed in.
+    /// [`acquire`](LimitsLock::acquire) with everything about "this process" handed in, and
+    /// nothing asked of the operating system.
     ///
     /// The tests' way in: two "processes" in one test binary need two identities, and a
-    /// stale record needs a threshold that does not take five minutes to reach.
+    /// stale record needs a threshold that does not take five minutes to reach. Those
+    /// identities are invented numbers that name nothing on the machine running the tests,
+    /// so this entry probes with [`BlindProbe`] — every holder is
+    /// [`Presence::Unknown`] and the heartbeat is the only judge, which is what this
+    /// function meant before there was a probe at all. A caller that wants the real answer
+    /// wants [`acquire`](LimitsLock::acquire) or
+    /// [`acquire_probing`](LimitsLock::acquire_probing).
     pub fn acquire_as(
         path: &Path,
         pid: u32,
@@ -198,13 +237,32 @@ impl LimitsLock {
         now: &str,
         stale_after: Duration,
     ) -> Result<Acquisition> {
-        Ok(match claim(path, pid, started_at, now, stale_after)? {
-            Ok(record) => Acquisition::Held(LimitsLock {
-                path: path.to_path_buf(),
-                record,
-            }),
-            Err(holder) => Acquisition::Taken(holder),
-        })
+        LimitsLock::acquire_probing(path, pid, started_at, now, stale_after, &BlindProbe)
+    }
+
+    /// [`acquire_as`](LimitsLock::acquire_as) with the probe handed in too.
+    ///
+    /// The whole acquisition, with nothing implicit: which process is claiming, when it
+    /// started, what time it is, how much silence is too much, and who to ask about a
+    /// holder that is already there.
+    pub fn acquire_probing(
+        path: &Path,
+        pid: u32,
+        started_at: &str,
+        now: &str,
+        stale_after: Duration,
+        probe: &dyn Probe,
+    ) -> Result<Acquisition> {
+        Ok(
+            match claim(path, pid, started_at, now, stale_after, probe)? {
+                Ok((record, swept)) => Acquisition::Held(LimitsLock {
+                    path: path.to_path_buf(),
+                    record,
+                    swept: swept.map(Box::new),
+                }),
+                Err(holder) => Acquisition::Taken(holder),
+            },
+        )
     }
 
     /// The file this lock is on.
@@ -217,6 +275,17 @@ impl LimitsLock {
     #[must_use]
     pub fn record(&self) -> &LockRecord {
         &self.record
+    }
+
+    /// The record this acquisition deleted on its way in, if there was one.
+    ///
+    /// `Some` means a previous holder left its lock behind — killed by an installer
+    /// upgrade, by Task Manager, by a power cut. It is worth one line on stderr, because
+    /// "the tray took over somebody else's lock" is the whole explanation for a restart
+    /// that otherwise looks like nothing happened at all.
+    #[must_use]
+    pub fn swept(&self) -> Option<&LockRecord> {
+        self.swept.as_deref()
     }
 
     /// Say we are still here.
@@ -238,9 +307,10 @@ impl LimitsLock {
                     &self.record.started_at,
                     now,
                     STALE_AFTER,
+                    &SystemProbe,
                 )?;
                 return Ok(match claimed {
-                    Ok(record) => {
+                    Ok((record, _)) => {
                         self.record = record;
                         Heartbeat::Held
                     }
@@ -279,17 +349,26 @@ impl Drop for LimitsLock {
     }
 }
 
+/// What a claim came back with.
+///
+/// `Ok` is ours: the record written, and the record deleted to make room for it. `Err` is
+/// somebody else's, and carries what they wrote about themselves when it could be read.
+type Claimed = std::result::Result<(LockRecord, Option<LockRecord>), Option<LockRecord>>;
+
 /// The acquisition itself, without the guard that would release it.
 ///
-/// `Ok(record)` means the file is ours and holds that record; `Err(holder)` means somebody
-/// else has it, and `holder` is what they wrote about themselves when that could be read.
+/// `Ok((record, swept))` means the file is ours and holds that record, and `swept` is the
+/// record this claim deleted to get there — the previous holder, when there was a readable
+/// one. `Err(holder)` means somebody else has it, and `holder` is what they wrote about
+/// themselves when that could be read.
 fn claim(
     path: &Path,
     pid: u32,
     started_at: &str,
     now: &str,
     stale_after: Duration,
-) -> Result<std::result::Result<LockRecord, Option<LockRecord>>> {
+    probe: &dyn Probe,
+) -> Result<Claimed> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -297,6 +376,7 @@ fn claim(
         std::fs::create_dir_all(parent).map_err(|source| Error::io(parent, source))?;
     }
 
+    let mut swept = None;
     for _ in 0..ATTEMPTS {
         match OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(mut file) => {
@@ -308,14 +388,15 @@ fn claim(
                 file.write_all(text.as_bytes())
                     .and_then(|()| file.sync_all())
                     .map_err(|source| Error::io(path, source))?;
-                return Ok(Ok(record));
+                return Ok(Ok((record, swept)));
             }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
                 let existing = read_record(path);
-                if reclaimable(path, existing.as_ref(), now, stale_after) {
+                if reclaimable(path, existing.as_ref(), now, stale_after, probe) {
                     // Best effort: if the delete fails, the next attempt reads the record
                     // again and reports it as taken rather than spinning.
                     let _ = std::fs::remove_file(path);
+                    swept = existing.or(swept);
                     continue;
                 }
                 return Ok(Err(existing));
@@ -339,22 +420,60 @@ pub fn read_record(path: &Path) -> Option<LockRecord> {
 
 /// Whether an existing lock file may be deleted and retaken.
 ///
-/// Two ways in:
+/// Three ways in:
 ///
+/// * the record names a process the operating system says is **gone** — the fast path, and
+///   the one an upgrade needs, because a killed tray's heartbeat is seconds old and its
+///   pid is nobody's;
 /// * the record is readable and its heartbeat is older than `stale_after`;
 /// * the record is **not** readable, and the file itself has not been touched for
-///   `stale_after` either. The second case is what makes the acquisition race safe: between
+///   `stale_after` either. The third case is what makes the acquisition race safe: between
 ///   `create_new` and the record being written there is a moment when the file is empty,
 ///   and a competitor that read it then must wait rather than evict a holder that is one
-///   instruction from being alive.
-fn reclaimable(path: &Path, record: Option<&LockRecord>, now: &str, stale_after: Duration) -> bool {
+///   instruction from being alive. There is no pid to probe in that moment either, which is
+///   the same reason.
+fn reclaimable(
+    path: &Path,
+    record: Option<&LockRecord>,
+    now: &str,
+    stale_after: Duration,
+    probe: &dyn Probe,
+) -> bool {
     match record {
-        Some(record) => record.is_stale(now, stale_after),
+        Some(record) => holder_is_gone(record, probe) || record.is_stale(now, stale_after),
         None => match file_age_seconds(path, now) {
             Some(age) => age > stale_after.as_secs() as i64,
             None => false,
         },
     }
+}
+
+/// Whether the operating system says the process that wrote `record` is no longer there.
+///
+/// Only a **definite** answer counts. `Unknown` — no permission to look, no probe on this
+/// platform, a call that failed — is not "gone"; it hands the decision back to the
+/// heartbeat, which is where it was before this function existed.
+fn holder_is_gone(record: &LockRecord, probe: &dyn Probe) -> bool {
+    match probe.presence(record.pid) {
+        Presence::Gone => true,
+        Presence::Unknown => false,
+        Presence::Running => started_after_its_own_record(record, probe),
+    }
+}
+
+/// The pid-reuse guard: a running process that started later than the record claims is not
+/// the process that wrote it.
+///
+/// `false` whenever either instant is unreadable, because "cannot tell" must not evict
+/// anybody. See [`START_SLACK`] for why later-by-two-seconds is still the same process.
+fn started_after_its_own_record(record: &LockRecord, probe: &dyn Probe) -> bool {
+    let (Some(actual), Some(claimed)) = (
+        probe.start_seconds(record.pid),
+        unix_seconds_from_rfc3339(&record.started_at),
+    ) else {
+        return false;
+    };
+    actual > claimed + START_SLACK
 }
 
 /// How many seconds ago the file was last written, from its own modification time.
@@ -392,6 +511,10 @@ mod tests {
             .held()
             .expect("the first process must get the lock");
         assert_eq!(first.record().pid, 111);
+        assert!(
+            first.swept().is_none(),
+            "a lock taken on an empty directory displaced nobody"
+        );
 
         let second =
             LimitsLock::acquire_as(&path, 222, START, "2026-09-07T10:00:01Z", STALE_AFTER).unwrap();
@@ -452,6 +575,140 @@ mod tests {
             LimitsLock::acquire_as(&path, 999, START, "2026-09-07T10:04:30Z", STALE_AFTER).unwrap();
         assert!(matches!(taken, Acquisition::Taken(Some(_))));
         assert_eq!(read_record(&path).unwrap().pid, 4242);
+    }
+
+    // ------------------------------------------------- the holder the operating system knows
+
+    /// A process that has certainly finished, and the id it had.
+    fn a_finished_process() -> u32 {
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit"])
+                .spawn()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", "exit"])
+                .spawn()
+        }
+        .expect("a shell to spawn");
+        let pid = child.id();
+        child.wait().expect("the child to finish");
+        pid
+    }
+
+    /// Write `record` to `path` as a holder would have.
+    fn lay_down(path: &Path, record: &LockRecord) {
+        std::fs::write(path, render(record).unwrap()).unwrap();
+    }
+
+    /// **The upgrade bug.** The installer kills the tray and launches the new one seconds
+    /// later; the heartbeat is fresh and the process is gone, and the old rule believed the
+    /// heartbeat. Five minutes of no tray at all, for every upgrading user.
+    #[test]
+    fn a_lock_whose_process_is_gone_is_taken_over_at_once() {
+        let dir = TempDir::new("lock-dead-pid");
+        let path = lock_path(&dir);
+
+        let dead = a_finished_process();
+        let now = crate::timefmt::now_rfc3339();
+        // Heartbeat written this instant: nothing about the record's age says anything is
+        // wrong with it. Only the pid does.
+        lay_down(&path, &LockRecord::new(dead, &now, &now));
+
+        let taken = LimitsLock::acquire_probing(&path, 999, START, &now, STALE_AFTER, &SystemProbe)
+            .unwrap();
+        let lock = taken
+            .held()
+            .expect("a lock whose process has exited must be reclaimable at once");
+        assert_eq!(lock.record().pid, 999);
+        assert_eq!(read_record(&path).unwrap().pid, 999);
+        assert_eq!(
+            lock.swept().map(|record| record.pid),
+            Some(dead),
+            "the lock remembers whose record it deleted, so the tray can say so"
+        );
+    }
+
+    /// The other half of the same rule, and the one that keeps "one writer" true.
+    #[test]
+    fn a_lock_whose_process_is_running_is_left_alone() {
+        let dir = TempDir::new("lock-live-pid");
+        let path = lock_path(&dir);
+
+        let now = crate::timefmt::now_rfc3339();
+        let mine = std::process::id();
+        lay_down(
+            &path,
+            &LockRecord::new(mine, crate::clock::process_start_rfc3339(), &now),
+        );
+
+        let taken = LimitsLock::acquire_probing(&path, 999, START, &now, STALE_AFTER, &SystemProbe)
+            .unwrap();
+        match taken {
+            Acquisition::Held(_) => panic!("a running holder must not be pushed aside"),
+            Acquisition::Taken(Some(record)) => assert_eq!(record.pid, mine),
+            Acquisition::Taken(None) => panic!("the loser should be told who holds it"),
+        }
+    }
+
+    /// A pid that is alive but is not the one that wrote the record: the id was reused.
+    ///
+    /// Windows only, because it is the only platform here that can name a process's
+    /// creation time. Everywhere else the guard does not fire and the heartbeat decides,
+    /// which is what the test below asserts.
+    #[cfg(windows)]
+    #[test]
+    fn a_running_pid_that_started_after_its_record_is_a_reused_id() {
+        let dir = TempDir::new("lock-reused-pid");
+        let path = lock_path(&dir);
+
+        let now = crate::timefmt::now_rfc3339();
+        // This process is alive and its id is in the record — but the record says the
+        // holder started in 2000, and this process did not.
+        lay_down(
+            &path,
+            &LockRecord::new(std::process::id(), "2000-01-01T00:00:00Z", &now),
+        );
+
+        let taken = LimitsLock::acquire_probing(&path, 999, START, &now, STALE_AFTER, &SystemProbe)
+            .unwrap();
+        assert!(
+            taken.held().is_some(),
+            "a live pid whose process is younger than its own record is a reused id"
+        );
+    }
+
+    /// "Cannot tell" is not "dead".
+    ///
+    /// The pid in this record belongs to nothing at all, and a probe that knows it would
+    /// evict the holder on the spot. [`BlindProbe`] is every platform without a probe and
+    /// every process the operating system will not discuss, and it must leave the record
+    /// exactly where the heartbeat left it.
+    #[test]
+    fn a_holder_the_probe_cannot_place_is_judged_by_its_heartbeat_alone() {
+        let dir = TempDir::new("lock-unknown-pid");
+        let path = lock_path(&dir);
+
+        let dead = a_finished_process();
+        let now = crate::timefmt::now_rfc3339();
+        lay_down(&path, &LockRecord::new(dead, &now, &now));
+
+        let taken =
+            LimitsLock::acquire_probing(&path, 999, START, &now, STALE_AFTER, &BlindProbe).unwrap();
+        assert!(
+            matches!(taken, Acquisition::Taken(Some(_))),
+            "an unknown presence must not evict a fresh heartbeat"
+        );
+        assert_eq!(read_record(&path).unwrap().pid, dead);
+
+        // And five minutes on, the heartbeat does what it always did.
+        let later = crate::timefmt::rfc3339_from_unix_seconds(
+            crate::timefmt::unix_seconds_from_rfc3339(&now).unwrap() + 331,
+        );
+        let taken =
+            LimitsLock::acquire_probing(&path, 999, START, &later, STALE_AFTER, &BlindProbe)
+                .unwrap();
+        assert!(taken.held().is_some(), "the heartbeat still ages out");
     }
 
     #[test]

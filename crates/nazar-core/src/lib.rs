@@ -44,6 +44,7 @@ pub mod error;
 pub mod limits;
 pub mod lock;
 pub mod paths;
+pub mod process;
 pub mod refresh;
 pub mod state;
 pub mod timefmt;
