@@ -504,10 +504,17 @@ body {
   gap: 8px;
 }
 
+/* The header of the settings and usage views alike. Since T-WP23 the usage view writes a
+   detail's own title here — `Week of Sep 7, 2026`, and longer in Russian — so it truncates
+   rather than pushing *Back* off a 330 px panel. A settings heading is one word and never
+   reaches the ellipsis. */
 .settings-title {
+  overflow: hidden;
   margin: 0;
   font-size: var(--type-size-md, 13px);
   font-weight: var(--type-weight-strong, 680);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .group {
@@ -776,22 +783,6 @@ input[type="checkbox"] {
 /* A span is a choice inside a tab, so it is drawn a step quieter than the tabs above it. */
 .usage-span {
   font-size: var(--type-size-xs, 10px);
-}
-
-/* The way back from a day or a week, where the tabs would otherwise be. */
-.usage-scope {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.usage-scope-title {
-  overflow: hidden;
-  color: var(--color-text, #eaf2ff);
-  font-size: var(--type-size-md, 13px);
-  font-weight: var(--type-weight-medium, 560);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .usage-summary {

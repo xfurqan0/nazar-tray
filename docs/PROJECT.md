@@ -1599,3 +1599,27 @@ its first two items belong in the same commit as the readers they describe, beca
   either number, the backfill that must never overlap the transcripts and must write the same
   bytes twice, and a leak test whose fixture carries a sentinel in `longestSession.sessionId`
   — the field this reader has nowhere to put.
+- 2026-09-13 20:00 — **T-WP23 landed: one *Back*, and a heading that says what it will do.**
+  The maintainer opened a day from the calendar and found two *Back* buttons stacked in the
+  top-left corner: the view's own, which left for the quota panel, and the one T-WP21 gave the
+  detail, which closed the day. Same word on both, one above the other, and nothing on screen
+  to say which was which. **The detail's header is gone.** The view has one header row now —
+  one button, one heading — and the heading is what changes: `Usage` while a list is on
+  screen, `Sep 13, 2026` or `Week of Sep 7, 2026` while a detail is. The button goes exactly
+  one level up from wherever that heading says the reader is, and **Esc is the same function**
+  rather than a second copy of the rule, so the key and the button cannot drift apart. The tab
+  strip still goes away while a detail is open, for the reason it always did — four ways out
+  of a page with one way back is three ways to lose the day just opened — and the heading is
+  now what tells the reader where they landed instead. Focus is unchanged and deliberately so:
+  opening a day moves it to *Back*, which is the control that a moment earlier meant something
+  else, and closing one moves it to the tab the list is coming back on.
+  **No key moved; 158 per file stands.** Both headers had always said `settings.back`, and the
+  word survives on the button that is left; the heading takes `usage.title` — the key the
+  footer button that opens the view already uses — and a detail's own title from
+  `detailTitle`, which is where it came from before. So `ui/locales/README.md` is untouched,
+  which is the honest outcome: this package removed a control, not a string.
+  **145 panel tests where there were 143**, both new ones in `ui/test/usage.test.mjs`: the
+  markup offers exactly one way back and a heading with no `data-i18n` on it, and `main.ts`
+  routes the button, Esc and the focus through one `usageBack()`. The state-machine test also
+  now asserts `closeDetail` of a list is that list, because the single button reads
+  `state.detail` to decide what it means. `npm test` and `npm run typecheck` green.

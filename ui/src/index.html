@@ -78,9 +78,17 @@
         `get_usage` answered would be a row asserting a number nobody has counted.
       -->
       <div class="view usage" data-view="usage" hidden>
+        <!--
+          One header, one *Back*, one heading. The button goes exactly one level up — out of a
+          day or a week onto the list it was opened from, and out of the list onto the quota
+          view — which is what ends the two *Back*s T-WP21 left stacked in the top-left corner.
+          The heading is filled by `main.ts` rather than by `[data-i18n]`, because while a
+          detail is open it is that day's or that week's own title, and it is then the only
+          thing on screen saying where the reader is standing.
+        -->
         <div class="settings-head">
           <button type="button" class="button" data-usage-back data-i18n="settings.back"></button>
-          <h2 class="settings-title" data-i18n="usage.title"></h2>
+          <h2 class="settings-title" data-usage-title></h2>
         </div>
 
         <!--
@@ -88,6 +96,10 @@
           *Weeks*, *All* and *Models* are three readings of the same widest window, so moving
           between them costs no request — see `needsFetch` in `usage.ts`. *Month* left with
           T-WP21: the calendar on *All* draws the month being lived in and eleven more.
+
+          The row is put away while a day or a week is open, because a detail is not a fifth
+          tab: four ways out of a page that has one way back is three ways to lose the day you
+          just opened, and the heading above already says which day it is.
         -->
         <div class="usage-tabs" data-usage-tabs role="tablist">
           <button
@@ -118,21 +130,6 @@
             data-usage-tab="models"
             data-i18n="usage.range.models"
           ></button>
-        </div>
-
-        <!--
-          What a day or a week says when it is opened, and the way back to the list it was
-          opened from. It stands where the tabs stand, because a detail is not a fifth tab and
-          a row of tabs above it would offer four ways out of a page with one way back.
-        -->
-        <div class="usage-scope" data-usage-scope hidden>
-          <button
-            type="button"
-            class="button"
-            data-usage-scope-back
-            data-i18n="settings.back"
-          ></button>
-          <span class="usage-scope-title" data-usage-scope-title></span>
         </div>
 
         <p class="note note-error" data-usage-error hidden></p>

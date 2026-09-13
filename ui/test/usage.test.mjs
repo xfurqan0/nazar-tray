@@ -1176,6 +1176,12 @@ test("clicking a day opens it, Back closes it, and a tab change closes it too", 
   const week = openDetail(list, { kind: "week", key: "2026-09-14", at: scope.at });
   assert.equal(week.detail.kind, "week");
   assert.equal(closeDetail(week).detail, undefined);
+
+  // T-WP23 gave the view one *Back* that reads this field to decide what it means, so the
+  // state has to answer for a list as safely as for a detail: closing what is not open is
+  // the list it was already on, not a fifth state.
+  assert.deepEqual(closeDetail(list), list, "closing nothing moves nothing");
+  assert.equal(needsFetch(list, closeDetail(list)), false);
 });
 
 // ------------------------------------------------------- T-WP21: reading the view
@@ -1277,6 +1283,95 @@ test("the markup offers exactly the tabs and spans this file knows", () => {
   assert.deepEqual(named("data-usage-span"), [...USAGE_SPANS]);
 });
 
+// ------------------------------------------------------- T-WP23: one way back
+
+test("the usage view has one header, one Back and one heading", () => {
+  // T-WP21 gave a detail a header of its own, and it stood under the view's: a day opened
+  // from the calendar put two *Back* buttons in the top-left corner, one above the other,
+  // with the same word on both and no way to tell which left the day and which left the
+  // view. There is one header now, and the heading under the button is what changed instead.
+  const html = readFileSync(resolve(REPO, "ui/src/index.html"), "utf8");
+  const view = html.slice(
+    html.indexOf('<div class="view usage"'),
+    html.indexOf('<form class="view settings"'),
+  );
+  assert.ok(view.length > 0, "index.html has no usage view");
+
+  assert.equal(
+    (view.match(/data-usage-back/g) ?? []).length,
+    1,
+    "the usage view offers exactly one way back",
+  );
+  assert.equal(
+    (view.match(/data-i18n="settings\.back"/g) ?? []).length,
+    1,
+    "and exactly one button says the word",
+  );
+  assert.ok(!html.includes("data-usage-scope"), "the second header is gone from the markup");
+
+  // The heading is written at run time — `Usage` on the tabs, a date on a detail — so it
+  // must not carry a `data-i18n` attribute, which would put the word `Usage` back over a
+  // day the moment the language changed.
+  assert.match(view, /<h2 class="settings-title" data-usage-title><\/h2>/);
+  assert.ok(
+    !/data-usage-title[^>]*data-i18n|data-i18n[^>]*data-usage-title/.test(view),
+    "the heading is filled by main.ts, not by the markup",
+  );
+});
+
+test("Back goes exactly one level up, Esc goes with it, and the focus follows", () => {
+  // This is the one rule of the view that lives entirely in `main.ts`, and a suite with no
+  // DOM can still hold it: one function decides what *Back* means, and everything that can
+  // mean *back* calls that function rather than deciding again.
+  const panel = readFileSync(resolve(REPO, "ui/src/main.ts"), "utf8");
+
+  const back = /function usageBack\(\): void \{([\s\S]*?)\n\}/.exec(panel);
+  assert.ok(back, "main.ts has no usageBack()");
+  assert.match(back[1], /usage\.detail !== undefined\) closeScope\(\)/, "a detail closes first");
+  assert.match(back[1], /else showView\("quota"\)/, "and a list leaves for the quota view");
+
+  assert.match(
+    panel,
+    /usageBackButton\?\.addEventListener\("click", usageBack\)/,
+    "the button is the function, not a second copy of the rule",
+  );
+  assert.match(
+    panel,
+    /if \(shown === "usage"\) \{\s*usageBack\(\);/,
+    "and so is Esc, so the key and the button cannot come to mean different things",
+  );
+
+  // The focus moves with the view, both ways: onto *Back* when a day opens — the element
+  // that was clicked is about to be replaced — and onto the tab that opened it when it
+  // closes.
+  assert.match(
+    /function openScope\([\s\S]*?\n\}/.exec(panel)?.[0] ?? "",
+    /usageBackButton\?\.focus\(\)/,
+  );
+  assert.match(
+    /function closeScope\([\s\S]*?\n\}/.exec(panel)?.[0] ?? "",
+    /usageTabs\.find\([\s\S]*?\)\?\.focus\(\)/,
+  );
+
+  // While a detail is open the tabs are put away: four ways out of a page with one way back
+  // is three ways to lose the day that was just opened.
+  assert.match(panel, /usageTabsRow\.hidden = opened/);
+
+  // And the heading is the detail's own title or the word the tabs are headed by — one
+  // function, called from the redraw and from a language change alike.
+  const title = /function paintUsageTitle\(\): void \{([\s\S]*?)\n\}/.exec(panel);
+  assert.ok(title, "main.ts has no paintUsageTitle()");
+  assert.match(title[1], /usage\.detail\s*\?\s*detailTitle\(usage\.detail, locale, t\)/s);
+  assert.match(title[1], /t\("usage\.title"\)/);
+  assert.equal(
+    (panel.match(/paintUsageTitle\(\);/g) ?? []).length,
+    2,
+    "called from paintUsage and from applyLanguage, and nowhere else",
+  );
+
+  assert.ok(!panel.includes("usageScope"), "nothing is left of the second header");
+});
+
 // -------------------------------------------------------------- the stylesheet
 
 test("the stylesheet draws what this file computes", () => {
@@ -1355,6 +1450,13 @@ test("the stylesheet draws what this file computes", () => {
     !/\.usage-chart-line \{[^}]*stroke:/s.test(css),
     "the stroke is the palette's, set per line, and must not be frozen in the stylesheet",
   );
+
+  // T-WP23. The second header is gone, and the one heading that is left writes a detail's
+  // own title into it — `Week of Sep 7, 2026`, and longer in Russian — so it truncates
+  // rather than pushing *Back* off a 330 px panel.
+  assert.ok(!css.includes(".usage-scope"), "the second header's rules went with it");
+  assert.match(css, /\.settings-title \{[^}]*text-overflow:\s*ellipsis/s);
+  assert.match(css, /\.settings-title \{[^}]*white-space:\s*nowrap/s);
 });
 
 // ------------------------------------------------- the two counts, and the tag

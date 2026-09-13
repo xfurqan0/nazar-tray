@@ -183,8 +183,8 @@ const statuslineOutput = document.querySelector<HTMLElement>("[data-statusline-o
 const usageTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-tab]")];
 const usageTabsRow = document.querySelector<HTMLElement>("[data-usage-tabs]");
 const usageSpanTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-span]")];
-const usageScope = document.querySelector<HTMLElement>("[data-usage-scope]");
-const usageScopeTitle = document.querySelector<HTMLElement>("[data-usage-scope-title]");
+const usageBackButton = document.querySelector<HTMLButtonElement>("[data-usage-back]");
+const usageTitle = document.querySelector<HTMLElement>("[data-usage-title]");
 const usageWeekRows = document.querySelector<HTMLElement>("[data-usage-week-rows]");
 const usageModels = document.querySelector<HTMLElement>("[data-usage-models]");
 const usageChartBox = document.querySelector<HTMLElement>("[data-usage-chart]");
@@ -304,6 +304,10 @@ function applyLanguage(): void {
   // Same reason: the status-line section's state line and its first button say different
   // things depending on the machine, so neither can carry a `data-i18n` attribute.
   if (statusline) paintStatusline();
+  // And the usage view's heading, which is `Usage` on the tabs and a date on a detail. It is
+  // set here as well as in `paintUsage`, because a language chosen before the view was ever
+  // opened would otherwise leave the heading blank until the first answer arrived.
+  paintUsageTitle();
   // And the same again for the usage view: every number on it is formatted for a language —
   // `22.3M` is `22,3 Mn` in Turkish — so a language change redraws it rather than leaving
   // English digits grouped the English way.
@@ -1180,6 +1184,19 @@ function chartColours(): readonly string[] {
   return seriesPalette(theme, resolveMode(ui.mode, darkQuery.matches));
 }
 
+/**
+ * The usage view's one heading: the day or the week that is open, or the word *Usage*.
+ *
+ * It is the only title in the panel that is not a fixed word, which is why the markup gives
+ * it no `[data-i18n]` and why a language change has to come back through here. Together with
+ * the single *Back* beside it this is the whole of the view's navigation — the reader is told
+ * where they are, and the one control goes one level up from there.
+ */
+function paintUsageTitle(): void {
+  if (!usageTitle) return;
+  usageTitle.textContent = usage.detail ? detailTitle(usage.detail, locale, t) : t("usage.title");
+}
+
 /** Draw the usage view from the last answer, the last failure, or neither. */
 function paintUsage(): void {
   if (!usageRows) return;
@@ -1195,13 +1212,10 @@ function paintUsage(): void {
     span.classList.toggle("primary", own);
     span.setAttribute("aria-selected", String(own));
   }
-  // A detail is not a fifth tab: the row of four is put away while one is open, and the way
-  // back stands where it stood.
+  // A detail is not a fifth tab: the row of four is put away while one is open, and the
+  // heading above says which day or which week is on screen instead.
   if (usageTabsRow) usageTabsRow.hidden = opened;
-  if (usageScope) usageScope.hidden = !opened;
-  if (usageScopeTitle) {
-    usageScopeTitle.textContent = usage.detail ? detailTitle(usage.detail, locale, t) : "";
-  }
+  paintUsageTitle();
 
   const view = usageAnswer ? buildUsageView(usageAnswer, new Date()) : undefined;
   const failed = usageProblem !== undefined;
@@ -1396,18 +1410,32 @@ function showUsage(next: UsageState): void {
  *
  * The element that was activated is about to be replaced by the detail, so without this the
  * focus falls to the document body and a keyboard user is stranded at the top of the panel
- * with no idea that anything happened. It lands on *Back*, which is the one control the new
- * page has that the old one did not.
+ * with no idea that anything happened. It lands on *Back* — the control that, a moment ago,
+ * left the view altogether and now closes the day instead.
  */
 function openScope(scope: UsageScope): void {
   showUsage(openDetail(usage, scope));
-  document.querySelector<HTMLButtonElement>("[data-usage-scope-back]")?.focus();
+  usageBackButton?.focus();
 }
 
 /** *Back*, and the focus with it: onto the tab whose list is coming back. */
 function closeScope(): void {
   showUsage(closeDetail(usage));
   usageTabs.find((tab) => tab.dataset["usageTab"] === usage.tab)?.focus();
+}
+
+/**
+ * The usage view's one way back, and it goes exactly one level.
+ *
+ * T-WP21 gave the view a second header of its own, so a day opened from the calendar stacked
+ * two *Back* buttons in the top-left corner — one out of the day, one out of the view — and
+ * neither said which. There is one now: with a detail open it closes the detail and the tabs
+ * come back; with no detail open it leaves for the quota view. Esc is routed through this
+ * same function, so the key and the button can never come to mean different things.
+ */
+function usageBack(): void {
+  if (usage.detail !== undefined) closeScope();
+  else showView("quota");
 }
 
 // ------------------------------------------------------------------ loading
@@ -1482,9 +1510,7 @@ document.querySelector("[data-open-usage]")?.addEventListener("click", () => {
   void askUsage();
 });
 
-document.querySelector("[data-usage-back]")?.addEventListener("click", () => {
-  showView("quota");
-});
+usageBackButton?.addEventListener("click", usageBack);
 
 for (const tab of usageTabs) {
   tab.addEventListener("click", () => {
@@ -1503,9 +1529,6 @@ for (const span of usageSpanTabs) {
     }
   });
 }
-
-// *Back* out of one day or one week, onto the list it was opened from.
-document.querySelector("[data-usage-scope-back]")?.addEventListener("click", closeScope);
 
 // A week of the list opens that week. Delegated, for the reason the cells are: fifty-three
 // rows are fifty-three pairs of listeners to remove on the next redraw.
@@ -1721,12 +1744,14 @@ void listen("open-settings", () => {
 });
 
 // Esc closes the panel — except on the settings and usage pages, where it goes back one step
-// first, so a user who opened one by accident is not thrown out of the panel entirely. A day
-// or a week that is open is a step of its own, and it is the one Esc undoes first.
+// first, so a user who opened one by accident is not thrown out of the panel entirely. On the
+// usage page it is the *Back* button's own function, which is how the key and the button stay
+// one behaviour: a day or a week that is open is a step of its own, and it is the one Esc
+// undoes first.
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (shown === "usage" && usage.detail !== undefined) {
-    closeScope();
+  if (shown === "usage") {
+    usageBack();
     return;
   }
   if (shown !== "quota") {
