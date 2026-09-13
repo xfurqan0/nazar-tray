@@ -99,6 +99,29 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
   up the least valuable thing left, and the week line is given up before any part of the quota
   line is. **The icon still says nothing about usage**: it is the mark at every reading, and
   grey only for unknown.
+- **Count like Claude Code, a setting, off by default.** The panel's numbers are what you
+  actually spent: one message counted once, however many lines Claude Code wrote it on.
+  `/usage` counts those lines, which is **1.667×** the real spend on the machine this was
+  measured on and is not a constant you could divide back out
+  ([claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098)).
+  Turn this on and the view shows the per-line numbers instead, so the two windows agree —
+  labelled **as /usage counts** under the headline, and with the tray tooltip following the
+  same switch so the two surfaces of this application never answer one question with two
+  numbers. The store keeps **both** counts from now on, in the same file and at the same
+  hourly grain, so turning the setting on and off changes what is drawn and never what was
+  recorded; `%APPDATA%\nazar\usage\` stays at `version: 1`, because the per-line counters are
+  an added field and unknown keys have always survived a rewrite.
+- **Fill history from Claude Code's stats, a setting, off by default.** Claude Code prunes
+  transcripts (six days survived here) and keeps a statistics cache that reaches further back
+  (twenty-two). With this on, the days **older than your transcripts** are copied in as Claude
+  Code reported them — **totals only**, per model per day, with no breakdown, because that file
+  holds one number and a guess at how it splits into four would be four invented numbers. On
+  the maintainer's machine that is **16 days and 10.5 B tokens** of history that would
+  otherwise not exist anywhere this app can see. They are drawn **apart** from the days
+  nazar-tray counted itself: outlined rather than shaded on the calendar, taking no part in the
+  scale the measured days are ranked on, and saying *reported by Claude Code* in the hover
+  line, in the weeks list and in a day's detail. A day your transcripts cover is **never**
+  reported, whatever that file says about it.
 - **The scan is never on the quota path.** Quota is why this application exists, it reads two
   small files in milliseconds, and it must not queue behind a walk of hundreds of megabytes —
   so nothing scans on the refresh loop. It runs when the Usage view is opened, **at most once

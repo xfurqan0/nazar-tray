@@ -85,8 +85,10 @@ import {
   partsLine,
   requestsKey,
   tabRange,
+  modeTagKey,
   usageErrorKey,
   usageWindow,
+  weekTotal,
   weekLabel,
   withSpan,
   withTab,
@@ -190,6 +192,7 @@ const usageKeys = document.querySelector<HTMLElement>("[data-usage-keys]");
 const usageSummary = document.querySelector<HTMLElement>("[data-usage-summary]");
 const usageTotal = document.querySelector<HTMLElement>("[data-usage-total]");
 const usagePartsLine = document.querySelector<HTMLElement>("[data-usage-parts]");
+const usageTag = document.querySelector<HTMLElement>("[data-usage-tag]");
 const usageInfoLine = document.querySelector<HTMLElement>("[data-usage-info]");
 const usageStrip = document.querySelector<HTMLElement>("[data-usage-strip]");
 const usageGrid = document.querySelector<HTMLElement>("[data-usage-grid]");
@@ -596,6 +599,8 @@ function readForm(): void {
     claude: checked("claude"),
     codex: checked("codex"),
     detailedWindows: checked("detailedWindows"),
+    usageCountLikeClaudeCode: checked("usageCountLikeClaudeCode"),
+    usageFillHistoryFromStats: checked("usageFillHistoryFromStats"),
   };
   if (quietTimes) quietTimes.dataset["disabled"] = String(!values.quietHoursEnabled);
 }
@@ -731,6 +736,7 @@ async function loadStatusline(): Promise<void> {
 function usageRowItem(row: UsageRow, share: boolean): HTMLElement {
   const item = document.createElement("li");
   item.className = "usage-row";
+  if (row.reported) item.classList.add("reported");
 
   const head = document.createElement("div");
   head.className = "usage-row-head";
@@ -771,10 +777,12 @@ function usageRowItem(row: UsageRow, share: boolean): HTMLElement {
   foot.className = "usage-row-foot";
   const records = document.createElement("span");
   // Two labels rather than one: on the Claude side a record is a reply, on the Codex side it
-  // is a `token_count` event and several of them make one turn.
-  records.textContent = t(requestsKey(row.provider), {
-    requests: formatNumber(row.requests, locale),
-  });
+  // is a `token_count` event and several of them make one turn. A reported day has neither —
+  // the file it came from holds one number per model and no count of anything — so the line
+  // says where the number is from instead of claiming a count it does not have.
+  records.textContent = row.reported
+    ? t("usage.reported")
+    : t(requestsKey(row.provider), { requests: formatNumber(row.requests, locale) });
   foot.append(records);
 
   // How much of the span this model took, on the *Models* tab alone — the question that tab
@@ -809,6 +817,9 @@ function usageWeekItem(week: UsageWeekRow): HTMLElement {
   card.type = "button";
   card.className = "usage-week-row";
   if (week.current) card.classList.add("current");
+  // A week nobody has a transcript for any more, drawn as the outline a reported day is
+  // drawn as, so the two readings of history never share a shade or a bar.
+  if (week.reported) card.classList.add("reported");
   card.dataset["usageWeek"] = week.key;
   card.dataset["usageAt"] = String(week.start);
 
@@ -822,16 +833,17 @@ function usageWeekItem(week: UsageWeekRow): HTMLElement {
 
   const value = document.createElement("span");
   value.className = "usage-week-total";
-  value.textContent = formatTokens(week.total, locale);
+  value.textContent = formatTokens(weekTotal(week), locale);
   head.append(value);
   card.append(head);
 
   // The same empty-track rule the model rows keep: a week nobody recorded anything for has
-  // no bar at all, rather than a bar of zero length that looks like a measurement.
+  // no bar at all, rather than a bar of zero length that looks like a measurement. A reported
+  // week has none either, because the scale it would be drawn against is not its scale.
   const meter = document.createElement("div");
   meter.className = "meter";
   meter.setAttribute("aria-hidden", "true");
-  if (week.total !== undefined) {
+  if (week.total !== undefined && !week.reported) {
     const fill = document.createElement("span");
     fill.className = "meter-fill";
     fill.style.width = `${week.share}%`;
@@ -841,7 +853,9 @@ function usageWeekItem(week: UsageWeekRow): HTMLElement {
 
   const parts = document.createElement("div");
   parts.className = "usage-row-parts";
-  parts.textContent = partsLine(week.parts, locale, t);
+  // A reported week has no breakdown to print — one total per model per day is all the file
+  // holds — so it says where its number came from in the line the parts would have been on.
+  parts.textContent = week.reported ? t("usage.reported") : partsLine(week.parts, locale, t);
   card.append(parts);
 
   item.append(card);
@@ -953,6 +967,9 @@ function usageDay(cell: UsageCell): HTMLElement {
   box.type = "button";
   box.className = "usage-cell";
   box.classList.add(`usage-level-${cell.level}`);
+  // An outline rather than a shade: the number is real and is one hover away, but it was
+  // counted by another program in another unit, and a shade is a comparison.
+  if (cell.reported) box.classList.add("reported");
   inspectable(box, cellLine(cell, locale, t), cell.key, cell.at);
   return box;
 }
@@ -1260,8 +1277,17 @@ function paintUsage(): void {
   if (numbers && shownTotals) {
     if (usageTotal) usageTotal.textContent = formatTokens(shownTotals.total, locale);
     // All four counters, every time. The headline is their sum — the same definition
-    // `/usage` calls *total tokens* — and this is where the cache is told from the work.
+    // `/usage` calls *total tokens* — and this is where the cache is told from the work. A
+    // reported day has no split to show and prints four em dashes, which is the same rule an
+    // absent counter has always followed.
     if (usagePartsLine) usagePartsLine.textContent = partsLine(shownTotals.parts, locale, t);
+  }
+  if (usageTag) {
+    // What the headline is, when it is not this product's own answer: the count `/usage`
+    // shows, or a day another program reported. Nothing when it is.
+    const key = opening?.reported ? "usage.reported" : view && modeTagKey(view.mode);
+    usageTag.hidden = !numbers || !key;
+    usageTag.textContent = key ? t(key) : "";
   }
   // Every tab has exactly one list, and on *Weeks* that list is the weeks. Drawing the model
   // rows underneath them as well would put two scrolling lists of 236 px in a window clamped

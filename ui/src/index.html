@@ -148,6 +148,12 @@
           <p class="usage-headline">
             <span class="usage-total" data-usage-total></span>
             <span class="usage-caption" data-i18n="usage.tokens"></span>
+            <!--
+              Only ever shown when the headline is not this product's own answer: the per-line
+              count `/usage` prints, or a day another program reported. The deduplicated spend
+              carries no tag, because a label on the default makes the default look unusual.
+            -->
+            <span class="usage-tag" data-usage-tag hidden></span>
           </p>
           <p class="usage-parts" data-usage-parts></p>
           <p class="usage-info" data-usage-info hidden></p>
@@ -362,6 +368,20 @@
           </div>
           <p class="help" data-statusline-note hidden></p>
           <pre class="console" data-statusline-output hidden></pre>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend data-i18n="settings.section.usage"></legend>
+          <label class="row check">
+            <input type="checkbox" data-field="usageCountLikeClaudeCode" />
+            <span class="row-label" data-i18n="settings.usage.perLine"></span>
+          </label>
+          <p class="help" data-i18n="settings.usage.perLine.help"></p>
+          <label class="row check">
+            <input type="checkbox" data-field="usageFillHistoryFromStats" />
+            <span class="row-label" data-i18n="settings.usage.history"></span>
+          </label>
+          <p class="help" data-i18n="settings.usage.history.help"></p>
         </fieldset>
 
         <fieldset class="group">

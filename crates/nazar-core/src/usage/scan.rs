@@ -184,6 +184,30 @@ impl Usage {
             cache_read: step(self.cache_read, other.cache_read),
         }
     }
+
+    /// Two readings added, counter by counter, absence surviving the addition.
+    ///
+    /// What the **per-line** sum is built out of. [`super::dedupe`] collapses the several
+    /// lines Claude Code writes per message back into one message; this is the other half of
+    /// that pass — what those lines came to before any copy was thrown away — and it is what
+    /// a bucket's `raw` counters are. Absent plus absent stays absent, so a counter no line
+    /// ever named is still not a zero; absent plus a number is that number, which is the same
+    /// rule [`Usage::since`] keeps on the other side of the subtraction.
+    #[must_use]
+    pub fn plus(&self, other: &Usage) -> Usage {
+        fn step(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+            match (left, right) {
+                (None, None) => None,
+                _ => Some(left.unwrap_or(0).saturating_add(right.unwrap_or(0))),
+            }
+        }
+        Usage {
+            input: step(self.input, other.input),
+            output: step(self.output, other.output),
+            cache_create: step(self.cache_create, other.cache_create),
+            cache_read: step(self.cache_read, other.cache_read),
+        }
+    }
 }
 
 /// One billable message, reduced to what the store keeps.

@@ -43,6 +43,8 @@ const DEFAULTS = {
   thresholds: { warn: 60, critical: 85, exhausted: 100 },
   providers: { claude: true, codex: true },
   detailedWindows: false,
+  usageCountLikeClaudeCode: false,
+  usageFillHistoryFromStats: false,
 };
 
 const LANGUAGES = ["en", "tr"];
@@ -59,8 +61,49 @@ test("a form drawn from the settings and read straight back is the same settings
     thresholds: { warn: 50, critical: 80, exhausted: 95 },
     providers: { claude: false, codex: true },
     detailedWindows: true,
+    usageCountLikeClaudeCode: true,
+    usageFillHistoryFromStats: true,
   };
   assert.deepEqual(toForm(toValues(chosen)), chosen);
+});
+
+test("the two usage switches survive the round trip on their own", () => {
+  // Off is the shipped answer on both, and the pair is independent: turning on the count
+  // that matches `/usage` must not quietly turn on the imported history beside it.
+  const values = toValues(DEFAULTS);
+  assert.equal(values.usageCountLikeClaudeCode, false);
+  assert.equal(values.usageFillHistoryFromStats, false);
+
+  const counted = toForm({ ...values, usageCountLikeClaudeCode: true });
+  assert.equal(counted.usageCountLikeClaudeCode, true);
+  assert.equal(counted.usageFillHistoryFromStats, false);
+
+  const filled = toForm({ ...values, usageFillHistoryFromStats: true });
+  assert.equal(filled.usageCountLikeClaudeCode, false);
+  assert.equal(filled.usageFillHistoryFromStats, true);
+});
+
+test("the settings page offers both usage switches and explains each of them", () => {
+  const html = read("ui/src/index.html");
+  for (const field of ["usageCountLikeClaudeCode", "usageFillHistoryFromStats"]) {
+    assert.ok(
+      html.includes(`data-field="${field}"`),
+      `${field} has no control on the settings page`,
+    );
+  }
+  // A switch with no sentence under it is a switch nobody can decide about: both of these
+  // trade a property of the default for agreement with another program.
+  for (const key of [
+    "settings.section.usage",
+    "settings.usage.perLine",
+    "settings.usage.perLine.help",
+    "settings.usage.history",
+    "settings.usage.history.help",
+  ]) {
+    assert.ok(key in english, `${key} is missing from en.json`);
+    assert.ok(html.includes(`data-i18n="${key}"`), `${key} is not drawn on the page`);
+  }
+  assert.match(english["settings.usage.perLine.help"], /1\.7/, "the factor is the point");
 });
 
 test("the numbers become fields and come back as numbers", () => {

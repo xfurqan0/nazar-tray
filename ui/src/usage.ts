@@ -38,6 +38,18 @@
  *   already in hand by the local day or the local Monday an hour **starts** in — never by a
  *   second window asked of the store, which could come back from a different scan.
  *
+ * * **Two kinds of number never share a shade.** T-WP22 can fill the days older than the
+ *   transcripts from Claude Code's own statistics cache, and those days carry one total per
+ *   model and nothing else — no split into the four counters, and per-line rather than
+ *   deduplicated. They are drawn as outlines rather than shades, they take no part in the
+ *   heat scale the measured days are ranked on, and every place they appear says where they
+ *   came from. Shading them on the same scale would have been a comparison between one
+ *   program's arithmetic and another's, which is the comparison this package exists to stop
+ *   the panel from making silently.
+ * * **A day that is both measured and reported is measured.** The boundary between the two is
+ *   a UTC day on the Rust side and a local day here, so at some offsets one day can be both.
+ *   The side that knows the offset drops the reported half of it, which is this one.
+ *
  * Model ids are never merged and never translated. `claude-opus-5` and a bare `opus` are the
  * same model and appear as two rows, because merging them means a table of aliases that has
  * to be right about names nobody here controls, and a wrong merge cannot be undone once it
@@ -46,7 +58,13 @@
  */
 
 import { formatDuration, type Translate } from "./format";
-import type { UsageBucket, UsageError, UsageRange, UsageResponse } from "./snapshot";
+import type {
+  UsageBucket,
+  UsageError,
+  UsageMode,
+  UsageRange,
+  UsageResponse,
+} from "./snapshot";
 
 /**
  * What is printed where a number is not known.
@@ -148,6 +166,15 @@ export const CHART_SERIES = 6;
 /** How many points one line may hold. A year of days, and a little slack. */
 const MAX_POINTS = 372;
 
+/**
+ * The provider key the reported days arrive under, when anything hands them over as one.
+ *
+ * The Rust side lifts them out of `providers` before they reach this file, so nothing here
+ * can add them to a measured total by accident. This is what the rows built from them are
+ * labelled with, and it is the same spelling the store uses.
+ */
+export const REPORTED_PROVIDER = "claude_reported";
+
 /** The error kinds `get_usage` answers with, each of which has a message key. */
 export const USAGE_ERROR_KINDS: readonly string[] = [
   "bad_range",
@@ -183,6 +210,8 @@ export interface UsageRow {
   readonly parts: UsageParts;
   /** Deduplicated records that carried usage. Not a count of prompts. */
   readonly requests: number;
+  /** Whether this row is one another program reported, rather than one this store measured. */
+  readonly reported?: boolean;
   /** How wide the row's bar is drawn, `0`–`100`, against the largest row. */
   readonly share: number;
   /**
@@ -206,6 +235,26 @@ export interface UsageGroup {
   readonly rows: readonly UsageRow[];
 }
 
+/**
+ * One day another program reported a total for, because this one has no transcript left.
+ *
+ * `total` is the sum over its models, and it is a **per-line** number whichever mode the rest
+ * of the view is in: it is what Claude Code computed, and this product does not have the
+ * pieces to recompute it. That is why it is never added to a headline and never shaded on the
+ * same scale as a measured day.
+ */
+export interface UsageReportedDay {
+  /** The local day, `YYYY-MM-DD`. */
+  readonly key: string;
+  /** That day at local midnight, for an `Intl` date. */
+  readonly at: number;
+  readonly total: number;
+  /** The model that spent most of it, for the hover line. */
+  readonly topModel: string | undefined;
+  /** One total per model, biggest first. */
+  readonly models: readonly { readonly model: string; readonly total: number }[];
+}
+
 /** One local day in the calendar, whether or not it is inside the range being drawn. */
 export interface UsageCell {
   /** The local day, `YYYY-MM-DD`. Empty for a cell outside the range. */
@@ -226,6 +275,14 @@ export interface UsageCell {
   readonly present: boolean;
   /** The model that spent most of that day's tokens, for the hover line. */
   readonly topModel: string | undefined;
+  /**
+   * Whether the number on this day is another program's rather than this one's.
+   *
+   * A reported day is always `level: 0` and is drawn as an outline instead of a shade. Its
+   * total is real and is in the hover line; what it is not is comparable with the days beside
+   * it, because it counts every streamed line and they count messages.
+   */
+  readonly reported: boolean;
 }
 
 /** One column of the calendar: seven cells, Monday at the top. */
@@ -260,6 +317,8 @@ export interface UsageBar {
   readonly height: number;
   readonly level: number;
   readonly topModel: string | undefined;
+  /** Whether the number is another program's. See {@link UsageCell.reported}. */
+  readonly reported: boolean;
 }
 
 /**
@@ -285,6 +344,17 @@ export interface UsageWeekRow {
   readonly share: number;
   /** The week being lived in, which is a part week and is drawn as one. */
   readonly current: boolean;
+  /**
+   * What the reported days in this week come to, or `undefined` when it has none.
+   *
+   * A week with **no** measured counters and a reported total is drawn as a reported row: the
+   * number, the marker, and no breakdown, because there is none. A week that has both — only
+   * ever the one at the boundary — is drawn as the measured week it mostly is, and its
+   * reported days are still on the calendar and still open on their own.
+   */
+  readonly reportedTotal: number | undefined;
+  /** Whether the number this row shows is the reported one. */
+  readonly reported: boolean;
 }
 
 /** What a detail is opened for: one local day, or one local Monday-start week. */
@@ -315,6 +385,14 @@ export interface UsageDetail extends UsageTotals {
   readonly scope: UsageScope;
   /** Nothing was recorded in that day or week. Not an error, and not a row of zeroes. */
   readonly empty: boolean;
+  /**
+   * Whether what is on screen is a reported day rather than a measured one.
+   *
+   * When it is, the headline is that day's one total, every one of the four parts prints
+   * {@link ABSENT} — there is no split to show and none will be invented — and each row is a
+   * model with a total and nothing else.
+   */
+  readonly reported: boolean;
 }
 
 /** One local day of the chart's x axis. */
@@ -357,6 +435,15 @@ export interface UsageChart {
 /** Everything the view draws, worked out from one answer and one instant. */
 export interface UsageView extends UsageTotals {
   readonly range: UsageRange;
+  /**
+   * Which of the two counts this view is drawn from.
+   *
+   * `per_line` is what Claude Code's `/usage` shows, and the view says so on screen rather
+   * than quietly showing a number 1.7× the one it showed yesterday.
+   */
+  readonly mode: UsageMode;
+  /** The days older than the transcripts, newest last, or empty when the setting is off. */
+  readonly reportedDays: readonly UsageReportedDay[];
   /** The seven-day strip. Only the *Week* tab draws one; the others leave it empty. */
   readonly bars: readonly UsageBar[];
   /** The calendar. Every range builds one; only *All* draws it. */
@@ -780,6 +867,48 @@ function busiestModel(models: Map<string, number> | undefined): string | undefin
   return best;
 }
 
+/**
+ * The reported days of an answer, as local days, with the measured ones taken out.
+ *
+ * Two things happen here and both are rules from the module comment. The **date** is used as
+ * the local day key directly — these are days another program added up, and re-bucketing a
+ * date through a time zone would be converting something that was never an instant. And a day
+ * this store has measured anything for **wins**: the boundary between the two is a UTC day on
+ * the Rust side and a local day here, so at some offsets one day can be both, and the side
+ * that knows the offset is this one.
+ */
+export function buildReportedDays(
+  response: UsageResponse,
+  measured: ReadonlySet<string>,
+): UsageReportedDay[] {
+  const days: UsageReportedDay[] = [];
+  for (const [key, models] of Object.entries(response.reported ?? {})) {
+    if (measured.has(key)) continue;
+    const at = Date.parse(`${key}T00:00:00`);
+    if (Number.isNaN(at)) continue;
+
+    const rows = Object.entries(models)
+      .map(([model, total]) => ({ model, total: count(total) }))
+      .filter((row) => row.total > 0)
+      .sort((left, right) => right.total - left.total || left.model.localeCompare(right.model));
+    if (rows.length === 0) continue;
+
+    days.push({
+      key,
+      at,
+      total: rows.reduce((sum, row) => sum + row.total, 0),
+      topModel: rows[0]?.model,
+      models: rows,
+    });
+  }
+  return days.sort((left, right) => left.at - right.at);
+}
+
+/** Which count an answer holds. An answer with no `mode` was written before T-WP22. */
+export function usageMode(response: UsageResponse): UsageMode {
+  return response.mode === "per_line" ? "per_line" : "deduped";
+}
+
 /** The `since` instant as milliseconds, or `undefined` when the store has none. */
 function sinceInstant(since: string | undefined): number | undefined {
   if (!since) return undefined;
@@ -823,6 +952,7 @@ function buildGrid(
   floor: number | undefined,
   totals: Map<string, number>,
   models: Map<string, Map<string, number>>,
+  reported: ReadonlyMap<string, UsageReportedDay>,
 ): UsageGrid {
   const [first, last] = gridBounds(range, now, floor);
   const today = startOfLocalDay(now);
@@ -840,15 +970,21 @@ function buildGrid(
       const at = day.getTime();
       const present = at >= first.getTime() && at <= stop.getTime();
       const key = present ? localDate(day) : "";
-      const total = present ? (totals.get(key) ?? 0) : 0;
-      if (total > busiest) busiest = total;
+      const measured = present ? totals.get(key) : undefined;
+      const said = present && measured === undefined ? reported.get(key) : undefined;
+      const total = measured ?? said?.total ?? 0;
+      // A reported day never enters the scale. It is another program's per-line count, and
+      // ranking it against days counted a message at a time would draw a comparison that is
+      // not one; the outline says the number is there and the hover line says what it is.
+      if (measured !== undefined && measured > busiest) busiest = measured;
       days.push({
         key,
         at: present ? at : 0,
         total,
         level: 0,
         present,
-        topModel: present ? busiestModel(models.get(key)) : undefined,
+        topModel: present ? (busiestModel(models.get(key)) ?? said?.topModel) : undefined,
+        reported: said !== undefined,
       });
     }
     columns.push({ start: cursor.getTime(), days });
@@ -857,7 +993,10 @@ function buildGrid(
 
   const shaded: UsageWeek[] = columns.map((column) => ({
     start: column.start,
-    days: column.days.map((cell) => ({ ...cell, level: heatLevel(cell.total, busiest) })),
+    days: column.days.map((cell) => ({
+      ...cell,
+      level: cell.reported ? 0 : heatLevel(cell.total, busiest),
+    })),
   }));
 
   // A label goes over the column whose first drawn day opens a new month. Reading the first
@@ -890,11 +1029,20 @@ function buildWeeks(
   now: Date,
   floor: number | undefined,
   weekly: Map<string, Sums>,
+  reported: ReadonlyMap<string, UsageReportedDay>,
 ): UsageWeekRow[] {
   const [first, last] = gridBounds(range, now, floor);
   const today = startOfLocalDay(now);
   const stop = last.getTime() < today.getTime() ? last : today;
   const thisWeek = startOfLocalWeek(now).getTime();
+
+  // Reported days summed into the week they fall in, so a week the transcripts never
+  // reached still has a number on the list rather than a gap the reader cannot explain.
+  const said = new Map<string, number>();
+  for (const day of reported.values()) {
+    const week = localDate(startOfLocalWeek(new Date(day.at)));
+    said.set(week, (said.get(week) ?? 0) + day.total);
+  }
 
   const rows: UsageWeekRow[] = [];
   const cursor = startOfLocalWeek(first);
@@ -905,24 +1053,30 @@ function buildWeeks(
     const key = localDate(start);
     const sum = weekly.get(key);
     const parts = sum ? partsOf(sum) : EMPTY_PARTS;
+    const total = partsTotal(parts);
+    const reportedTotal = said.get(key);
     rows.push({
       key,
       start: start.getTime(),
       end: addLocalDays(start, 6).getTime(),
-      total: partsTotal(parts),
+      total,
       parts,
       requests: sum?.requests ?? 0,
       share: 0,
       current: start.getTime() === thisWeek,
+      reportedTotal,
+      reported: total === undefined && reportedTotal !== undefined,
     });
     cursor.setDate(cursor.getDate() + 7);
   }
 
-  const busiest = rows.reduce((most, row) => Math.max(most, row.total ?? 0), 0);
+  // The bar is measured against measured weeks alone, for the reason a reported day takes no
+  // shade: two counts of two different things do not share a scale.
+  const busiest = rows.reduce((most, row) => Math.max(most, row.reported ? 0 : (row.total ?? 0)), 0);
   return rows
     .map((row) => ({
       ...row,
-      share: busiest > 0 ? Math.min(100, ((row.total ?? 0) / busiest) * 100) : 0,
+      share: busiest > 0 && !row.reported ? Math.min(100, ((row.total ?? 0) / busiest) * 100) : 0,
     }))
     .reverse();
 }
@@ -970,9 +1124,24 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
   }
 
   const totals = summarise(window);
-  const floor = range === "all" ? (sinceInstant(response.since) ?? earliest) : earliest;
-  const grid = buildGrid(range, now, floor, dayTotals, dayModels);
-  const weeks = buildWeeks(range, now, floor, weekly);
+  // The measured days decide which reported ones survive, so this is built from the walk
+  // above rather than from the answer twice.
+  const said = new Map(
+    buildReportedDays(response, new Set(dayTotals.keys())).map((day) => [day.key, day]),
+  );
+  const oldest = [...said.values()].reduce<number | undefined>(
+    (first, day) => (first === undefined || day.at < first ? day.at : first),
+    undefined,
+  );
+  const measuredFloor = range === "all" ? (sinceInstant(response.since) ?? earliest) : earliest;
+  // *All* reaches back to the oldest reported day as well, or the calendar would draw a
+  // history that stops exactly where the numbers the setting was turned on for begin.
+  const floor =
+    range === "all" && oldest !== undefined
+      ? Math.min(oldest, measuredFloor ?? oldest)
+      : measuredFloor;
+  const grid = buildGrid(range, now, floor, dayTotals, dayModels, said);
+  const weeks = buildWeeks(range, now, floor, weekly, said);
 
   // The strip is the week grid's one column, cut at today: seven cells is a calendar, and a
   // strip that drew Saturday before it happened would be a bar chart with a promise in it.
@@ -984,8 +1153,9 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
       total: cell.total,
       level: cell.level,
       topModel: cell.topModel,
+      reported: cell.reported,
       height:
-        grid.busiest > 0 && cell.total > 0
+        grid.busiest > 0 && cell.total > 0 && !cell.reported
           ? Math.max(MIN_VISIBLE_BAR, (cell.total / grid.busiest) * 100)
           : 0,
     }));
@@ -993,6 +1163,8 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
   return {
     ...totals,
     range,
+    mode: usageMode(response),
+    reportedDays: [...said.values()],
     bars,
     grid,
     weeks,
@@ -1016,11 +1188,13 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
  */
 export function buildUsageDetail(response: UsageResponse, scope: UsageScope): UsageDetail {
   const store = tally();
+  const measured = new Set<string>();
 
   for (const [provider, hours] of Object.entries(response.providers ?? {})) {
     for (const [key, buckets] of Object.entries(hours)) {
       const at = hourStart(key);
       if (at === undefined) continue;
+      measured.add(localDayKey(at));
       // The hour lands in the local day it **starts** in, so a day and the week that holds
       // it are cut from the same instant and a week is exactly its seven days added up.
       const where = scope.kind === "day" ? localDayKey(at) : localWeekKey(at);
@@ -1030,7 +1204,53 @@ export function buildUsageDetail(response: UsageResponse, scope: UsageScope): Us
   }
 
   const totals = summarise(store);
-  return { ...totals, scope, empty: totals.rows.length === 0 };
+  if (totals.rows.length > 0) {
+    return { ...totals, scope, empty: false, reported: false };
+  }
+
+  // Nothing measured here. If another program reported the day — or every day of the week —
+  // that is what there is to show: one total per model, and {@link ABSENT} in all four parts,
+  // because `stats-cache.json` holds one number per model per day and the split it does not
+  // hold is not going to be invented here.
+  const said = buildReportedDays(response, measured).filter((day) =>
+    scope.kind === "day" ? day.key === scope.key : localWeekKey(day.at) === scope.key,
+  );
+  if (said.length === 0) {
+    return { ...totals, scope, empty: true, reported: false };
+  }
+
+  const perModel = new Map<string, number>();
+  for (const day of said) {
+    for (const row of day.models) {
+      perModel.set(row.model, (perModel.get(row.model) ?? 0) + row.total);
+    }
+  }
+  const whole = [...perModel.values()].reduce((sum, value) => sum + value, 0);
+  const largest = [...perModel.values()].reduce((most, value) => Math.max(most, value), 0);
+  const rows: UsageRow[] = [...perModel.entries()]
+    .map(([model, total]) => ({
+      provider: REPORTED_PROVIDER,
+      model,
+      total,
+      parts: EMPTY_PARTS,
+      requests: 0,
+      share: largest > 0 ? Math.min(100, (total / largest) * 100) : 0,
+      percent: whole > 0 ? Math.floor((total / whole) * 100) : undefined,
+      reported: true,
+    }))
+    .sort(byTotal);
+
+  return {
+    total: whole,
+    parts: EMPTY_PARTS,
+    requests: 0,
+    rows,
+    groups: [{ provider: REPORTED_PROVIDER, total: whole, rows }],
+    grouped: false,
+    scope,
+    empty: false,
+    reported: true,
+  };
 }
 
 // ------------------------------------------------------------------- the chart
@@ -1284,6 +1504,16 @@ export function weekLabel(week: { start: number; end: number }, locale: string):
 }
 
 /**
+ * The number a week's row shows: the measured one, or the reported one when there is no other.
+ *
+ * Never both added together. They count different things — a message, and a line — and a sum
+ * of the two would be a number that is true of nothing.
+ */
+export function weekTotal(week: UsageWeekRow): number | undefined {
+  return week.reported ? week.reportedTotal : week.total;
+}
+
+/**
  * What the detail calls itself: a date for a day, and a named week for a week.
  *
  * A week gets a word — *Week of 14 Sep 2026* — because `Sep 14 – Sep 20` at the top of a page
@@ -1322,17 +1552,20 @@ export function partsLine(parts: UsageParts, locale: string, t: Translate): stri
  * keyboard — which is three reasons for a line the panel owns and redraws itself.
  */
 export function cellLine(
-  cell: { at: number; total: number; topModel: string | undefined },
+  cell: { at: number; total: number; topModel: string | undefined; reported?: boolean },
   locale: string,
   t: Translate,
 ): string {
   const date = formatDay(cell.at, locale);
   if (!(cell.total > 0) || cell.topModel === undefined) return t("usage.cell.none", { date });
-  return t("usage.cell", {
+  const line = t("usage.cell", {
     date,
     tokens: formatTokens(cell.total, locale),
     model: cell.topModel,
   });
+  // Where the number came from, on the same line as the number, because a day drawn
+  // differently from the ones beside it has to say why in words as well as in colour.
+  return cell.reported ? `${line}${SEPARATOR}${t("usage.reported")}` : line;
 }
 
 /**
@@ -1369,6 +1602,19 @@ export function footerLine(view: UsageView, locale: string, t: Translate, now: n
  */
 export function requestsKey(provider: string): string {
   return provider === "codex" ? "usage.row.events" : "usage.row.requests";
+}
+
+/**
+ * The tag beside the headline, or `undefined` when the headline needs none.
+ *
+ * `per_line` gets one. The number on screen is then the one `/usage` prints, which is about
+ * 1.7× what this machine spent, and a view that swapped one for the other without saying so
+ * would be a view the reader cannot trust twice. The deduplicated count is the product's own
+ * answer and carries no tag: a label on the default would make the default look like the
+ * exception.
+ */
+export function modeTagKey(mode: UsageMode): string | undefined {
+  return mode === "per_line" ? "usage.mode.perLine" : undefined;
 }
 
 /**

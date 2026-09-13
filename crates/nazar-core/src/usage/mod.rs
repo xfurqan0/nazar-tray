@@ -61,6 +61,7 @@
 
 pub mod codex;
 pub mod dedupe;
+pub mod reported;
 pub mod scan;
 pub mod store;
 
@@ -73,10 +74,11 @@ use crate::error::Result;
 use crate::timefmt::{now_rfc3339, unix_seconds_from_rfc3339};
 
 pub use dedupe::{Credit, Credited, Deduper};
+pub use reported::{Backfill, backfill_claude_stats, backfill_claude_stats_from};
 pub use scan::{Record, UNKNOWN_MODEL, Usage};
 pub use store::{
-    Applied, Bucket, Hours, Models, Month, Months, PROVIDER, PROVIDER_CODEX, ProviderTotals,
-    VERSION, rebuild,
+    Applied, Bucket, Hours, Models, Month, Months, PROVIDER, PROVIDER_CODEX, PROVIDER_REPORTED,
+    ProviderTotals, Raw, VERSION, rebuild,
 };
 
 /// `<home>/.claude/projects` — where Claude Code keeps its transcripts.
@@ -129,6 +131,14 @@ pub struct UsageSummary {
     pub credited: u64,
     /// What the credited messages added up to.
     pub credited_total: u64,
+    /// What the **lines behind them** added up to, with no dedupe at all.
+    ///
+    /// Not [`UsageSummary::naive_total`], which is every line this pass read including the
+    /// ones it refused. This is what actually reached a bucket's `raw`, so on a pass that
+    /// re-read a file it is the growth rather than the whole file again — and it is the
+    /// number that has to stay equal across a rescan for the per-line side to be idempotent.
+    #[serde(default)]
+    pub raw_credited_total: u64,
     /// What the same lines would have added up to with no dedupe at all.
     ///
     /// Kept beside the real total so the inflation is observable rather than asserted:
@@ -222,7 +232,10 @@ pub fn scan_claude_in(projects_dir: &Path, state_dir: &Path) -> Result<UsageSumm
             .as_ref()
             .map(|cursor| cursor.credited.clone())
             .unwrap_or_default();
-        let mut deduper = Deduper::with_credited(&carried);
+        // `rereading` is the per-line sum's half of the same idea: the deduplicated side
+        // subtracts what it has already credited whichever way the pass arrived, while a sum
+        // over *lines* has to know whether these are new bytes or the same bytes again.
+        let mut deduper = Deduper::with_credited(&carried).rereading(pass.restarted);
         for item in deduper.reduce(pass.records) {
             let Some(month) = scan::month_of(&item.record.hour) else {
                 continue;
@@ -232,11 +245,14 @@ pub fn scan_claude_in(projects_dir: &Path, state_dir: &Path) -> Result<UsageSumm
                 summary.unnamed_model += 1;
             }
             summary.credited_total = summary.credited_total.saturating_add(item.delta.total());
+            summary.raw_credited_total =
+                summary.raw_credited_total.saturating_add(item.raw.total());
             store::credit(
                 months.entry(month).or_default(),
                 &item.record.hour,
                 &item.record.model,
                 &item.delta,
+                Some(&item.raw),
                 item.fresh,
             );
         }
@@ -419,11 +435,18 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
                 summary.unnamed_model += 1;
             }
             summary.credited_total = summary.credited_total.saturating_add(event.usage.total());
+            summary.raw_credited_total = summary
+                .raw_credited_total
+                .saturating_add(event.usage.total());
+            // `None` rather than the same numbers twice: Codex writes each event once, so its
+            // per-line sum **is** its deduplicated one, and an absent `raw` is how the store
+            // says exactly that. See [`store::Bucket::add`].
             store::credit(
                 months.entry(month).or_default(),
                 &event.hour,
                 &event.model,
                 &event.usage,
+                None,
                 true,
             );
         }

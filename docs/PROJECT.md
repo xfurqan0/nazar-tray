@@ -1531,3 +1531,71 @@ its first two items belong in the same commit as the readers they describe, beca
   measurement kept as the argument for the breakdown. The changelog's tooltip example was
   `22.3M`, a number from when the tooltip and the panel were counting differently; it is `1.5B`
   now, which is the same six days added up all four ways.
+- 2026-09-13 — **T-WP22 landed: two numbers in the store, and a history older than the
+  transcripts.** The maintainer put the panel beside Claude Code's `/usage` and found them
+  disagreeing by a factor nobody had written down. The answer is not to pick a side: **the
+  store now keeps both counts**, the default is still the one that is a measurement, and the
+  other is a setting with its name on it.
+  **The two numbers, and why one of them is the default.** Claude Code writes a message once
+  per content block and every one of those lines carries the whole `usage` object, so adding
+  the lines up counts one reply several times. Measured on this machine on 2026-09-13 over a
+  fresh scan of 169 files and 19 656 usage lines: deduplicated **2 134 400 360**, per-line
+  **3 536 746 353**, ratio **1.657** — and over the Claude side alone, **1.667**. The
+  deduplicated number is what this machine spent; the per-line number is what `/usage` prints
+  ([anthropics/claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098)).
+  A user comparing two windows deserves to be able to make them agree, so
+  `usage.countLikeClaudeCode` swaps every counter for its per-line twin **in the same bucket
+  shape** — one set of panel functions over one type, rather than two copies with two chances
+  to disagree about what a week adds up to — and the headline carries a small tag saying which
+  one it is. The tooltip follows the same setting, which is T-WP20b's rule applied before it
+  could be broken again.
+  **The invariant the per-line counters needed, and the guard a byte offset could not give.**
+  The deduplicated side can say *largest reading minus what is already credited* in either
+  direction, because every copy of a message carries the whole object. A **sum over lines**
+  cannot: the same line read twice is two lines unless something remembers it is not. So each
+  dedupe key carries two per-line figures — the high-water mark, and what the file holds now —
+  and what is credited is the difference. The sequence that proves it is needed: a transcript
+  is pruned to its first line and a copy of the original is put back, at which point the next
+  pass is an **ordinary append**, with a valid offset and a matching fingerprint and nothing at
+  all to say the file ever shrank. Adding its lines would have doubled them permanently. The
+  cursor row is nine numbers, or thirteen for a key whose file has been truncated below its
+  mark; a row of **five** is one written before this package, and both per-line figures are
+  seeded from its deduplicated half — a lower bound, and exactly what an absent `raw` on a
+  bucket already means, so the two cancel.
+  **An absent `raw` is a sentence, not a hole**: *the per-line sum of this bucket is its five
+  counters*. True of every Codex bucket, which has no copies to collapse; true of every bucket
+  written before this package, whose lines are behind a cursor that has moved and cannot be
+  read again. The alternative was multiplying by 1.667, which is inventing a number, and rule
+  2 of `limits-contract.md` is older than the temptation. `version` stays `1`: three fields
+  were **added**, and unknown keys have survived a rewrite since T-WP13.
+  **The days before the transcripts, and the reason they are not merged.**
+  `~/.claude/stats-cache.json` reaches back twenty-two days on this machine against six in the
+  transcripts, and it holds one total per model per day. It is **not** a source this store
+  counts from — those totals are the per-line sums, proved digit for digit against this
+  build's own `raw` counters on all five overlapping days (2026-09-08: 622 554 986 both ways;
+  2026-09-12: 422 923 652 both ways), which settles at the same time that its dates are **UTC
+  days**. So `usage.fillHistoryFromStats`, off by default, copies them under a provider key of
+  their own, `claude_reported`, with `reported_total` and the five counters at zero — one
+  number is one number, and a guess at its split would be four invented ones. On this machine
+  it fills **16 days, 47 model rows, 10 490 068 226 tokens**.
+  **Two rules in it are load-bearing and were nearly not.** The boundary is the earliest hour
+  the **`claude`** provider holds, not the store-wide `since` — which on this machine is
+  dragged back to 27 August by *Codex* rollout logs that say nothing about Claude Code's
+  transcripts, and would have hidden twelve days of real history. And `since` is computed from
+  the measured providers alone, because a backfilled day counted in it would move the boundary
+  back behind itself and leave the store oscillating between two answers every five minutes.
+  **The panel draws them apart rather than labelling them.** Outlined instead of shaded on the
+  calendar, and taking no part in the scale the measured days are ranked on — a shade is a
+  rank, and these are counted in a different unit. Outlined in the weeks list, with *reported
+  by Claude Code* where the breakdown would be. In a detail: the total, four em dashes, and one
+  row per model. And the one boundary case a negative offset can produce — a local day that is
+  partly covered by transcripts and also carries a reported number — is dropped by the panel,
+  which is the side that knows the offset.
+  **Seven new keys, 158 per file**, under `settings.section.usage`, `settings.usage.*`,
+  `usage.mode.perLine` and `usage.reported`. The frozen counted-key list is untouched: none of
+  them interpolates a bare count. **436 core tests where there were 422, 122 in the tray, 143
+  in the panel**, fmt and clippy clean, `--no-default-features` builds. The new ones worth
+  naming are the truncate-then-restore sequence above, the rescan that must add nothing to
+  either number, the backfill that must never overlap the transcripts and must write the same
+  bytes twice, and a leak test whose fixture carries a sentinel in `longestSession.sessionId`
+  — the field this reader has nowhere to put.

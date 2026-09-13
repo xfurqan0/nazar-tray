@@ -56,6 +56,22 @@ the *Models* selector — the third is `usage.range.all`, reused rather than ask
 the word above the selector and the word in it agree. `usage.chart.daily` titles the chart,
 and `usage.detail.week` names what a week's detail is a detail of.
 
+**T-WP22 added seven — 158 keys per file.** Five are the settings page's new *Usage history*
+section (`settings.section.usage`, `settings.usage.perLine`, `settings.usage.history` and a
+`.help` sentence under each), and two are what the view says when a number is not this
+application's own: `usage.mode.perLine` — the tag under the headline when the counters are the
+per-line ones Claude Code's `/usage` shows — and `usage.reported`, which marks a day copied in
+from Claude Code's own statistics.
+
+Three notes for a translator. **`/usage` is a command name and is left alone**, like
+`nazar-tray` and `Claude Code`; it is the thing the sentence is about. **The 1.7 in
+`settings.usage.perLine.help` is a measurement, not a rounding to taste** — it is the ratio
+between the two counts on the maintainer's machine, and the decimal mark follows the language
+(`1.7×` in English, `1,7` in Turkish, Russian and Spanish). And **`usage.reported` is read in
+three places at once** — a hover line on the calendar, the line where a week's breakdown would
+be, and the tag under a detail's headline — so it wants to be short enough for a 360 px row and
+to read as a clause rather than a heading.
+
 Two things a translator should know about those. **`usage.span.days7` spells its unit out and
 still needs no plural form**, because the number in it is a *constant*: Russian needs `дней`
 after 7 and after 30 and never anything else, so the string carries the right form once rather

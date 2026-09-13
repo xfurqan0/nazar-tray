@@ -78,6 +78,23 @@ That is the whole default quota path: two local files in, one local `limits.json
 
 **Usage history — arriving in 0.2.0 — reads your session transcripts, and takes nine fields out of them.** To answer *how many tokens did I spend, and on which model*, nazar-tray reads `~/.claude/projects/**/*.jsonl` (subagent transcripts included) and the `token_count` events in the Codex logs it already opens. From a Claude record it takes the record type, the timestamp, the model id, the four token counters **the server itself reported**, and two ids that exist only to drop duplicate records and are never written anywhere. From a Codex event: the timestamp, four counters, and the model name from the turn. That is the whole of it, and none of it is an estimate — these are the numbers the provider reported, added up.
 
+**The number it shows is what you spent, which is not the number `/usage` shows.** Claude Code
+writes a message once per *content block* and every one of those lines carries the whole usage
+object, so adding the lines up counts one reply several times — 1.667× the real spend on the
+machine this was measured on, and not a constant you could divide back out
+([anthropics/claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098)).
+nazar-tray counts a message once, and that is the default. If you would rather the two windows
+agreed, **Count like Claude Code** in settings shows the per-line numbers instead, labelled *as
+/usage counts* so you always know which of the two you are looking at — the store keeps both,
+and the tray tooltip follows the same switch.
+
+**And history older than your transcripts, if you ask for it.** Claude Code prunes transcripts
+and keeps a statistics cache, which on this machine reached back twenty-two days against six.
+**Fill history from Claude Code's stats** copies those older days in — totals only, no
+breakdown, per-line as that file counts them — and draws them apart from the days nazar-tray
+counted itself, marked *reported by Claude Code* everywhere they appear. Off by default,
+because a history that quietly mixes two kinds of number is worse than a shorter one.
+
 **Your prompts and the replies to them are never read.** Not the message content, not the reasoning, not tool input or tool output, not file contents or command output — and not the paths, project names, branch names or session ids that sit beside them in the same file. The reader does not filter a line and hope: it builds a new record out of the fields named above, so everything else is gone with the parse.
 
 **A test is what makes that a fact rather than a promise.** A transcript whose every text field carries a sentinel string is run through the whole scan, and the build fails if that string appears in the result, in the totals, or in the file they are written to. It is the gate the Codex reader has been through since the first release, and the usage readers ship with it or they do not ship. The complete inventory, field by field, including everything deliberately not read, is [docs/pinned-internal-formats.md](docs/pinned-internal-formats.md); what comes out the other end is [docs/usage-contract.md](docs/usage-contract.md) — hourly totals per model in `%APPDATA%\nazar\usage\`, which no other program reads, and which goes nowhere, because by default nothing here talks to the network at all.
@@ -103,7 +120,8 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
   `~/.nazar/limits.json` once without a tray running
 - **Usage history — in 0.2.0, not in this release:** tokens this week, this month and all
   time, one row per model, for both providers, from the numbers the providers already
-  reported ([what it reads](#what-it-reads-and-what-it-never-reads))
+  reported — deduplicated by default, with a switch for the per-line count `/usage` shows
+  ([what it reads](#what-it-reads-and-what-it-never-reads))
 - A **per-user installer** — no administrator rights, no service, no scheduled task — and an
   uninstaller that removes the startup entry, the record Windows keeps beside it, and the
   status-line wrapper's edit to Claude Code's settings

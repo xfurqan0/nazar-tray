@@ -370,10 +370,15 @@ fn the_usage_fixtures_carry_nothing_that_identifies_a_machine() {
         .join("nazar-core")
         .join("fixtures")
         .join("usage");
-    let fixtures = files_under(&root, &["jsonl"]);
+    // `json` as well as `jsonl` since T-WP22: `stats-cache.json` is a whole document rather
+    // than a stream of lines, and it is the one usage fixture that stands for a file Claude
+    // Code keeps about the machine itself — sessions, message counts, hours of the day. All
+    // the more reason for it to be a shape with nothing in it.
+    let fixtures = files_under(&root, &["jsonl", "json"]);
     assert!(
-        fixtures.len() >= 8,
-        "expected the usage fixtures — four transcripts and four rollouts — found {}",
+        fixtures.len() >= 9,
+        "expected the usage fixtures — four transcripts, four rollouts and a statistics \
+         cache — found {}",
         fixtures.len()
     );
 

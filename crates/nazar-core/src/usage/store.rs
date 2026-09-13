@@ -109,6 +109,17 @@ pub const PROVIDER: &str = "claude";
 /// another would forget every offset the other had just written.
 pub const PROVIDER_CODEX: &str = "codex";
 
+/// The provider key days that come from Claude Code's own statistics cache are filed under.
+///
+/// **Never merged into [`PROVIDER`]**, and that is the whole of the design. Those days are
+/// not a reading of anything this product did: they are one number per model per day as
+/// another program computed it, for days whose transcripts no longer exist here, and the one
+/// counter they carry is [`Bucket::reported_total`] rather than any of the five. A key of
+/// their own is what lets the panel draw them differently, lets a reader sum the real
+/// providers without them, and lets the whole block be thrown away and written again from the
+/// file every time the setting that fills it is on. See [`super::reported`].
+pub const PROVIDER_REPORTED: &str = "claude_reported";
+
 /// One model's totals for one UTC hour.
 ///
 /// The counter names are the ones the sources already use, rather than `limits.json`'s
@@ -142,9 +153,84 @@ pub struct Bucket {
     /// Distinct messages, after dedupe.
     #[serde(default)]
     pub requests: u64,
+    /// The same four token counters with **no dedupe at all**: every line added up.
+    ///
+    /// What Claude Code's `/usage` shows and what `~/.claude/stats-cache.json` holds, digit
+    /// for digit. Optional, and its absence is a statement rather than a hole: **a bucket
+    /// with no `raw` has a per-line sum equal to its five counters.** That is exactly true
+    /// for Codex, which writes each event once and has no copies to collapse, and it is what
+    /// a bucket written before T-WP22 is read as — the bytes those lines were in are behind a
+    /// cursor that has already moved, so the real per-line sum is not recoverable and a
+    /// factor of 1.7 applied to it would be an invented number.
+    ///
+    /// It is written the moment anything credits a per-line sum to the bucket, seeded from
+    /// the five counters so that the rule above keeps holding; see [`Bucket::add`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Raw>,
+    /// One number another program reported for a whole day, when this bucket is one of those.
+    ///
+    /// Only ever present under [`PROVIDER_REPORTED`], where it is the **only** number: the
+    /// five counters are `0` there because `stats-cache.json` holds one total per model per
+    /// day and no split, and writing a guess at the split would be inventing four numbers out
+    /// of one. See [`super::reported`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_total: Option<u64>,
     /// Fields a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
+}
+
+/// The four token counters as the lines carried them, before any copy was collapsed.
+///
+/// No `requests`: a request is a message and not a line, so the count beside the per-line
+/// numbers is the deduplicated one in both readings. The contract says so where it says what
+/// `requests` means, and a per-line count would be a count of content blocks under a label
+/// that promises replies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Raw {
+    /// `input_tokens`, summed over every line.
+    #[serde(default)]
+    pub input: u64,
+    /// `output_tokens`, summed over every line.
+    #[serde(default)]
+    pub output: u64,
+    /// `cache_creation_input_tokens`, summed over every line.
+    #[serde(default)]
+    pub cache_create: u64,
+    /// `cache_read_input_tokens`, summed over every line.
+    #[serde(default)]
+    pub cache_read: u64,
+}
+
+impl Raw {
+    /// Add a reading, treating an absent counter as nothing.
+    fn add(&mut self, usage: &Usage) {
+        self.input = self.input.saturating_add(usage.input.unwrap_or(0));
+        self.output = self.output.saturating_add(usage.output.unwrap_or(0));
+        self.cache_create = self
+            .cache_create
+            .saturating_add(usage.cache_create.unwrap_or(0));
+        self.cache_read = self
+            .cache_read
+            .saturating_add(usage.cache_read.unwrap_or(0));
+    }
+
+    /// Add another set of per-line counters.
+    fn absorb(&mut self, other: Raw) {
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_create = self.cache_create.saturating_add(other.cache_create);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+    }
+
+    /// The four counters added together.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_create)
+            .saturating_add(self.cache_read)
+    }
 }
 
 impl Bucket {
@@ -154,7 +240,28 @@ impl Bucket {
     /// is the rest of a message counted in an earlier pass adds its tokens without adding
     /// a request. A counter the reading never carried adds nothing, which is the one place
     /// absent becomes zero and the place the contract says it does.
-    pub fn add(&mut self, usage: &Usage, fresh: bool) {
+    ///
+    /// `raw` is the same reading with no dedupe — every line of that message added up — or
+    /// `None` from a reader that has no copies to collapse, which is Codex's whole side of
+    /// the store. `None` leaves an absent `raw` absent, and that is what keeps "absent means
+    /// the same as the five counters" true rather than merely claimed.
+    pub fn add(&mut self, usage: &Usage, raw: Option<&Usage>, fresh: bool) {
+        // Before the five counters move, because an absent `raw` is seeded from them: it is
+        // the statement "these were the same number", and the moment one of them grows the
+        // other has to be written down.
+        match raw {
+            Some(raw) => {
+                let mut counters = self.raw_counters();
+                counters.add(raw);
+                self.raw = Some(counters);
+            }
+            None => {
+                if let Some(counters) = self.raw.as_mut() {
+                    counters.add(usage);
+                }
+            }
+        }
+
         self.input = self.input.saturating_add(usage.input.unwrap_or(0));
         self.output = self.output.saturating_add(usage.output.unwrap_or(0));
         self.cache_create = self
@@ -168,8 +275,33 @@ impl Bucket {
         }
     }
 
+    /// The per-line counters, or the five counters when this bucket has none.
+    ///
+    /// The one place the rule "absent `raw` means the same as the five counters" is read, so
+    /// that nothing else has to remember it.
+    #[must_use]
+    pub fn raw_counters(&self) -> Raw {
+        self.raw.unwrap_or(Raw {
+            input: self.input,
+            output: self.output,
+            cache_create: self.cache_create,
+            cache_read: self.cache_read,
+        })
+    }
+
     /// Add another bucket's totals to this one.
     pub fn absorb(&mut self, other: &Bucket) {
+        // Absent plus absent stays absent — two buckets that both said "the same as the five
+        // counters" add up to a third that says it too — and anything else is written out,
+        // because one of the two sides knew something the five counters do not carry.
+        if self.raw.is_some() || other.raw.is_some() {
+            let mut counters = self.raw_counters();
+            counters.absorb(other.raw_counters());
+            self.raw = Some(counters);
+        }
+        if let Some(reported) = other.reported_total {
+            self.reported_total = Some(self.reported_total.unwrap_or(0).saturating_add(reported));
+        }
         self.input = self.input.saturating_add(other.input);
         self.output = self.output.saturating_add(other.output);
         self.cache_create = self.cache_create.saturating_add(other.cache_create);
@@ -186,13 +318,23 @@ pub type Hours = BTreeMap<String, Models>;
 pub type Months = BTreeMap<String, Hours>;
 
 /// Add one credited reading to a set of hourly buckets.
-pub fn credit(hours: &mut Hours, hour: &str, model: &str, usage: &Usage, fresh: bool) {
+///
+/// `raw` is the same reading with no dedupe, or `None` from a reader whose source writes each
+/// record once. See [`Bucket::add`].
+pub fn credit(
+    hours: &mut Hours,
+    hour: &str,
+    model: &str,
+    usage: &Usage,
+    raw: Option<&Usage>,
+    fresh: bool,
+) {
     hours
         .entry(hour.to_owned())
         .or_default()
         .entry(model.to_owned())
         .or_default()
-        .add(usage, fresh);
+        .add(usage, raw, fresh);
 }
 
 /// The earliest hour a set of buckets holds, as an RFC 3339 instant.
@@ -265,12 +407,28 @@ impl Month {
     }
 
     /// The earliest hour any provider holds in this document, as an RFC 3339 instant.
+    ///
+    /// **[`PROVIDER_REPORTED`] is not a provider for this purpose**, and leaving it out is
+    /// load-bearing rather than tidy. `since` is *the earliest instant this store measured
+    /// anything*, the boundary the backfill fills days **before** — so counting a backfilled
+    /// day in it would move the boundary back behind itself, empty the block on the next
+    /// pass, move it forward again, and leave the store oscillating between two answers for
+    /// as long as the setting is on.
     #[must_use]
     pub fn earliest(&self) -> Option<String> {
-        self.providers
-            .values()
-            .filter_map(|totals| earliest_hour(&totals.buckets))
+        self.measured()
+            .filter_map(|(_, totals)| earliest_hour(&totals.buckets))
             .min()
+    }
+
+    /// The providers that are a reading of this machine's own logs, in key order.
+    ///
+    /// Everything except [`PROVIDER_REPORTED`], which is another program's arithmetic about
+    /// days this store never saw.
+    pub fn measured(&self) -> impl Iterator<Item = (&String, &ProviderTotals)> {
+        self.providers
+            .iter()
+            .filter(|(provider, _)| provider.as_str() != PROVIDER_REPORTED)
     }
 }
 
@@ -720,7 +878,7 @@ mod tests {
 
     fn pending(generation: u64, month: &str, hour: &str, usage: &Usage) -> Vec<Pending> {
         let mut hours = Hours::new();
-        credit(&mut hours, hour, "claude-opus-5", usage, true);
+        credit(&mut hours, hour, "claude-opus-5", usage, None, true);
         vec![Pending {
             month: month.to_owned(),
             generation,
@@ -750,6 +908,7 @@ mod tests {
                 cache_create: None,
                 cache_read: None,
             },
+            None,
             true,
         );
         assert_eq!(bucket.input, 2);
@@ -775,8 +934,8 @@ mod tests {
     #[test]
     fn a_reading_that_completes_an_earlier_one_adds_no_request() {
         let mut bucket = Bucket::default();
-        bucket.add(&usage(1, 10), true);
-        bucket.add(&usage(0, 5), false);
+        bucket.add(&usage(1, 10), None, true);
+        bucket.add(&usage(0, 5), None, false);
         assert_eq!(bucket.output, 15);
         assert_eq!(bucket.requests, 1);
     }
@@ -812,6 +971,7 @@ mod tests {
             "2026-09-13T02",
             "claude-opus-5",
             &usage(2, 328),
+            None,
             true,
         );
         document
@@ -953,6 +1113,7 @@ mod tests {
             "2026-09-13T02",
             "gpt-6-astra",
             &usage(9, 9),
+            None,
             true,
         );
         apply(

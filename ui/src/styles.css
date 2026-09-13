@@ -826,6 +826,21 @@ input[type="checkbox"] {
   text-transform: uppercase;
 }
 
+/* What the headline is, when it is not this product's own answer: the per-line count
+   `/usage` prints, or a day another program reported. An outlined chip rather than a
+   coloured one — it qualifies the number beside it and must not outweigh it — and it is the
+   same outline the reported days on the calendar are drawn in, so the two read as one idea.
+   Lower case, because it is a clause and not a heading. */
+.usage-tag {
+  padding: 1px 5px;
+  border: 1px dashed var(--color-accent-text, #3fa9f5);
+  border-radius: 999px;
+  color: var(--color-accent-text, #3fa9f5);
+  font-size: var(--type-size-xs, 10px);
+  font-weight: var(--type-weight-medium, 560);
+  white-space: nowrap;
+}
+
 /* The four counters the headline is a sum of. It wraps rather than shrinking: at 360 px the
    four of them are two lines in English and three in Russian, and a font size chosen to fit
    the worst language is a font size nobody can read in any of them. */
@@ -967,6 +982,18 @@ input[type="checkbox"] {
   opacity: 1;
 }
 
+/* A day whose number came from Claude Code's own statistics rather than from a transcript
+   this app read. It is drawn as an outline and never as a shade: the shade is a rank against
+   the days beside it, and this number is counted in a different unit — every streamed line
+   rather than every message — so ranking it against them would draw a comparison that is
+   not one. `!important` beats the level rule it sits beside, which is the whole point of the
+   class; the hover line and the detail both say where the number came from in words. */
+.usage-cell.reported {
+  border: 1px dashed var(--color-accent-text, #3fa9f5);
+  background: transparent !important;
+  opacity: 0.85 !important;
+}
+
 /* The hover line and the legend, on one row: what the pointer is over, and which end of the
    scale is which. The line keeps its height when it is empty so that moving the pointer
    across the grid does not make the panel resize under it. */
@@ -1082,6 +1109,20 @@ button.usage-bar:hover {
    translated into: a heavier left edge in the accent the rest of the view is drawn in. */
 .usage-week-row.current {
   border-left: 3px solid var(--color-accent-text, #3fa9f5);
+}
+
+/* A week nobody has a transcript for any more: the same dashed outline the reported days on
+   the calendar carry, so one glance covers both drawings. The row still says *reported by
+   Claude Code* where its breakdown would be — the outline is the second channel, never the
+   only one. */
+.usage-week-row.reported {
+  border-style: dashed;
+  background: transparent;
+}
+
+/* And the same for a model row inside a reported day's detail. */
+.usage-row.reported .usage-row-total {
+  color: var(--color-accent-text, #3fa9f5);
 }
 
 .usage-week-head {

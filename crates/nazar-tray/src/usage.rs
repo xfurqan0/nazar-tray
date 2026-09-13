@@ -64,6 +64,27 @@
 //! The tooltip and the view now answer the same question with the same number; the argument
 //! that once made this the narrower sum is on [`headline`], and what it argues for now is the
 //! panel's breakdown.
+//!
+//! # T-WP22 adds two switches, and neither of them is a default
+//!
+//! **The default is still the deduplicated spend**, because it is the one number here that is
+//! a measurement of what this machine used. The two settings trade a property of it for
+//! agreement with another program, and each says so on screen:
+//!
+//! * `usage.countLikeClaudeCode` swaps every counter for its per-line twin — the sum Claude
+//!   Code's own `/usage` shows, about 1.7× the real spend, because it counts a message once
+//!   per content block. The store holds both since T-WP22; this decides which one leaves, and
+//!   [`UsageResponse::mode`] says which one did, so the panel can label it rather than guess.
+//!   The tooltip follows the same setting, so the two surfaces still cannot disagree.
+//! * `usage.fillHistoryFromStats` runs [`nazar_core::usage::backfill_claude_stats_from`] in
+//!   the same throttled pass and hands back [`UsageResponse::reported`] — one total per model
+//!   for each day older than the transcripts, keyed by the **date** it belongs to rather than a
+//!   UTC hour, because it is a day another program computed and not an hour anything happened
+//!   in.
+//!
+//! **`claude_reported` never reaches [`UsageResponse::providers`].** It is stripped here
+//! whether the setting is on or off, so nothing downstream can add another program's
+//! arithmetic into a counter this one promises to have measured.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -74,7 +95,7 @@ use nazar_core::clock::{self, Clock, SystemClock};
 use nazar_core::error::Error;
 use nazar_core::paths;
 use nazar_core::timefmt;
-use nazar_core::usage::{Bucket, Hours, PROVIDER, PROVIDER_CODEX, UsageSummary};
+use nazar_core::usage::{Bucket, Hours, PROVIDER, PROVIDER_CODEX, PROVIDER_REPORTED, UsageSummary};
 use serde::{Deserialize, Serialize};
 
 /// The range names the panel may ask for.
@@ -84,6 +105,12 @@ use serde::{Deserialize, Serialize};
 /// spells out. The validation is the same either way; this way the error message can name
 /// what was actually sent.
 pub const RANGES: [&str; 3] = ["week", "month", "all"];
+
+/// What [`UsageResponse::mode`] says when the counters are the deduplicated ones.
+pub const MODE_DEDUPED: &str = "deduped";
+
+/// What it says when they are the per-line ones Claude Code's `/usage` shows.
+pub const MODE_PER_LINE: &str = "per_line";
 
 /// How long the store is left alone after a scan, in milliseconds.
 ///
@@ -145,6 +172,13 @@ pub struct UsageScan {
     pub skipped_api_errors: u64,
     /// The readers that ran, in the order they ran: `claude`, then `codex`.
     pub providers_scanned: Vec<String>,
+    /// Days filled from Claude Code's statistics cache, or `0` when that setting is off.
+    ///
+    /// Not a count of anything this pass measured, which is why it is its own field and not
+    /// folded into [`UsageScan::files_seen`]: it is how many days older than the transcripts
+    /// were copied in from another program's arithmetic.
+    #[serde(default)]
+    pub reported_days: u64,
 }
 
 impl UsageScan {
@@ -193,6 +227,21 @@ pub struct UsageResponse {
     /// weeks that start on a Monday, happens in the panel — that is the whole reason the
     /// grain is an hour.
     pub providers: BTreeMap<String, Hours>,
+    /// Which of the two counts the buckets above hold: `deduped` or `per_line`.
+    ///
+    /// Sent on every answer rather than only when it is unusual, so the panel labels what it
+    /// is drawing from the answer rather than from a setting it read separately and might
+    /// have read at a different moment.
+    pub mode: String,
+    /// Local day (`YYYY-MM-DD`) to model to the one total another program reported for it.
+    ///
+    /// The days **older than the transcripts**, from `~/.claude/stats-cache.json`, and empty
+    /// unless the setting that fills them is on. Keyed by date rather than by UTC hour
+    /// because that is what it is: a day Claude Code added up, with no hour inside it and no
+    /// split into the four counters. The panel draws these apart from the measured days and
+    /// says where they came from; `docs/usage-contract.md` is the whole of the rule.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reported: BTreeMap<String, BTreeMap<String, u64>>,
     /// The `YYYY-MM` months whose documents do not parse, and so are missing from the
     /// answer.
     ///
@@ -367,8 +416,18 @@ pub fn get_usage(
         state.remember_week(week_phase(start));
     }
 
+    // The two settings, read once and used three times: whether a scan also refreshes the
+    // reported days, which counters leave this function, and what the tooltip redrawn at the
+    // end of it says. Reading them once is what keeps those three from disagreeing.
+    let settings = usage_settings(&app);
+
     let scanned = if state.writes() {
-        scan_if_due(&state.throttle, &state_dir, request.force)?
+        scan_if_due(
+            &state.throttle,
+            &state_dir,
+            request.force,
+            settings.fill_history_from_stats,
+        )?
     } else {
         None
     };
@@ -391,16 +450,116 @@ pub fn get_usage(
     // the store and never from a scan; `main.rs` is where that is wired.
     crate::tray::refresh_tooltip(&app);
 
+    // `claude_reported` leaves by its own door or not at all: it is another program's
+    // arithmetic about days this store never measured, and a reader that found it among the
+    // providers would add it to a total that promises to be a measurement.
+    let mut providers = view.providers;
+    let reported = match providers.remove(PROVIDER_REPORTED) {
+        Some(hours) if settings.fill_history_from_stats => reported_days(&hours),
+        _ => BTreeMap::new(),
+    };
+    if settings.count_like_claude_code {
+        providers = providers
+            .into_iter()
+            .map(|(provider, hours)| (provider, per_line(hours)))
+            .collect();
+    }
+
     Ok(UsageResponse {
         range: request.range,
         from,
         to,
         since: view.since,
         scanned_at: view.scanned_at,
-        providers: view.providers,
+        providers,
+        mode: mode_name(settings.count_like_claude_code).to_owned(),
+        reported,
         damaged,
         scan: scanned.map(|scanned| scanned.scan),
     })
+}
+
+/// Which of the two counts a setting asks for, as the answer spells it.
+#[must_use]
+pub fn mode_name(count_like_claude_code: bool) -> &'static str {
+    if count_like_claude_code {
+        MODE_PER_LINE
+    } else {
+        MODE_DEDUPED
+    }
+}
+
+/// The usage settings, or the shipped defaults when there is no state to ask.
+///
+/// `None` only before [`crate::state::AppState`] is managed, which in a real run is a moment
+/// no command can be called in. The defaults are both `false`, so the fallback is the honest
+/// answer rather than an accident.
+fn usage_settings(app: &tauri::AppHandle) -> nazar_core::config::UsageSwitches {
+    use tauri::Manager as _;
+    app.try_state::<crate::state::AppState>()
+        .map(|state| state.config().usage)
+        .unwrap_or_default()
+}
+
+/// Every bucket's per-line counters, in the same shape the deduplicated ones came in.
+///
+/// **The same shape on purpose.** The panel's arithmetic, its calendar, its weeks list and
+/// its detail views are one set of functions over one bucket type, and a second shape for the
+/// other count would have meant a second copy of all of it — with two chances to disagree
+/// about what a week adds up to. What changes is the four numbers; `requests` does not,
+/// because a request is a message in both readings and a count of content blocks under that
+/// label would be a number the label lies about.
+fn per_line(hours: Hours) -> Hours {
+    hours
+        .into_iter()
+        .map(|(hour, models)| {
+            let models = models
+                .into_iter()
+                .map(|(model, bucket)| {
+                    let raw = bucket.raw_counters();
+                    (
+                        model,
+                        Bucket {
+                            input: raw.input,
+                            output: raw.output,
+                            cache_create: raw.cache_create,
+                            cache_read: raw.cache_read,
+                            requests: bucket.requests,
+                            raw: None,
+                            reported_total: None,
+                            extra: bucket.extra,
+                        },
+                    )
+                })
+                .collect();
+            (hour, models)
+        })
+        .collect()
+}
+
+/// The reported block as days rather than hours: `YYYY-MM-DD` to model to one total.
+///
+/// The store keeps each of these at hour `T00` of the day it names, because the store keeps
+/// hours; what it is, though, is a **day** another program added up. Handing the panel the
+/// date means nothing between here and the screen converts a time zone, and so nothing
+/// between here and the screen can be an hour wrong about a number that never had an hour.
+fn reported_days(hours: &Hours) -> BTreeMap<String, BTreeMap<String, u64>> {
+    let mut days: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for (hour, models) in hours {
+        if hour.len() < 10 {
+            continue;
+        }
+        let day = days.entry(hour[..10].to_owned()).or_default();
+        for (model, bucket) in models {
+            let Some(total) = bucket.reported_total else {
+                continue;
+            };
+            let into = day.entry(model.clone()).or_default();
+            *into = into.saturating_add(total);
+        }
+    }
+    days.retain(|_, models| !models.is_empty());
+    days
 }
 
 /// What one scan of the transcripts produced.
@@ -434,6 +593,7 @@ fn scan_if_due(
     throttle: &Mutex<Throttle>,
     state_dir: &Path,
     force: bool,
+    backfill: bool,
 ) -> Result<Option<Scanned>, UsageError> {
     let mut throttle = throttle.lock().unwrap_or_else(PoisonError::into_inner);
     let now_ms = SystemClock.monotonic_millis();
@@ -480,6 +640,22 @@ fn scan_if_due(
             }
         }
     }
+    // The reported days, in the same pass and behind the same throttle, because they answer
+    // the same question and a panel that could see one half refreshed and the other five
+    // minutes behind would be showing a history that never happened. It runs **after** the
+    // transcripts, so the boundary it fills up to is the one this pass just measured.
+    //
+    // A failure here does not fail the call. Every number the user asked for is already in
+    // the store; a statistics cache that could not be read costs the days before it, which
+    // are the days this product never measured anyway.
+    if backfill
+        && failure.is_none()
+        && let Some(cache) = claude_stats_cache()
+        && let Ok(filled) = nazar_core::usage::backfill_claude_stats_from(&cache, state_dir)
+    {
+        scan.reported_days = filled.days;
+    }
+
     if let Some(failure) = failure {
         return Err(failure);
     }
@@ -544,6 +720,17 @@ fn window(request: &UsageRequest) -> Result<(String, String), UsageError> {
 /// point that takes the directory, and this is it being used.
 fn claude_projects() -> Option<PathBuf> {
     Some(paths::claude_config_dir().ok()?.join("projects"))
+}
+
+/// The `stats-cache.json` to hand [`nazar_core::usage::backfill_claude_stats_from`].
+///
+/// Beside [`claude_projects`] and for the same reason: `CLAUDE_CONFIG_DIR` names a
+/// configuration directory that need not be called `.claude`, and a path derived from a home
+/// directory cannot express it. One spelling of that variable per program, resolved here, so
+/// the transcripts and the statistics that stand in for the ones that are gone are read out of
+/// the same directory rather than out of two.
+fn claude_stats_cache() -> Option<PathBuf> {
+    Some(paths::claude_config_dir().ok()?.join("stats-cache.json"))
 }
 
 // ----------------------------------------------------------------- this week, for a tooltip
@@ -682,7 +869,13 @@ pub fn compact(value: u64) -> String {
 /// a distinction about one record, not about a sum over many — so this is an addition rather
 /// than a decision, and what "nothing here" means is decided once, in [`fold`], where it is a
 /// total of zero.
-fn headline(bucket: &Bucket) -> u64 {
+/// `per_line` picks the same four counters with no dedupe, which is the whole of what the
+/// *Count like Claude Code* setting does to this side: the tooltip and the panel are handed
+/// the same choice from the same place, so a user comparing them sees one number twice.
+fn headline(bucket: &Bucket, per_line: bool) -> u64 {
+    if per_line {
+        return bucket.raw_counters().total();
+    }
     bucket
         .input
         .saturating_add(bucket.output)
@@ -702,14 +895,19 @@ fn headline(bucket: &Bucket) -> u64 {
 /// a tooltip that flickered between them on every pass would be worse than an arbitrary
 /// rule written down.
 #[must_use]
-pub fn fold(providers: &BTreeMap<String, Hours>) -> Option<WeekUsage> {
+pub fn fold(providers: &BTreeMap<String, Hours>, per_line: bool) -> Option<WeekUsage> {
     let mut total = 0u64;
     let mut per_model: BTreeMap<&str, u64> = BTreeMap::new();
 
-    for hours in providers.values() {
+    for (provider, hours) in providers {
+        // The reported days are not this week and are not a measurement; a tooltip has one
+        // line and no room to say which half of its number came from somewhere else.
+        if provider == PROVIDER_REPORTED {
+            continue;
+        }
         for models in hours.values() {
             for (model, bucket) in models {
-                let headline = headline(bucket);
+                let headline = headline(bucket, per_line);
                 if headline == 0 {
                     continue;
                 }
@@ -747,7 +945,7 @@ pub fn fold(providers: &BTreeMap<String, Hours>) -> Option<WeekUsage> {
 /// not a timestamp, a store that will not read, a week with nothing in it — because a
 /// tooltip has no room to explain itself and the panel says all four properly.
 #[must_use]
-pub fn week_usage(state: &UsageState) -> Option<WeekUsage> {
+pub fn week_usage(state: &UsageState, per_line: bool) -> Option<WeekUsage> {
     let state_dir = paths::settings_dir().ok()?;
     let now = clock::wall_seconds(&SystemClock)?;
     let (from, to) = week_window(now, state.phase());
@@ -757,7 +955,7 @@ pub fn week_usage(state: &UsageState) -> Option<WeekUsage> {
         &timefmt::rfc3339_from_unix_seconds(to),
     )
     .ok()?;
-    fold(&view.providers)
+    fold(&view.providers, per_line)
 }
 
 /// An error message with the home directory collapsed to `~`.
@@ -977,6 +1175,8 @@ mod tests {
             since: Some("2026-09-07T04:13:52Z".to_owned()),
             scanned_at: Some("2026-09-13T02:31:07Z".to_owned()),
             providers: BTreeMap::new(),
+            mode: MODE_DEDUPED.to_owned(),
+            reported: BTreeMap::new(),
             damaged: Vec::new(),
             scan: Some(UsageScan {
                 files_seen: 412,
@@ -985,6 +1185,7 @@ mod tests {
                 took_ms: 1_840,
                 skipped_api_errors: 11,
                 providers_scanned: vec![PROVIDER.to_owned(), PROVIDER_CODEX.to_owned()],
+                reported_days: 0,
             }),
         };
         let json = serde_json::to_string(&response).expect("a response serialises");
@@ -1002,6 +1203,87 @@ mod tests {
         let json = serde_json::to_string(&UsageResponse::default()).expect("serialises");
         assert!(!json.contains("scan"), "{json}");
         assert!(!json.contains("null"), "{json}");
+        assert!(
+            !json.contains("reported"),
+            "a machine with the setting off carries no empty reported map: {json}"
+        );
+    }
+
+    #[test]
+    fn the_mode_switch_hands_back_the_other_numbers_in_the_same_shape() {
+        let mut bucket = spent(2, 328, 24_843, 35_613);
+        bucket.raw = Some(nazar_core::usage::Raw {
+            input: 4,
+            output: 656,
+            cache_create: 49_686,
+            cache_read: 71_226,
+        });
+        let hours = hours("2026-09-09T12", "claude-opus-5", bucket.clone());
+
+        let swapped = per_line(hours.clone());
+        let out = &swapped["2026-09-09T12"]["claude-opus-5"];
+        assert_eq!((out.input, out.output), (4, 656));
+        assert_eq!((out.cache_create, out.cache_read), (49_686, 71_226));
+        assert_eq!(
+            out.requests, 1,
+            "a request is a message in both readings, so this one does not move"
+        );
+        assert_eq!(out.raw, None, "and the answer carries one count, not two");
+
+        // The tooltip follows the same setting, so the two surfaces cannot disagree.
+        let mut providers = BTreeMap::new();
+        providers.insert(PROVIDER.to_owned(), hours);
+        assert_eq!(
+            fold(&providers, false).expect("a week").headline,
+            2 + 328 + 24_843 + 35_613
+        );
+        assert_eq!(
+            fold(&providers, true).expect("a week").headline,
+            4 + 656 + 49_686 + 71_226
+        );
+        assert_eq!(mode_name(false), MODE_DEDUPED);
+        assert_eq!(mode_name(true), MODE_PER_LINE);
+    }
+
+    #[test]
+    fn a_bucket_with_no_per_line_counters_reads_as_the_five_it_has() {
+        // Codex writes one of these for every event, and so does every month document
+        // written before T-WP22. Turning the setting on must show them, not zero them.
+        let hours = hours("2026-09-09T12", "gpt-5.6-sol", spent(1000, 300, 0, 3000));
+        let swapped = per_line(hours);
+        let out = &swapped["2026-09-09T12"]["gpt-5.6-sol"];
+        assert_eq!((out.input, out.output, out.cache_read), (1000, 300, 3000));
+    }
+
+    #[test]
+    fn the_reported_block_reaches_the_panel_as_days_rather_than_hours() {
+        let mut models = nazar_core::usage::Models::new();
+        models.insert(
+            "claude-opus-5".to_owned(),
+            Bucket {
+                reported_total: Some(10_000),
+                ..Bucket::default()
+            },
+        );
+        models.insert(
+            "claude-fable-5-1".to_owned(),
+            Bucket {
+                reported_total: Some(2000),
+                ..Bucket::default()
+            },
+        );
+        // A bucket with no reported total is not a day with a zero in it.
+        models.insert("claude-sonnet-5".to_owned(), Bucket::default());
+
+        let mut hours = Hours::new();
+        hours.insert("2026-08-30T00".to_owned(), models);
+
+        let days = reported_days(&hours);
+        assert_eq!(days.len(), 1);
+        let day = &days["2026-08-30"];
+        assert_eq!(day["claude-opus-5"], 10_000);
+        assert_eq!(day["claude-fable-5-1"], 2000);
+        assert!(!day.contains_key("claude-sonnet-5"));
     }
 
     #[test]
@@ -1026,7 +1308,8 @@ mod tests {
         std::fs::create_dir_all(&state_dir).expect("a throwaway store");
 
         let throttle = Mutex::new(Throttle::default());
-        let first = scan_if_due(&throttle, &state_dir, false).expect("a scan that does not panic");
+        let first =
+            scan_if_due(&throttle, &state_dir, false, false).expect("a scan that does not panic");
         let Some(first) = first else {
             std::fs::remove_dir_all(&state_dir).ok();
             panic!("the first call must scan: the throttle has never run");
@@ -1038,7 +1321,7 @@ mod tests {
 
         // The second call inside five minutes must not scan again.
         assert!(
-            scan_if_due(&throttle, &state_dir, false)
+            scan_if_due(&throttle, &state_dir, false, false)
                 .expect("a throttled call is not a failure")
                 .is_none(),
             "a second scan ran inside the five-minute window"
@@ -1057,6 +1340,47 @@ mod tests {
             view.damaged.is_empty(),
             "a store written now is not damaged"
         );
+
+        // T-WP22: the same window in both counts, and what the two settings are worth on
+        // this machine. The per-line number is the one `/usage` prints; the ratio between
+        // them is the whole of why the setting exists.
+        let deduped = fold(&view.providers, false).map_or(0, |week| week.headline);
+        let counted = fold(&view.providers, true).map_or(0, |week| week.headline);
+        println!(
+            "all time: deduped {deduped}, per_line {counted}, ratio {:.3}",
+            if deduped == 0 {
+                0.0
+            } else {
+                counted as f64 / deduped as f64
+            }
+        );
+        assert!(
+            counted >= deduped,
+            "the per-line count is never the smaller of the two"
+        );
+
+        if let Some(cache) = claude_stats_cache() {
+            let filled = nazar_core::usage::backfill_claude_stats_from(&cache, &state_dir)
+                .expect("a backfill that does not panic");
+            println!(
+                "reported: {} day(s), {} model row(s), {} tokens, before {:?}, cache v{:?} \
+                 computed to {:?}",
+                filled.days,
+                filled.models,
+                filled.total,
+                filled.boundary,
+                filled.version,
+                filled.last_computed
+            );
+            // Twice, because the whole block is a copy rather than an accumulation.
+            let again = nazar_core::usage::backfill_claude_stats_from(&cache, &state_dir)
+                .expect("a second backfill");
+            assert_eq!(again.total, filled.total, "a copy is the same copy twice");
+            assert!(
+                again.months.is_empty(),
+                "and writes no bytes the second time"
+            );
+        }
 
         std::fs::remove_dir_all(&state_dir).ok();
     }
@@ -1293,7 +1617,7 @@ mod tests {
             ),
         );
 
-        let week = fold(&providers).expect("a week with work in it");
+        let week = fold(&providers, false).expect("a week with work in it");
         assert_eq!(
             week.headline,
             2 + 328 + 24_843 + 35_613,
@@ -1318,7 +1642,7 @@ mod tests {
             hours("2026-09-09T13", "shared", spent(5, 5, 5, 9_999)),
         );
 
-        let week = fold(&providers).expect("two providers, one week");
+        let week = fold(&providers, false).expect("two providers, one week");
         assert_eq!(week.headline, 30 + 15 + 2 * 9_999);
         assert_eq!(week.model, "shared");
     }
@@ -1339,7 +1663,7 @@ mod tests {
             hours("2026-09-11T08", "claude-opus-5", spent(0, 0, 25, 0)),
         );
 
-        let week = fold(&providers).expect("a week with two models in it");
+        let week = fold(&providers, false).expect("a week with two models in it");
         assert_eq!(week.headline, 95);
         assert_eq!(
             week.model, "claude-opus-5",
@@ -1358,14 +1682,16 @@ mod tests {
         providers.insert(PROVIDER.to_owned(), claude);
 
         assert_eq!(
-            fold(&providers).expect("a tie is still a week").model,
+            fold(&providers, false)
+                .expect("a tie is still a week")
+                .model,
             "aaa"
         );
     }
 
     #[test]
     fn a_week_with_nothing_in_it_has_nothing_to_say() {
-        assert_eq!(fold(&BTreeMap::new()), None, "an empty store");
+        assert_eq!(fold(&BTreeMap::new(), false), None, "an empty store");
 
         // A week that was genuinely idle. `0` is honest, but it is not worth a line the
         // quota sentence above it has to make room for. Since T-WP20b this is the *only*
@@ -1377,7 +1703,7 @@ mod tests {
             PROVIDER.to_owned(),
             hours("2026-09-09T12", "claude-opus-5", spent(0, 0, 0, 0)),
         );
-        assert_eq!(fold(&providers), None, "an idle week");
+        assert_eq!(fold(&providers, false), None, "an idle week");
     }
 
     #[test]
@@ -1401,7 +1727,7 @@ mod tests {
             ),
         );
 
-        let week = fold(&providers).expect("cache reads are tokens /usage counts");
+        let week = fold(&providers, false).expect("cache reads are tokens /usage counts");
         assert_eq!(week.headline, 1_500_000_000);
         assert_eq!(week.model, "claude-opus-5");
         assert_eq!(
@@ -1425,7 +1751,7 @@ mod tests {
         let mut providers = BTreeMap::new();
         providers.insert(PROVIDER.to_owned(), claude);
 
-        let week = fold(&providers).expect("two models, one week");
+        let week = fold(&providers, false).expect("two models, one week");
         assert_eq!(week.headline, 300 + 3 + 100_000);
         assert_eq!(
             week.model, "heavy-cache",
@@ -1447,7 +1773,7 @@ mod tests {
                 spent(1, 1, 1, 0),
             ),
         );
-        let week = fold(&providers).expect("an unnamed model still spent tokens");
+        let week = fold(&providers, false).expect("an unnamed model still spent tokens");
         assert_eq!(week.model, "unknown");
     }
 

@@ -137,7 +137,13 @@ pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
 /// answered in one place or in neither.
 fn week(app: &AppHandle) -> Option<WeekUsage> {
     let state = app.try_state::<UsageState>()?;
-    crate::usage::week_usage(state.inner())
+    // The same setting the panel's headline follows, read from the same place: a tooltip and
+    // a view that counted differently would be this application answering one question with
+    // two numbers, which is what T-WP20b spent a package on not doing.
+    let per_line = app
+        .try_state::<AppState>()
+        .is_some_and(|state| state.config().usage.count_like_claude_code);
+    crate::usage::week_usage(state.inner(), per_line)
 }
 
 /// Create the tray icon, its menu, and the mouse bindings.

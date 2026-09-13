@@ -44,6 +44,7 @@ import { catalogs } from "../dist/lib/locales.mjs";
 import {
   ABSENT,
   ALL_TIME_FLOOR,
+  REPORTED_PROVIDER,
   CHART_SERIES,
   FIRST_USAGE_STATE,
   HEAT_LEVELS,
@@ -77,10 +78,13 @@ import {
   requestsKey,
   rfc3339,
   startOfLocalWeek,
+  modeTagKey,
   tabRange,
   usageErrorKey,
+  usageMode,
   usageWindow,
   weekLabel,
+  weekTotal,
   withSpan,
   withTab,
 } from "../dist/lib/usage.mjs";
@@ -1351,4 +1355,186 @@ test("the stylesheet draws what this file computes", () => {
     !/\.usage-chart-line \{[^}]*stroke:/s.test(css),
     "the stroke is the palette's, set per line, and must not be frozen in the stylesheet",
   );
+});
+
+// ------------------------------------------------- the two counts, and the tag
+
+test("an answer says which of the two counts it holds, and only one of them is tagged", () => {
+  // The deduplicated spend is this product's own answer and wears no label: a tag on the
+  // default would make the default read as the exception.
+  assert.equal(usageMode(FIXTURE), "deduped");
+  assert.equal(modeTagKey("deduped"), undefined);
+
+  // The per-line count is the one `/usage` prints, about 1.7× the real spend, and a view
+  // that swapped one for the other without saying so is a view nobody can trust twice.
+  const counted = { ...FIXTURE, mode: "per_line" };
+  assert.equal(usageMode(counted), "per_line");
+  assert.equal(modeTagKey("per_line"), "usage.mode.perLine");
+  assert.equal(en("usage.mode.perLine"), "as /usage counts");
+
+  // The buckets arrive in the same shape either way, which is why one set of functions draws
+  // both: only the four numbers move.
+  const view = inZone("Asia/Istanbul", () =>
+    buildUsageView(counted, new Date("2026-09-16T09:00:00+03:00")),
+  );
+  assert.equal(view.mode, "per_line");
+  assert.equal(view.total, 1003418000, "the same arithmetic over the numbers it was sent");
+});
+
+// ------------------------------------------- the days before the transcripts
+
+/** The same week, plus the two days Claude Code reported and this store never measured. */
+const REPORTED = {
+  ...FIXTURE,
+  reported: {
+    "2026-09-07": { "claude-opus-5": 900_000, "claude-fable-5-1": 100_000 },
+    "2026-09-08": { "claude-opus-5": 500_000 },
+    // A day the store measured as well: the boundary is a UTC day in Rust and a local day
+    // here, so one day can be both, and the side that knows the offset drops it.
+    "2026-09-14": { "claude-opus-5": 12_345 },
+  },
+};
+
+test("a reported day is kept, and one the store measured is dropped", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView(
+      { ...REPORTED, range: "all" },
+      new Date("2026-09-16T09:00:00+03:00"),
+    );
+    assert.deepEqual(
+      view.reportedDays.map((day) => day.key),
+      ["2026-09-07", "2026-09-08"],
+      "14 September is a day this store has numbers for, so its reported twin is dropped",
+    );
+    const [first] = view.reportedDays;
+    assert.equal(first.total, 1_000_000);
+    assert.equal(first.topModel, "claude-opus-5");
+    assert.deepEqual(
+      first.models.map((row) => row.model),
+      ["claude-opus-5", "claude-fable-5-1"],
+      "biggest first, so the hover line names the model that led the day",
+    );
+
+    // And none of it reaches a measured total.
+    assert.equal(view.total, 1003418000);
+    assert.ok(
+      !view.rows.some((row) => row.provider === REPORTED_PROVIDER),
+      "a reported day is never a row of the window it sits beside",
+    );
+  });
+});
+
+test("a reported day is an outline rather than a shade, and says so when it is hovered", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView(
+      { ...REPORTED, range: "all" },
+      new Date("2026-09-16T09:00:00+03:00"),
+    );
+    const cells = view.grid.columns.flatMap((column) => column.days);
+    const said = cells.find((cell) => cell.key === "2026-09-07");
+    assert.ok(said, "the calendar reaches back to the oldest reported day");
+    assert.equal(said.reported, true);
+    assert.equal(said.total, 1_000_000);
+    assert.equal(said.level, 0, "a reported day takes no shade: the scale is not its scale");
+
+    // Nor does it move the scale the measured days are ranked on.
+    const measured = cells.find((cell) => cell.key === "2026-09-14");
+    assert.equal(measured.reported, false);
+    assert.equal(measured.level, HEAT_LEVELS, "the busiest measured day is still the darkest");
+
+    // The colour is never the only channel: the line under the grid says it in words.
+    const line = cellLine(said, "en", en);
+    assert.ok(line.includes("reported by Claude Code"), line);
+    assert.ok(line.includes(formatTokens(1_000_000, "en")), line);
+    assert.ok(
+      !cellLine(measured, "en", en).includes("reported by Claude Code"),
+      "and a measured day says nothing of the kind",
+    );
+  });
+});
+
+test("a week with nothing but reported days shows the reported number and no breakdown", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView(
+      { ...REPORTED, range: "all" },
+      new Date("2026-09-16T09:00:00+03:00"),
+    );
+    const week = view.weeks.find((row) => row.key === "2026-09-07");
+    assert.ok(week, "the week of 7 September is on the list");
+    assert.equal(week.reported, true);
+    assert.equal(week.total, undefined, "nothing was measured in it");
+    assert.equal(week.reportedTotal, 1_500_000, "both reported days of that week");
+    assert.equal(weekTotal(week), 1_500_000);
+    assert.equal(week.share, 0, "and it is not drawn against a scale it does not share");
+
+    // The week that was measured is untouched by any of it.
+    const measured = view.weeks.find((row) => row.key === "2026-09-14");
+    assert.equal(measured.reported, false);
+    assert.equal(weekTotal(measured), measured.total);
+    assert.equal(measured.share, 100, "the only measured week is the busiest one");
+  });
+});
+
+test("a reported day opens into models with a total each and an em dash everywhere else", () => {
+  inZone("Asia/Istanbul", () => {
+    const detail = buildUsageDetail(
+      { ...REPORTED, range: "all" },
+      { kind: "day", key: "2026-09-07", at: Date.parse("2026-09-07T00:00:00+03:00") },
+    );
+    assert.equal(detail.reported, true);
+    assert.equal(detail.empty, false);
+    assert.equal(detail.total, 1_000_000);
+    assert.deepEqual(
+      detail.rows.map((row) => [row.model, row.total]),
+      [
+        ["claude-opus-5", 900_000],
+        ["claude-fable-5-1", 100_000],
+      ],
+    );
+    assert.equal(detail.rows[0].reported, true);
+    assert.equal(detail.grouped, false, "one provider is not a heading");
+
+    // `stats-cache.json` holds one number per model per day. The split it does not hold is
+    // not going to be invented here, so all four parts print the em dash.
+    const parts = partsLine(detail.parts, "en", en);
+    assert.equal(parts, `In ${ABSENT}${SEPARATOR}Out ${ABSENT}${SEPARATOR}Cache read ${ABSENT}${SEPARATOR}Cache write ${ABSENT}`);
+    assert.equal(detail.requests, 0, "and there is no count of replies to show");
+
+    // A measured day opens the way it always has.
+    const measured = buildUsageDetail(REPORTED, {
+      kind: "day",
+      key: "2026-09-14",
+      at: Date.parse("2026-09-14T00:00:00+03:00"),
+    });
+    assert.equal(measured.reported, false);
+    assert.ok(measured.total > 0);
+  });
+});
+
+test("the setting being off leaves the view exactly as it was", () => {
+  inZone("Asia/Istanbul", () => {
+    const now = new Date("2026-09-16T09:00:00+03:00");
+    const without = buildUsageView({ ...FIXTURE, range: "all" }, now);
+    assert.deepEqual(without.reportedDays, []);
+    assert.ok(
+      without.grid.columns.flatMap((column) => column.days).every((cell) => !cell.reported),
+    );
+    assert.ok(without.weeks.every((week) => !week.reported));
+  });
+});
+
+test("the stylesheet draws a reported day as an outline and the tag as a chip", () => {
+  const css = readFileSync(resolve(REPO, "ui/src/styles.css"), "utf8");
+  // Dashed rather than shaded, and the same dash in all three places, so one glance covers
+  // the calendar, the weeks list and the headline.
+  assert.match(css, /\.usage-cell\.reported \{[^}]*border:\s*1px dashed/s);
+  assert.match(css, /\.usage-cell\.reported \{[^}]*background:\s*transparent/s);
+  assert.match(css, /\.usage-week-row\.reported \{[^}]*border-style:\s*dashed/s);
+  assert.match(css, /\.usage-tag \{[^}]*border:\s*1px dashed/s);
+  // And every colour in them is the theme's accent token rather than one this view invented.
+  for (const rule of [/\.usage-cell\.reported \{[^}]*\}/s, /\.usage-tag \{[^}]*\}/s]) {
+    const block = rule.exec(css);
+    assert.ok(block, "the rule is missing");
+    assert.ok(!/#[0-9a-f]{6}(?![^;]*var\()/i.test(block[0].replace(/var\([^)]*\)/g, "")), block[0]);
+  }
 });

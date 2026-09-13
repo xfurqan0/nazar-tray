@@ -152,7 +152,20 @@ export interface UsageScan {
   readonly skipped_api_errors?: number;
   /** The readers that ran, in the order they ran: `claude`, then `codex`. */
   readonly providers_scanned?: readonly string[];
+  /** Days copied in from Claude Code's statistics cache, or absent when that setting is off. */
+  readonly reported_days?: number;
 }
+
+/**
+ * Which of the two counts an answer holds.
+ *
+ * `deduped` is the default and is what this machine actually spent: one message counted once,
+ * however many transcript lines Claude Code wrote it on. `per_line` is the sum `/usage` shows,
+ * which counts a message once per content block — about 1.7× the real spend, and the reason
+ * the two windows disagree (`anthropics/claude-code#91775`). The store holds both; the
+ * *Count like Claude Code* setting decides which one arrives, and this says which one did.
+ */
+export type UsageMode = "deduped" | "per_line";
 
 /** The answer: provider → UTC hour `YYYY-MM-DDTHH` → model → counters. */
 export interface UsageResponse {
@@ -166,6 +179,17 @@ export interface UsageResponse {
   readonly providers: Readonly<
     Record<string, Readonly<Record<string, Readonly<Record<string, UsageBucket>>>>>
   >;
+  /** Which count the buckets hold. Absent from an answer written before T-WP22. */
+  readonly mode?: UsageMode;
+  /**
+   * The days older than the transcripts, as Claude Code reported them: date → model → total.
+   *
+   * Keyed by **date**, not by UTC hour, because that is what they are — a day another program
+   * added up, with no hour inside it and no split into the four counters. Empty unless the
+   * *Fill history from Claude Code's stats* setting is on. They are drawn apart from the
+   * measured days and never added into a total this product promises to have measured.
+   */
+  readonly reported?: Readonly<Record<string, Readonly<Record<string, number>>>>;
   /**
    * `YYYY-MM` months whose documents no longer parse, and so are missing from the answer.
    *

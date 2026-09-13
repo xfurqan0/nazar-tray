@@ -1,0 +1,60 @@
+{
+  "version": 5,
+  "lastComputedDate": "2026-09-03",
+  "dailyActivity": [
+    { "date": "2026-08-30", "messageCount": 245, "sessionCount": 2, "toolCallCount": 54 },
+    { "date": "2026-08-31", "messageCount": 311, "sessionCount": 3, "toolCallCount": 88 },
+    { "date": "2026-09-01", "messageCount": 96, "sessionCount": 1, "toolCallCount": 12 },
+    { "date": "2026-09-03", "messageCount": 402, "sessionCount": 4, "toolCallCount": 130 }
+  ],
+  "dailyModelTokens": [
+    {
+      "date": "2026-08-30",
+      "tokensByModel": { "claude-opus-5": 10000, "claude-fable-5-1": 2000 }
+    },
+    {
+      "date": "2026-08-31",
+      "tokensByModel": { "claude-opus-5": 30000 }
+    },
+    {
+      "date": "2026-09-01",
+      "tokensByModel": { "claude-opus-5": 700, "claude-haiku-4-5-20251001": 0 }
+    },
+    {
+      "date": "2026-09-03",
+      "tokensByModel": { "claude-opus-5": 999999 }
+    },
+    {
+      "date": "not a date",
+      "tokensByModel": { "claude-opus-5": 123 }
+    },
+    {
+      "date": "2026-08-29",
+      "tokensByModel": { "claude-opus-5": 1.5, "claude-fable-5-1": "4000", "claude-sonnet-5": 9 }
+    }
+  ],
+  "dailyModelTokensVersion": 5,
+  "modelUsage": {
+    "claude-opus-5": {
+      "inputTokens": 119700,
+      "outputTokens": 14836015,
+      "cacheReadInputTokens": 9727051803,
+      "cacheCreationInputTokens": 270574086,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    }
+  },
+  "totalSessions": 176,
+  "totalMessages": 38699,
+  "longestSession": {
+    "sessionId": "SENTINEL-session-do-not-leak-4d19",
+    "timestamp": "2026-09-01T09:14:02.117Z",
+    "duration": 8484489,
+    "messageCount": 1204
+  },
+  "firstSessionDate": "2026-08-30T23:43:49.512Z",
+  "hourCounts": { "0": 22, "9": 141, "23": 65 },
+  "somethingNewerWrote": "SENTINEL field do not leak 9b2e"
+}

@@ -51,6 +51,10 @@ export interface SettingsForm {
   readonly thresholds: Thresholds;
   readonly providers: ProviderSwitches;
   readonly detailedWindows: boolean;
+  /** Show the per-line numbers `/usage` shows, rather than the deduplicated spend. */
+  readonly usageCountLikeClaudeCode: boolean;
+  /** Show the days before the transcripts, as Claude Code reported them. */
+  readonly usageFillHistoryFromStats: boolean;
 }
 
 /** Where the files live, with `~` already collapsed by the Rust side. */
@@ -99,6 +103,8 @@ export interface FormValues {
   claude: boolean;
   codex: boolean;
   detailedWindows: boolean;
+  usageCountLikeClaudeCode: boolean;
+  usageFillHistoryFromStats: boolean;
 }
 
 /** A number as a form field should show it: `85`, not `85.0`. */
@@ -124,6 +130,8 @@ export function toValues(form: SettingsForm): FormValues {
     claude: form.providers.claude,
     codex: form.providers.codex,
     detailedWindows: form.detailedWindows,
+    usageCountLikeClaudeCode: form.usageCountLikeClaudeCode,
+    usageFillHistoryFromStats: form.usageFillHistoryFromStats,
   };
 }
 
@@ -152,6 +160,8 @@ export function toForm(values: FormValues): SettingsForm {
     },
     providers: { claude: values.claude, codex: values.codex },
     detailedWindows: values.detailedWindows,
+    usageCountLikeClaudeCode: values.usageCountLikeClaudeCode,
+    usageFillHistoryFromStats: values.usageFillHistoryFromStats,
   };
 }
 

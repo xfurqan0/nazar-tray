@@ -51,6 +51,7 @@ Rules that follow from this table, and that the tests enforce:
 | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
 | the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. See "Usage history in a rollout log" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` — recursively, so the subagent transcripts under `subagents/` are **included** | `type`; `timestamp`; `message.model`; `message.id`; `requestId`; `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — **nine values, and nothing else**; two of them (the ids) are never written anywhere | Claude Code 2.1.268 – 2.1.269, 2026-09-13 | `fixtures/claude/transcript-*.jsonl` (T-WP13) | **Usage history only; no quota number is derived from these files.** See "The Claude Code transcript" below. |
+| `<CLAUDE_CONFIG_DIR or ~/.claude>/stats-cache.json` — **opt-in history backfill** | `version`; `lastComputedDate`; `dailyModelTokens[].{date, tokensByModel}` — **three keys, and nothing else** | Claude Code 2.1.269, `version: 5` (and `dailyModelTokensVersion: 5`), 2026-09-13 | `crates/nazar-core/fixtures/usage/stats-cache.json` (T-WP22) | **Off by default.** Undocumented, recomputed lazily, and holds the *per-line* sums. Read only for days older than the transcripts. See "Claude Code's statistics cache" below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
 | `GET https://api.anthropic.com/api/oauth/usage` | `limits[]`, and inside each entry `{kind, percent, resets_at, scope.model.display_name}`; or the older top-level `five_hour`/`seven_day` `{utilization, resets_at}` | observed live 2026-09-07 | none — no fixture may hold a real response | **Opt-in, off by default.** See "The usage endpoint" below. |
@@ -331,6 +332,10 @@ Everything below is in these files, on this machine, and **none of it leaves the
   directory in its slug.
 - Every counter in `message.usage` that is not one of the four, listed above.
 
+The four counters are read **twice** since T-WP22 — once collapsed to one reading per message
+and once summed per line — but they are the same four values off the same line, and nothing new
+is taken out of the file to produce the second number.
+
 The mechanism is the one rule 1 describes and the one the Codex parser has used since WP1: the
 reader **constructs** a record out of nine values rather than filtering a parsed line, so a
 field nobody named is dropped with the parse result rather than travelling one function further
@@ -352,6 +357,79 @@ looks for the needle, **0.635 s** for a full parse, deduplication and aggregatio
 That is the measurement that makes a scan-on-open design reasonable; the Rust implementation
 has the same prefilter the Codex tail already uses. It is still not on the refresh path — see
 [`usage-contract.md`](usage-contract.md).
+
+## Claude Code's statistics cache
+
+`~/.claude/stats-cache.json` is undocumented, is recomputed lazily by Claude Code for its own
+Stats screen, and reaches **further back than the transcripts do** — twenty-two days against
+six on the maintainer's machine, because Claude Code prunes the one and keeps the other. It is
+read only when the user turns on *Fill history from Claude Code's stats*, and only for days
+older than the first hour the transcripts gave this store.
+
+### The observed shape
+
+```json
+{
+  "version": 5,
+  "dailyModelTokensVersion": 5,
+  "lastComputedDate": "2026-09-12",
+  "firstSessionDate": "2026-08-23T23:43:49.512Z",
+  "totalSessions": 176,
+  "totalMessages": 38699,
+  "dailyActivity":    [ { "date": "…", "messageCount": 245, "sessionCount": 2, "toolCallCount": 54 } ],
+  "dailyModelTokens": [ { "date": "2026-09-07", "tokensByModel": { "claude-opus-5": 2078342191 } } ],
+  "modelUsage":       { "claude-opus-5": { "inputTokens": 119700, "outputTokens": 14836015,
+                                           "cacheReadInputTokens": 9727051803,
+                                           "cacheCreationInputTokens": 270574086,
+                                           "webSearchRequests": 0, "costUSD": 0,
+                                           "contextWindow": 0, "maxOutputTokens": 0 } },
+  "hourCounts":       { "0": 22, "9": 141 },
+  "longestSession":   { "sessionId": "…", "timestamp": "…", "duration": 8484489, "messageCount": 1204 }
+}
+```
+
+**Three keys are read: `version`, `lastComputedDate`, and `dailyModelTokens[].{date,
+tokensByModel}`.** `version` and `lastComputedDate` are diagnostics — that program recomputes
+lazily, so `lastComputedDate` was routinely a day or two behind today — and the third is the
+data. A `tokensByModel` value that is not a non-negative integer is skipped and the rest of the
+day is read, the same rule the four counters keep.
+
+### What it holds, and why it is not a source
+
+**One total per model per day, with no split into the four counters**, and those totals are the
+**per-line** sums — every copy of every streamed message added up. Measured against this
+product's own per-line counters on the five days both could see, on 2026-09-13:
+
+| UTC day | `stats-cache.json` | nazar-tray `raw` | nazar-tray deduplicated |
+|---|---:|---:|---:|
+| 2026-09-08 | 622 554 986 | **622 554 986** | 356 278 876 |
+| 2026-09-09 | 1 420 023 301 | **1 420 023 301** | 870 181 874 |
+| 2026-09-10 | 3 028 939 | **3 028 939** | 1 504 442 |
+| 2026-09-11 | 90 616 249 | **90 616 249** | 40 594 303 |
+| 2026-09-12 | 422 923 652 | **422 923 652** | 240 570 850 |
+
+Digit for digit, on every overlapping day. Which settles two things at once: the per-line
+counters this store keeps are exactly what Claude Code counts, and **the dates in that file are
+UTC days**. The ratio over those days is **1.667×**, and it is not a constant that could be
+divided out — see
+[anthropics/claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098).
+
+So it is imported as somebody else's arithmetic and never merged into `claude`:
+[`usage-contract.md`](usage-contract.md) has the seven rules, of which the load-bearing one is
+that a day the transcripts cover is never reported.
+
+### Never taken out of the statistics cache
+
+`modelUsage`, `dailyActivity`, `hourCounts`, `totalSessions`, `totalMessages`,
+`firstSessionDate`, `longestSession` — and in particular `longestSession.sessionId`, which is
+an identifier of a session on this machine. None of them has a field in any struct in this
+crate, so the deserialiser walks past them: the surest way not to store something is to have
+nowhere to put it.
+
+**The gate:** the fixture carries a sentinel in `longestSession.sessionId` and in a key no
+build has ever heard of, and `nothing_but_the_days_and_the_models_leaves_the_statistics_reader`
+fails if either turns up in the summary, in a month document, or in a cursor document — and
+also if any of the four unread key *names* does.
 
 ## The advisory lock
 

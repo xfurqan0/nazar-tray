@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{
-    Bucket, PROVIDER, PROVIDER_CODEX, UNKNOWN_MODEL, UsageSummary, codex, projects_dir, query,
-    scan, scan_claude, scan_codex,
-    store::{self, Month, Read},
+    Bucket, PROVIDER, PROVIDER_CODEX, PROVIDER_REPORTED, Raw, UNKNOWN_MODEL, UsageSummary,
+    backfill_claude_stats, codex, projects_dir, query, reported, scan, scan_claude, scan_codex,
+    store::{self, Models, Month, Read},
 };
 use crate::testutil::TempDir;
 
@@ -121,6 +121,28 @@ impl Machine {
             .collect()
     }
 
+    /// Put a `stats-cache.json` where Claude Code keeps one.
+    fn put_stats(&self, text: &str) -> PathBuf {
+        let path = reported::stats_cache_path(&self.home());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn backfill(&self) -> reported::Backfill {
+        backfill_claude_stats(&self.home(), &self.state()).unwrap()
+    }
+
+    /// One reported day's models, as the store holds them.
+    fn reported(&self, month: &str, day: &str) -> Models {
+        self.month(month)
+            .providers
+            .get(PROVIDER_REPORTED)
+            .and_then(|totals| totals.buckets.get(&format!("{day}T00")))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Every byte this machine has written under `usage/`.
     fn documents(&self) -> Vec<(String, String)> {
         let dir = store::usage_dir(&self.state());
@@ -139,6 +161,32 @@ impl Machine {
     }
 }
 
+/// A Claude bucket built from a fixture whose messages are each written on **one** line.
+///
+/// The per-line counters are then the five counters, spelled out rather than left absent:
+/// the transcript reader writes them the moment it credits anything, so a bucket it wrote is
+/// never the one whose absent `raw` means "the same as the five". Codex's is, which is what
+/// [`bucket`] stays for.
+fn one_line_each(
+    input: u64,
+    output: u64,
+    cache_create: u64,
+    cache_read: u64,
+    requests: u64,
+) -> Bucket {
+    Bucket {
+        raw: Some(Raw {
+            input,
+            output,
+            cache_create,
+            cache_read,
+        }),
+        ..bucket(input, output, cache_create, cache_read, requests)
+    }
+}
+
+/// A bucket with no per-line counters of its own, which is every bucket the Codex reader
+/// writes: one event per record, nothing to collapse, and an absent `raw` says exactly that.
 fn bucket(input: u64, output: u64, cache_create: u64, cache_read: u64, requests: u64) -> Bucket {
     Bucket {
         input,
@@ -146,6 +194,8 @@ fn bucket(input: u64, output: u64, cache_create: u64, cache_read: u64, requests:
         cache_create,
         cache_read,
         requests,
+        raw: None,
+        reported_total: None,
         extra: serde_json::Map::new(),
     }
 }
@@ -167,25 +217,25 @@ fn a_fixture_with_known_totals_adds_up_to_them() {
 
     assert_eq!(
         machine.bucket("2026-08", "2026-08-31T23", "claude-opus-5"),
-        bucket(10, 100, 1000, 10_000, 1)
+        one_line_each(10, 100, 1000, 10_000, 1)
     );
     assert_eq!(
         machine.bucket("2026-08", "2026-08-31T23", "claude-fable-5-1"),
-        bucket(20, 200, 2000, 20_000, 1)
+        one_line_each(20, 200, 2000, 20_000, 1)
     );
     // Two messages an hour apart from each other, in the same hour.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T00", "claude-opus-5"),
-        bucket(70, 700, 7000, 70_000, 2)
+        one_line_each(70, 700, 7000, 70_000, 2)
     );
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T01", "claude-fable-5-1"),
-        bucket(50, 500, 5000, 50_000, 1)
+        one_line_each(50, 500, 5000, 50_000, 1)
     );
     // Written `07:30+03:00`, which is `04:30` in the only time zone this crate has.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1)
+        one_line_each(60, 600, 6000, 60_000, 1)
     );
     assert_eq!(summary.credited_total, 233_310);
     assert_eq!(summary.naive_total, summary.credited_total);
@@ -226,7 +276,16 @@ fn the_copies_one_message_is_written_on_inflate_the_answer_by_nothing() {
     // message followed by the whole one, and the larger copy is the one that counts.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5"),
-        bucket(6, 649_213, 50, 500, 2)
+        Bucket {
+            // Five lines, two messages: what `/usage` would show for the same hour.
+            raw: Some(Raw {
+                input: 17,
+                output: 781_300,
+                cache_create: 150,
+                cache_read: 1500,
+            }),
+            ..bucket(6, 649_213, 50, 500, 2)
+        }
     );
     assert_eq!(summary.credited_total, 649_769);
     assert_eq!(
@@ -299,7 +358,7 @@ fn a_transcript_caught_mid_line_is_finished_on_the_next_scan() {
     assert_eq!(second.credited, 1, "and now it is");
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1),
+        one_line_each(60, 600, 6000, 60_000, 1),
         "counted once, with the numbers of the whole line"
     );
 }
@@ -394,7 +453,7 @@ fn nothing_but_the_allow_listed_values_leaves_the_reader() {
     // And the numbers still arrived, so this is a test of a reader that works.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-04T09", "claude-haiku-4-5-20251001"),
-        bucket(3, 33, 333, 3333, 1)
+        one_line_each(3, 33, 333, 3333, 1)
     );
 
     let view = query(
@@ -587,11 +646,20 @@ fn a_replaced_transcript_is_read_from_the_top_without_losing_what_it_had_said() 
     // is for.
     assert_eq!(
         machine.bucket("2026-08", "2026-08-31T23", "claude-opus-5"),
-        bucket(10, 100, 1000, 10_000, 1)
+        one_line_each(10, 100, 1000, 10_000, 1)
     );
     assert_eq!(
         machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5"),
-        bucket(6, 649_213, 50, 500, 2)
+        Bucket {
+            // Five lines, two messages: what `/usage` would show for the same hour.
+            raw: Some(Raw {
+                input: 17,
+                output: 781_300,
+                cache_create: 150,
+                cache_read: 1500,
+            }),
+            ..bucket(6, 649_213, 50, 500, 2)
+        }
     );
 }
 
@@ -617,7 +685,16 @@ fn a_message_whose_blocks_straddle_the_cursor_is_still_one_message() {
 
     assert_eq!(
         machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5"),
-        bucket(6, 649_213, 50, 500, 2),
+        Bucket {
+            // Five lines, two messages: what `/usage` would show for the same hour.
+            raw: Some(Raw {
+                input: 17,
+                output: 781_300,
+                cache_create: 150,
+                cache_read: 1500,
+            }),
+            ..bucket(6, 649_213, 50, 500, 2)
+        },
         "the same totals as one pass over the whole file"
     );
 }
@@ -658,7 +735,7 @@ fn a_truncated_transcript_is_read_again_and_counted_once() {
     // And the records the truncation removed are still there, counted once each.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1)
+        one_line_each(60, 600, 6000, 60_000, 1)
     );
 }
 
@@ -714,12 +791,12 @@ fn a_month_that_could_not_be_written_keeps_its_totals_until_it_can() {
     // arrive a second time.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1),
+        one_line_each(60, 600, 6000, 60_000, 1),
         "the record the journal held"
     );
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T00", "claude-opus-5"),
-        bucket(70, 700, 7000, 70_000, 2),
+        one_line_each(70, 700, 7000, 70_000, 2),
         "and the ones that were filed before the damage, counted once"
     );
 
@@ -727,7 +804,7 @@ fn a_month_that_could_not_be_written_keeps_its_totals_until_it_can() {
     assert_eq!(again.credited, 0);
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1)
+        one_line_each(60, 600, 6000, 60_000, 1)
     );
 }
 
@@ -1025,7 +1102,7 @@ fn the_two_readers_share_a_month_and_never_a_cursor() {
     // And both readers' totals are still there, side by side.
     assert_eq!(
         machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
-        bucket(60, 600, 6000, 60_000, 1)
+        one_line_each(60, 600, 6000, 60_000, 1)
     );
     assert_eq!(
         machine.codex_bucket("2026-09", "2026-09-12T11", "gpt-6-astra"),
@@ -1227,5 +1304,357 @@ fn usage_scan_cost_over_a_real_sized_corpus() {
     assert!(
         took.as_secs() < budget,
         "a full pass took {took:?}, which is over the {budget}s budget"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) the per-line total, beside the deduplicated one
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_per_line_total_is_kept_beside_the_deduplicated_one() {
+    let machine = Machine::new("usage-raw");
+    machine.put("p-project/session-p.jsonl", &fixture("duplicates.jsonl"));
+
+    let summary = machine.scan();
+    assert_eq!(summary.credited_total, 649_769, "two messages");
+    assert_eq!(summary.naive_total, 782_967, "five lines");
+    assert_eq!(
+        summary.raw_credited_total, summary.naive_total,
+        "every line this pass read reached a bucket's per-line counters"
+    );
+
+    let bucket = machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5");
+    let raw = bucket
+        .raw
+        .expect("the transcript reader writes per-line counters");
+    assert_eq!(raw.total(), 782_967);
+    assert!(
+        raw.total() > 649_769,
+        "the per-line number is never the smaller of the two"
+    );
+    // The five counters are untouched by any of it: the default is still the real spend.
+    assert_eq!(bucket.output, 649_213);
+    assert_eq!(
+        bucket.requests, 2,
+        "a request is a message, in both readings"
+    );
+}
+
+#[test]
+fn the_codex_reader_writes_no_per_line_counters_because_it_has_none_to_write() {
+    let machine = Machine::new("usage-raw-codex");
+    machine.put_rollout(
+        "2026/09/12/rollout-one.jsonl",
+        &fixture("rollout-known-totals.jsonl"),
+    );
+    machine.scan_codex();
+
+    let bucket = machine.codex_bucket("2026-09", "2026-09-12T11", "gpt-6-astra");
+    assert_eq!(
+        bucket.raw, None,
+        "Codex writes each event once, and an absent raw says the two numbers are one"
+    );
+    // And a reader that asks for them is given the five counters rather than zeroes.
+    assert_eq!(bucket.raw_counters().total(), 4300);
+}
+
+#[test]
+fn reading_the_same_transcript_again_adds_nothing_to_the_per_line_total_either() {
+    let machine = Machine::new("usage-raw-again");
+    machine.put("q-project/session-q.jsonl", &fixture("duplicates.jsonl"));
+    machine.scan();
+    let before = machine.month_documents();
+
+    let second = machine.scan();
+    assert_eq!(second.credited_total, 0);
+    assert_eq!(second.raw_credited_total, 0);
+    assert_eq!(
+        machine.month_documents(),
+        before,
+        "a second pass over unchanged bytes leaves the directory byte for byte as it was"
+    );
+}
+
+#[test]
+fn a_truncated_transcript_does_not_double_the_per_line_total() {
+    let machine = Machine::new("usage-raw-truncated");
+    let text = fixture("duplicates.jsonl");
+    let path = machine.put("r-project/session-r.jsonl", &text);
+    machine.scan();
+    let before = machine.month_documents();
+
+    // Truncated to its first line, which is what a prune looks like: the offset is past the
+    // end, the pass starts at byte zero, and every line it finds is a line already counted.
+    let first_line = format!("{}\n", text.lines().next().unwrap());
+    std::fs::write(&path, &first_line).unwrap();
+    let second = machine.scan();
+    assert_eq!(second.files_restarted, 1);
+    assert_eq!(second.credited_total, 0);
+    assert_eq!(
+        second.raw_credited_total, 0,
+        "a sum over lines must not add the same lines to itself"
+    );
+    assert_eq!(
+        machine.month_documents(),
+        before,
+        "the per-line counters stand exactly where the truncation found them"
+    );
+
+    // And the file growing back to what it held credits nothing a second time either.
+    std::fs::write(&path, &text).unwrap();
+    let third = machine.scan();
+    assert_eq!(third.raw_credited_total, 0, "back to where it already was");
+    assert_eq!(machine.month_documents(), before);
+}
+
+#[test]
+fn a_bucket_written_before_the_per_line_counters_existed_reads_as_equal_to_them() {
+    // Every store on every machine that ran T-WP13 to T-WP21 is full of these. There is no
+    // way to recover what their lines came to — the bytes are behind a cursor that has
+    // moved — so an absent raw states the one thing that is certainly not an invention.
+    let old: Bucket = serde_json::from_str(
+        r#"{"input":10,"output":100,"cache_create":1000,"cache_read":10000,"requests":1}"#,
+    )
+    .unwrap();
+    assert_eq!(old.raw, None);
+    assert_eq!(old.raw_counters().total(), 11_110);
+
+    // And the first thing that credits per-line counters to it seeds them from the five, so
+    // the statement stays true rather than becoming a bucket whose raw is below its dedupe.
+    let mut grown = old.clone();
+    grown.add(
+        &scan::Usage {
+            input: Some(1),
+            output: Some(2),
+            cache_create: None,
+            cache_read: None,
+        },
+        Some(&scan::Usage {
+            input: Some(3),
+            output: Some(6),
+            cache_create: None,
+            cache_read: None,
+        }),
+        true,
+    );
+    assert_eq!(grown.input, 11);
+    assert_eq!(grown.raw_counters().input, 13);
+    assert!(grown.raw_counters().total() >= grown.input + grown.output + 11_000);
+}
+
+// ---------------------------------------------------------------------------
+// (n) the days before the transcripts, as Claude Code reported them
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_backfill_fills_only_the_days_before_the_transcripts() {
+    let machine = Machine::new("usage-reported");
+    machine.put("s-project/session-s.jsonl", &fixture("known-totals.jsonl"));
+    machine.put_stats(&fixture("stats-cache.json"));
+    machine.scan();
+
+    let filled = machine.backfill();
+    assert_eq!(filled.version, Some(reported::VERSION_OBSERVED));
+    assert_eq!(filled.last_computed.as_deref(), Some("2026-09-03"));
+    assert_eq!(
+        filled.boundary.as_deref(),
+        Some("2026-08-31"),
+        "the first UTC day the transcripts cover"
+    );
+    assert_eq!(
+        filled.days, 2,
+        "2026-08-29 and 2026-08-30, and nothing on or after the boundary"
+    );
+    assert_eq!(filled.models, 3);
+    assert_eq!(filled.total, 12_009);
+    assert_eq!(filled.months, vec!["2026-08"]);
+
+    let day = machine.reported("2026-08", "2026-08-30");
+    assert_eq!(day["claude-opus-5"].reported_total, Some(10_000));
+    assert_eq!(day["claude-fable-5-1"].reported_total, Some(2000));
+    // One number, and no invented split of it into four.
+    assert_eq!(day["claude-opus-5"].input, 0);
+    assert_eq!(day["claude-opus-5"].output, 0);
+    assert_eq!(day["claude-opus-5"].requests, 0);
+    assert_eq!(day["claude-opus-5"].raw, None);
+
+    // A total that is not a non-negative integer is not read as one, and the rest of the
+    // day is read as usual — the same rule the four counters keep.
+    let earlier = machine.reported("2026-08", "2026-08-29");
+    assert_eq!(earlier.len(), 1, "1.5 and a quoted 4000 are not counts");
+    assert_eq!(earlier["claude-sonnet-5"].reported_total, Some(9));
+
+    // A day the transcripts cover is never reported, whatever the other file says about it.
+    assert!(machine.reported("2026-08", "2026-08-31").is_empty());
+    assert!(machine.reported("2026-09", "2026-09-01").is_empty());
+    assert!(
+        !machine
+            .month("2026-09")
+            .providers
+            .contains_key(PROVIDER_REPORTED),
+        "a month whose days are all measured gets no block at all"
+    );
+}
+
+#[test]
+fn the_backfill_never_moves_the_boundary_it_measures_itself_against() {
+    let machine = Machine::new("usage-reported-since");
+    machine.put("t-project/session-t.jsonl", &fixture("known-totals.jsonl"));
+    machine.put_stats(&fixture("stats-cache.json"));
+    machine.scan();
+    let before = machine.month("2026-08").since.clone();
+    assert_eq!(before.as_deref(), Some("2026-08-31T23:00:00Z"));
+
+    machine.backfill();
+    assert_eq!(
+        machine.month("2026-08").since,
+        before,
+        "a reported day is not an instant this store measured"
+    );
+    assert_eq!(
+        reported::transcript_boundary(&machine.state())
+            .unwrap()
+            .as_deref(),
+        Some("2026-08-31"),
+        "and so the boundary cannot walk backwards behind itself"
+    );
+
+    // Which is what keeps the whole thing stable, however many times it runs.
+    let second = machine.backfill();
+    assert_eq!(second.days, 2);
+    assert_eq!(second.boundary.as_deref(), Some("2026-08-31"));
+}
+
+#[test]
+fn the_backfill_is_a_copy_rewritten_from_the_file_rather_than_an_accumulation() {
+    let machine = Machine::new("usage-reported-idempotent");
+    machine.put("u-project/session-u.jsonl", &fixture("known-totals.jsonl"));
+    machine.put_stats(&fixture("stats-cache.json"));
+    machine.scan();
+
+    machine.backfill();
+    let after_one = machine.month_documents();
+    let twice = machine.backfill();
+    assert!(
+        twice.months.is_empty(),
+        "the same bytes are not written a second time"
+    );
+    assert_eq!(
+        machine.month_documents(),
+        after_one,
+        "running it twice adds nothing, because it is a copy and not a sum"
+    );
+
+    // The file loses a day; so does the block. A copy that is no longer a copy of anything
+    // is a leftover rather than history.
+    machine.put_stats(
+        r#"{"version":5,"dailyModelTokens":[{"date":"2026-08-30","tokensByModel":{"claude-opus-5":10000}}]}"#,
+    );
+    let shrunk = machine.backfill();
+    assert_eq!(shrunk.days, 1);
+    assert!(machine.reported("2026-08", "2026-08-29").is_empty());
+    assert_eq!(
+        machine.reported("2026-08", "2026-08-30")["claude-opus-5"].reported_total,
+        Some(10_000)
+    );
+
+    // And a file that is gone leaves what was written alone rather than reporting no days:
+    // an absent file is not a file that says "nothing".
+    std::fs::remove_file(reported::stats_cache_path(&machine.home())).unwrap();
+    let absent = machine.backfill();
+    assert!(absent.absent);
+    assert_eq!(absent.days, 0);
+    assert_eq!(
+        machine.reported("2026-08", "2026-08-30")["claude-opus-5"].reported_total,
+        Some(10_000)
+    );
+}
+
+#[test]
+fn a_store_with_no_transcripts_yet_reports_every_day_the_file_holds() {
+    let machine = Machine::new("usage-reported-empty");
+    machine.put_stats(&fixture("stats-cache.json"));
+
+    let filled = machine.backfill();
+    assert_eq!(filled.boundary, None, "nothing has been measured");
+    assert_eq!(filled.days, 5, "so no day is before anything");
+    assert_eq!(filled.months, vec!["2026-08", "2026-09"]);
+    assert_eq!(
+        machine.reported("2026-09", "2026-09-03")["claude-opus-5"].reported_total,
+        Some(999_999)
+    );
+
+    // A month document that did not exist is created, and it is a month document: the
+    // version and the name a reader needs to know what it is holding.
+    let created = machine.month("2026-09");
+    assert_eq!(created.version, store::VERSION);
+    assert_eq!(created.month, "2026-09");
+    assert_eq!(created.earliest(), None, "and still nothing measured in it");
+}
+
+#[test]
+fn nothing_but_the_days_and_the_models_leaves_the_statistics_reader() {
+    const SESSION: &str = "SENTINEL-session-do-not-leak-4d19";
+    const FIELD: &str = "SENTINEL field do not leak 9b2e";
+
+    let text = fixture("stats-cache.json");
+    assert!(
+        text.contains(SESSION) && text.contains(FIELD),
+        "the fixture has to carry what the reader must not"
+    );
+
+    let machine = Machine::new("usage-reported-leak");
+    machine.put_stats(&text);
+    let filled = machine.backfill();
+    assert!(filled.days > 0, "and the numbers still arrived");
+
+    let serialised = format!("{filled:?}");
+    assert!(!serialised.contains(SESSION) && !serialised.contains(FIELD));
+    for (name, body) in machine.documents() {
+        assert!(
+            !body.contains(SESSION),
+            "{name} carries the session sentinel"
+        );
+        assert!(!body.contains(FIELD), "{name} carries the field sentinel");
+        // Nor the other fields the file holds and this reader has no struct for.
+        for unread in [
+            "messageCount",
+            "hourCounts",
+            "modelUsage",
+            "firstSessionDate",
+        ] {
+            assert!(!body.contains(unread), "{name} carries {unread}");
+        }
+    }
+}
+
+#[test]
+fn a_reported_block_says_where_it_came_from() {
+    let machine = Machine::new("usage-reported-source");
+    machine.put_stats(&fixture("stats-cache.json"));
+    machine.backfill();
+
+    let block = machine.month("2026-08").providers[PROVIDER_REPORTED].clone();
+    assert_eq!(
+        block
+            .extra
+            .get("source")
+            .and_then(serde_json::Value::as_str),
+        Some(reported::SOURCE),
+        "in words, once per month, where somebody opening the file will look"
+    );
+    assert_eq!(
+        block.applied_through, 0,
+        "it is not a sequence of passes and has no generation to stamp"
+    );
+
+    // And it survives a scan beside it without either one disturbing the other.
+    machine.put("v-project/session-v.jsonl", &fixture("known-totals.jsonl"));
+    machine.scan();
+    assert_eq!(
+        machine.month("2026-08").providers[PROVIDER_REPORTED],
+        block,
+        "a transcript scan files under its own key and leaves this one alone"
     );
 }

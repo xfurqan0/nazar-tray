@@ -57,11 +57,14 @@ the application copies the directory; a user who ticks the box meant it.
     "claude": {
       "buckets": {
         "2026-09-13T00": {
-          "claude-opus-5":   { "input": 118, "output": 9412, "cache_create": 184203, "cache_read": 41118902, "requests": 61 },
-          "claude-fable-5-1": { "input": 12, "output": 1877, "cache_create": 24843,  "cache_read": 3561302,  "requests": 9 }
+          "claude-opus-5":   { "input": 118, "output": 9412, "cache_create": 184203, "cache_read": 41118902, "requests": 61,
+                               "raw": { "input": 196, "output": 15702, "cache_create": 307201, "cache_read": 68566141 } },
+          "claude-fable-5-1": { "input": 12, "output": 1877, "cache_create": 24843,  "cache_read": 3561302,  "requests": 9,
+                               "raw": { "input": 20, "output": 3131, "cache_create": 41438, "cache_read": 5938836 } }
         },
         "2026-09-13T01": {
-          "claude-opus-5": { "input": 44, "output": 3110, "cache_create": 61044, "cache_read": 9330112, "requests": 22 }
+          "claude-opus-5": { "input": 44, "output": 3110, "cache_create": 61044, "cache_read": 9330112, "requests": 22,
+                             "raw": { "input": 73, "output": 5187, "cache_create": 101807, "cache_read": 15560686 } }
         }
       }
     },
@@ -69,6 +72,15 @@ the application copies the directory; a user who ticks the box meant it.
       "buckets": {
         "2026-09-13T00": {
           "gpt-5.6-sol": { "input": 2043, "output": 8801, "cache_create": 0, "cache_read": 1988416, "requests": 14 }
+        }
+      }
+    },
+    "claude_reported": {
+      "source": "claude-stats-cache",
+      "buckets": {
+        "2026-09-07T00": {
+          "claude-opus-5":    { "input": 0, "output": 0, "cache_create": 0, "cache_read": 0, "requests": 0, "reported_total": 2078342191 },
+          "claude-fable-5-1": { "input": 0, "output": 0, "cache_create": 0, "cache_read": 0, "requests": 0, "reported_total": 652369779 }
         }
       }
     }
@@ -82,9 +94,9 @@ the application copies the directory; a user who ticks the box meant it.
 | `month` | string | `YYYY-MM`, **UTC**, and the same value as the file name. Written into the document so a file that was renamed or copied still says what it is. |
 | `since` | string | RFC 3339 `…Z`. The **earliest instant any bucket in this store came from** — not the earliest in this file. It is what the panel's *since {date}* line reads, and it is the honest boundary of the words "all time": the first scan, plus however far back the transcripts still reached on the day it ran. |
 | `scanned_at` | string | RFC 3339 `…Z`. When the scan that produced this document finished. A diagnostic: it answers "is this history being kept up to date" the way `limits.lock`'s heartbeat answers "is the tray alive". |
-| `providers` | object | Keys are `claude` and `codex` — the same two spellings `limits.json` uses. A provider that has never been read has no key at all, rather than an empty object. |
+| `providers` | object | Keys are `claude` and `codex` — the same two spellings `limits.json` uses — plus `claude_reported`, which is not a reader and is described in its own section below. A provider that has never been read has no key at all, rather than an empty object. |
 | `providers.<p>.buckets` | object | Keys are **UTC hours**, `YYYY-MM-DDTHH` (13 characters, no minutes, no offset, no `Z` — it is an hour, not an instant). An hour in which nothing happened is **absent**, never a row of zeroes. |
-| `…<hour>.<model>` | object | The model id **exactly as the source reported it**. Five counters, below. |
+| `…<hour>.<model>` | object | The model id **exactly as the source reported it**. Five counters, below, plus the optional `raw` and `reported_total`. |
 
 ### The five counters
 
@@ -118,6 +130,50 @@ source did not report, and it lands as `0` in the bucket like any other absence.
 `requests` is a count of *records that carried usage*, not of your prompts: one turn can be
 several assistant messages, and a subagent's messages are its own. It is there so a reader can
 say "14 responses" instead of implying a session count it does not have.
+
+### `raw`: the same four counters with no dedupe at all
+
+Beside the five, an optional object with **four** of them summed **per line** rather than per
+message:
+
+```json
+"raw": { "input": 196, "output": 15702, "cache_create": 307201, "cache_read": 68566141 }
+```
+
+That is the number Claude Code's own `/usage` shows, and the store keeps it because two
+programs answering one question with two numbers is a thing a user can see. The dedupe rule
+below is why they differ: Claude Code writes a message once per content block and every copy
+carries the whole `usage` object, so adding the lines up counts a message once per block. On
+the maintainer's machine, over the six days both numbers could be measured, `raw` came to
+**1.667×** the deduplicated total — and the per-day figures matched `~/.claude/stats-cache.json`
+**digit for digit** on all five overlapping days.
+
+**No `requests` in it.** A request is a message and not a line, so the count beside either
+reading is the deduplicated one. A per-line count would be a count of content blocks under a
+label that promises replies.
+
+**An absent `raw` is a statement, not a hole: the per-line sum of that bucket is its five
+counters.** Three kinds of bucket are absent and each is honest about it:
+
+- **Every Codex bucket.** Codex writes each event once; there are no copies to collapse, so
+  the two numbers are one number and writing it twice would only invite them to drift.
+- **Every bucket written before this field existed.** Those lines are behind a cursor that has
+  already moved and nothing will read them again, so the per-line sum is not recoverable —
+  and multiplying by 1.667 would be inventing a number, which rule 2 of
+  [`limits-contract.md`](limits-contract.md) has forbidden since before this file existed.
+- **Any bucket a future reader writes without one**, for whatever reason it has.
+
+**It is written the moment anything credits a per-line sum to the bucket, seeded from the five
+counters**, so the sentence above keeps being true rather than becoming a bucket whose `raw` is
+smaller than its dedupe. `raw ≥ the five counters` holds hour by hour and model by model, and
+it holds because the per-line sum is accumulated against the **same dedupe key** as the
+deduplicated one — never per bucket, which a rewrite that swapped one message for another of
+the same size could have pushed below its own dedupe.
+
+**The `version` did not change.** `raw` is an added optional field, unknown keys survive a
+rewrite, and every reader that has ever existed keeps working: an older build reading a newer
+document walks past it, and a newer build reading an older document reads the absence as the
+sentence above.
 
 ### Model ids are stored as reported, never canonicalised
 
@@ -231,6 +287,88 @@ week* line, and the model it names as the busiest — is the same four-way sum a
 the tooltip and the view cannot disagree about a number the user can check against a third
 window. Between T-WP20 and T-WP20b they briefly did, which is written up in `PROJECT.md` §9.
 
+## `claude_reported`: days this store never measured
+
+A third key under `providers`, and **not a reader**. It is a copy of what Claude Code's own
+`~/.claude/stats-cache.json` says about the days **older than the transcripts** — days this
+store has no way to count, because Claude Code has already pruned the files they were in.
+
+```json
+"claude_reported": {
+  "source": "claude-stats-cache",
+  "buckets": {
+    "2026-09-07T00": {
+      "claude-opus-5": { "input": 0, "output": 0, "cache_create": 0, "cache_read": 0,
+                         "requests": 0, "reported_total": 2078342191 }
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | `claude-stats-cache`, on the provider block rather than on every row. The key already says where the numbers came from; this says it in words, in the one place somebody opening the file will look. |
+| bucket key | `YYYY-MM-DDT00` — **the date that program computed, at hour zero of itself**. It is a day, not an hour: nothing happened at midnight in particular, and the hour is there because this file's keys are hours. |
+| `reported_total` | The one number the source holds for that model on that day. **Per-line**, like everything in that file. |
+| the five counters | `0`. `stats-cache.json` holds one total per model per day and no split, and writing a guess at the split would be inventing four numbers out of one. |
+
+Seven rules, and each of them is what keeps this from becoming a second, quieter source of
+truth:
+
+1. **It is off by default.** `usage.fillHistoryFromStats` in `config.json`, and a history that
+   quietly mixes two kinds of number is worse than a shorter one.
+2. **It is never merged into `claude`** and never added to any counter of it. A reader summing
+   the providers gets what this machine measured; this block is lifted out before the panel
+   sees the providers at all.
+3. **Only days strictly before the transcripts.** The boundary is the earliest hour the
+   `claude` provider holds, floored to its UTC day — *not* the store-wide `since`, which on a
+   machine with Codex on it is dragged back by rollout logs that say nothing about Claude
+   Code's transcripts. On the maintainer's machine the two differ by twelve days.
+4. **It does not move the boundary it measures itself against.** `since` is computed from the
+   measured providers alone; counting a backfilled day in it would move the boundary back
+   behind itself and leave the store oscillating between two answers.
+5. **It is a copy, not an accumulation.** Every run rewrites the whole block from the file, so
+   running it twice writes the same bytes and a day the file no longer holds stops being in
+   the store. There is no journal, no generation and no `applied_through`: there is nothing to
+   be idempotent *about*.
+6. **The dates are that program's, and they are carried as dates.** They were measured against
+   UTC days and matched digit for digit. A reported day is handed to the panel as
+   `YYYY-MM-DD`, never re-bucketed through a time zone, so nothing between the file and the
+   screen converts an offset and nothing can be an hour wrong about a number that never had an
+   hour. The one boundary case a negative offset can produce — a local day that is partly
+   covered by transcripts and also carries a reported number — is dropped by the panel, which
+   is the side that knows the offset.
+7. **The panel draws it apart.** Outlined rather than shaded on the calendar, outlined in the
+   weeks list, and *reported by Claude Code* in words wherever it appears — because a shade is
+   a rank against the days beside it, and these are counted in a different unit.
+
+**Why a copy of another program's arithmetic is in this file at all.** Because the alternative
+was a history that begins the day this product was installed, on a machine whose transcripts
+reach back six days and whose statistics cache reaches back twenty-two. The numbers are real;
+what they are not is *ours*, and every one of the seven rules above exists to keep that
+distinction visible rather than to hide it.
+
+## The two counts, and which one the panel draws
+
+`docs/pinned-internal-formats.md` pins the fields; this is the decision on top of them.
+
+**The default is the deduplicated spend.** It is the number that answers *what did this machine
+use*, and it is the only one here that is a measurement of that.
+
+**`usage.countLikeClaudeCode` swaps every counter for its per-line twin.** `get_usage` then
+answers with `mode: "per_line"` and the same bucket shape, so the panel's arithmetic, its
+calendar, its weeks and its details are one set of functions over one shape rather than two
+copies with two chances to disagree. The headline carries a small tag saying so, and the tray
+tooltip follows the same setting — the two surfaces of this application cannot answer one
+question with two numbers, which is what `PROJECT.md` §9 spent a package on.
+
+The reason a user would want it: `/usage` shows the per-line number, and somebody comparing the
+two windows deserves to be able to make them agree rather than being told one of them is wrong.
+The reason it is not the default:
+[anthropics/claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098)
+— the per-line sum counts one message once per content block, which is 1.667× the real spend
+here and is not a constant that could be divided back out.
+
 ## No cost, in v1
 
 There is **no cost field**, and this is not an omission to be fixed by adding one quietly.
@@ -274,6 +412,23 @@ Three consequences worth naming:
   holds credits nothing. So the totals are the same after a prune as before one — which is
   what the word idempotent above is worth, and what the first version got wrong past the last
   sixteen messages of a file.
+- **`raw` is idempotent too, and it needed a second number to be.** The deduplicated side can
+  say *the largest reading, minus what is already credited* in either direction, because every
+  copy of a message carries the whole `usage` object. The per-line side is a **sum over
+  lines**, and the same line read twice is two lines unless something remembers that it is
+  not. So each dedupe key carries two per-line figures rather than one: the **high-water
+  mark**, which is what the bucket has already been credited, and **what the file holds now**,
+  which a restart forgets and an append adds to. What is credited is the difference, saturating
+  at nothing, and the invariant is:
+
+  > **A bucket's `raw` counters are the largest per-line sum the transcripts behind them have
+  > ever held, and reading any byte a second time adds nothing to them.**
+
+  The sequence a byte offset alone gets wrong: a transcript is pruned to its first line and a
+  copy of the original is then put back. The restart credits nothing, and the pass after it is
+  an **ordinary append** — valid offset, matching fingerprint, nothing to say the file ever
+  shrank — which would credit lines two and three a second time, permanently. With *what the
+  file holds now* it climbs back to where the high-water mark already is, and credits nothing.
 - **Largest-wins is a rule about copies of one message, and it lives before the buckets.**
   Claude Code writes a message once per content block and every copy carries the whole
   `usage` object; the scan keeps the copy with the largest total, credits that one, and a
@@ -312,8 +467,14 @@ nobody would guess:
   different content, and everything written before it would never be read. A mismatch is
   treated exactly like a truncation: read the file again from the top.
 - **They hold what has already been credited, per log, in full.** For a transcript that is
-  every `(message.id, requestId)` key it has produced and the largest reading of each, as a
-  bare array of five numbers per key; for a rollout, the fingerprint of every event. That is
+  every `(message.id, requestId)` key it has produced, as a bare array of **nine** numbers per
+  key — the hash, the largest reading of the message, and that message's per-line sum — or
+  thirteen for a key whose file has been truncated below its high-water mark, where the last
+  four say what the file holds now. (A row of **five** is one written before `raw` existed:
+  its per-line half is seeded from its deduplicated half, which is a lower bound and is
+  exactly what an absent `raw` on a bucket already means, so the two cancel and the first
+  restart after an upgrade credits the file's true per-line sum once.) For a rollout, the
+  fingerprint of every event. That is
   what makes reading a log from the top again *safe* rather than a doubling: a re-read record
   credits the difference between the largest copy now and the most already credited, which
   for the same bytes is nothing. It is also the size of these documents — a few hundred
@@ -346,6 +507,10 @@ nobody would guess:
 `claude` and `codex` file into the same month documents, under their own key, with their own
 `applied_through` stamp and their own cursor document. Neither reader can disturb the other's
 offsets, and a month may hold one, both, or neither.
+
+`claude_reported` has no cursor and no journal at all, because it is not a reader: its whole
+block is rewritten from `stats-cache.json` on every pass that runs it. Deleting it by hand
+costs nothing; the next pass puts it back.
 
 The Claude side is `message.usage` as the server reported it, deduplicated by
 `(message.id, requestId)` — minus two kinds of line that carry a full set of counters and are
@@ -462,10 +627,13 @@ No prompt text. No response text. No reasoning. No tool input or output. No file
 name, working directory, git branch, session id, message id, request id, or account
 identifier. Nothing that is a name of anything on this machine.
 
-What is in it is what the table above lists: five integers, a model id, a UTC hour. The reader
-that produces it builds those values into a new object instead of filtering a parsed line, and
-a leak test feeds it records whose every text field is a sentinel and fails if the sentinel
-turns up in the store or in anything the store serialises. The full inventory of what is read
+What is in it is what the table above lists: five integers, four more under `raw`, a model id,
+a UTC hour. The reader that produces it builds those values into a new object instead of
+filtering a parsed line, and a leak test feeds it records whose every text field is a sentinel
+and fails if the sentinel turns up in the store or in anything the store serialises. The
+statistics reader is held to the same rule and the same test: it has a field for three keys of
+`stats-cache.json` and for nothing else, so `longestSession.sessionId` — an identifier of a
+session on this machine — is walked past by the deserialiser rather than filtered out by hand. The full inventory of what is read
 and what is not is [`pinned-internal-formats.md`](pinned-internal-formats.md).
 
 ## `limits.json` does not change
@@ -485,6 +653,9 @@ Today, one repository: this one.
 
 1. Update the writer and its tests in `crates/nazar-core/src/usage/`.
 2. Update this document, in the same commit.
-3. Bump `version` only for a change that removes or repurposes a field.
+3. Bump `version` only for a change that removes or repurposes a field. `raw`,
+   `reported_total` and the `claude_reported` provider were all **added**, so `version` is
+   still `1`: unknown keys survive a rewrite, an older build walks past them, and a newer
+   build reads their absence as the sentence each of them defines.
 4. The day a second program reads this file, add the step that copies a sample into it — and
    that day, this page stops being a plan and becomes a promise.

@@ -105,6 +105,9 @@ pub struct Config {
     /// Which providers are read at all.
     #[serde(default)]
     pub providers: ProviderSwitches,
+    /// The two choices about how the usage history is counted and how far back it goes.
+    #[serde(default)]
+    pub usage: UsageSwitches,
     /// Keys a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -251,6 +254,37 @@ impl ProviderSwitches {
     }
 }
 
+/// How the usage history is counted, and how far back it claims to go.
+///
+/// **Both are off, and the defaults are the honest answers.** What the panel shows without
+/// either of them is what this machine actually spent, counted from logs this product read
+/// itself. Each switch trades one of those properties for agreement with another program,
+/// which is a thing to choose rather than a thing to arrive at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSwitches {
+    /// Show the per-line numbers that Claude Code's `/usage` shows.
+    ///
+    /// Claude Code writes one transcript line per content block and every one of them carries
+    /// the whole `usage` object, so adding the lines up counts a message once per block —
+    /// about 1.7× the real spend on the machine this was measured on, and Claude Code's own
+    /// Stats screen does exactly that (`anthropics/claude-code#91775`). The store keeps both
+    /// numbers; this decides which one is drawn, in the panel and in the tray tooltip
+    /// together, so the two surfaces can never disagree.
+    #[serde(default)]
+    pub count_like_claude_code: bool,
+    /// Show the days before the transcripts, as Claude Code reported them.
+    ///
+    /// `~/.claude/stats-cache.json` reaches further back than the transcripts do, because
+    /// Claude Code prunes those and keeps this. What it holds is one total per model per day
+    /// and nothing else — no split into the four counters, and per-line rather than
+    /// deduplicated — so those days are drawn apart from the measured ones and labelled as
+    /// somebody else's arithmetic. Off by default: a history that quietly mixes two kinds of
+    /// number is worse than a shorter one.
+    #[serde(default)]
+    pub fill_history_from_stats: bool,
+}
+
 /// Something wrong with a settings document, in the vocabulary the panel translates.
 ///
 /// Returned by [`Config::validate`], which is what the settings form is checked against
@@ -300,6 +334,7 @@ impl Default for Config {
             notifications: true,
             quiet_hours: None,
             providers: ProviderSwitches::default(),
+            usage: UsageSwitches::default(),
             extra: Map::new(),
         }
     }

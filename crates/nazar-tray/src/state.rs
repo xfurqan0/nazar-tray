@@ -218,6 +218,10 @@ pub struct SettingsForm {
     pub providers: ProviderSwitches,
     /// Whether the opt-in detailed-windows mode is on.
     pub detailed_windows: bool,
+    /// Show the per-line numbers `/usage` shows, rather than the deduplicated spend.
+    pub usage_count_like_claude_code: bool,
+    /// Show the days before the transcripts, as Claude Code reported them.
+    pub usage_fill_history_from_stats: bool,
 }
 
 impl SettingsForm {
@@ -236,6 +240,8 @@ impl SettingsForm {
             thresholds: config.thresholds,
             providers: config.providers,
             detailed_windows: config.detailed_windows,
+            usage_count_like_claude_code: config.usage.count_like_claude_code,
+            usage_fill_history_from_stats: config.usage.fill_history_from_stats,
         }
     }
 
@@ -254,6 +260,8 @@ impl SettingsForm {
         config.thresholds = self.thresholds;
         config.providers = self.providers;
         config.detailed_windows = self.detailed_windows;
+        config.usage.count_like_claude_code = self.usage_count_like_claude_code;
+        config.usage.fill_history_from_stats = self.usage_fill_history_from_stats;
     }
 }
 
@@ -897,6 +905,8 @@ mod tests {
             "\"thresholds\"",
             "\"providers\"",
             "\"detailedWindows\"",
+            "\"usageCountLikeClaudeCode\"",
+            "\"usageFillHistoryFromStats\"",
         ] {
             assert!(json.contains(key), "{key} is missing from {json}");
         }
@@ -905,6 +915,41 @@ mod tests {
             form,
             "the form the panel sends has to be the form Rust reads"
         );
+    }
+
+    #[test]
+    fn the_two_usage_switches_are_off_on_a_fresh_machine_and_survive_a_round_trip() {
+        // Off is the honest default on both: what the panel shows without them is what this
+        // machine spent, counted from logs this product read itself.
+        let fresh = SettingsForm::from_config(&Config::default());
+        assert!(!fresh.usage_count_like_claude_code);
+        assert!(!fresh.usage_fill_history_from_stats);
+
+        let form = SettingsForm {
+            usage_count_like_claude_code: true,
+            usage_fill_history_from_stats: true,
+            ..fresh
+        };
+        let mut config = Config::default();
+        form.apply_to(&mut config);
+        assert!(config.usage.count_like_claude_code);
+        assert!(config.usage.fill_history_from_stats);
+        assert_eq!(SettingsForm::from_config(&config), form);
+
+        // And they are nested under one key rather than loose at the top level, so the file
+        // says what they are about.
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            json.contains("\"usage\":{\"countLikeClaudeCode\":true"),
+            "the settings document spells them under `usage`: {json}"
+        );
+    }
+
+    #[test]
+    fn a_settings_file_written_before_the_two_switches_reads_as_both_off() {
+        let config = Config::from_json(r#"{ "schemaVersion": 1, "theme": "graphite" }"#).unwrap();
+        assert!(!config.usage.count_like_claude_code);
+        assert!(!config.usage.fill_history_from_stats);
     }
 
     #[test]
