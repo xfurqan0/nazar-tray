@@ -27,15 +27,23 @@ const panel = read("ui/src/main.ts");
  * ask this process to do. Finding them by walking `src/` would let the surface grow without
  * anyone noticing, so a new command module is a line here as well as a line in `main.rs`.
  * WP5 had one, the settings and the snapshot. WP7 added the second: the status-line wrapper,
- * the only part of this product that edits a file belonging to another program.
+ * the only part of this product that edits a file belonging to another program. T-WP15 added
+ * the third: the usage store, the only command that reads hundreds of megabytes and therefore
+ * the only one that is throttled.
  */
-const COMMAND_MODULES = ["state.rs", "statusline.rs"];
+const COMMAND_MODULES = ["state.rs", "statusline.rs", "usage.rs"];
 
-/** Every `#[tauri::command]` the Rust side defines. */
+/**
+ * Every `#[tauri::command]` the Rust side defines.
+ *
+ * The attribute takes arguments — `#[tauri::command(async)]` is what puts a slow command on
+ * a thread of its own — so the pattern allows them. A command the macro accepted and this
+ * expression did not would be one the registration check had quietly stopped watching.
+ */
 const defined = COMMAND_MODULES.flatMap((file) =>
-  [...read(`crates/nazar-tray/src/${file}`).matchAll(/#\[tauri::command\]\s*\npub fn (\w+)/g)].map(
-    (match) => match[1],
-  ),
+  [
+    ...read(`crates/nazar-tray/src/${file}`).matchAll(/#\[tauri::command[^\]]*\]\s*\npub fn (\w+)/g),
+  ].map((match) => match[1]),
 );
 
 /** Every command named in `generate_handler!`, with the module path taken off. */
@@ -111,6 +119,75 @@ test("WP5's commands are all there: the settings and the startup entry", () => {
     /manager\.is_enabled\(\)\.map_err/,
     "set_autostart must read the state back from the plugin rather than assuming it",
   );
+});
+
+test("T-WP15's command is there, and the panel's half of it matches the Rust half", () => {
+  const rustUsage = read("crates/nazar-tray/src/usage.rs");
+  const types = read("ui/src/snapshot.ts");
+
+  assert.ok(registered.includes("get_usage"), "get_usage is not registered");
+  assert.ok(defined.includes("get_usage"), "get_usage is not defined in usage.rs");
+  // Off the main thread: the scan reads hundreds of megabytes, and a panel whose window
+  // froze while it drew a chart would be a worse bug than a chart that took a second.
+  assert.match(rustUsage, /#\[tauri::command\(async\)\]\s*\npub fn get_usage/);
+
+  // The three ranges are written down twice, once per language. A fourth on one side is a
+  // range the panel can ask for and the command refuses, at run time, on somebody's machine.
+  const fromRust = [...(/pub const RANGES: \[&str; \d+\] = \[([^\]]+)\]/.exec(rustUsage)?.[1] ?? "")
+    .matchAll(/"(\w+)"/g)].map((match) => match[1]);
+  const fromTs = [...(/export type UsageRange =([^;]+);/.exec(types)?.[1] ?? "").matchAll(
+    /"(\w+)"/g,
+  )].map((match) => match[1]);
+  assert.deepEqual(fromRust, ["week", "month", "all"]);
+  assert.deepEqual(fromTs, fromRust, "ui/src/snapshot.ts and usage.rs list different ranges");
+
+  // The one place in this bridge that is snake_case, and the reason is written in both
+  // files. The five counters belong to the store, so they are checked against the module
+  // that writes them rather than against the command, which hands the buckets through
+  // untouched and names none of them.
+  const store = read("crates/nazar-core/src/usage/store.rs");
+  for (const counter of ["input", "output", "cache_create", "cache_read", "requests"]) {
+    assert.ok(types.includes(counter), `ui/src/snapshot.ts does not name ${counter}`);
+    assert.ok(store.includes(`pub ${counter}:`), `the store no longer has a ${counter}`);
+  }
+  for (const key of ["scanned_at", "files_seen", "took_ms"]) {
+    assert.ok(types.includes(key), `ui/src/snapshot.ts does not name ${key}`);
+    assert.ok(rustUsage.includes(key), `usage.rs does not name ${key}`);
+  }
+  assert.ok(
+    !/#\[serde\(rename_all = "camelCase"\)\]/.test(rustUsage),
+    "the usage document is snake_case on both sides; see docs/usage-contract.md",
+  );
+
+  // Every kind the Rust side can return is a kind the panel has a word for.
+  const kinds = [...rustUsage.matchAll(/UsageError::(?:new|from_core)\(\s*"(\w+)"/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(kinds.length >= 4, `usage.rs returns ${kinds.join(", ")}`);
+  for (const kind of kinds) {
+    assert.ok(types.includes(`"${kind}"`), `ui/src/snapshot.ts has no case for ${kind}`);
+  }
+});
+
+test("the usage scan is not on the refresh path, and only the lock holder runs it", () => {
+  // The contract's rule: quota is why this application exists, it reads two small files in
+  // milliseconds, and it must never queue behind a scan that reads hundreds of megabytes.
+  const refresh = read("crates/nazar-core/src/refresh/mod.rs");
+  assert.ok(
+    !refresh.includes("scan_claude") && !refresh.includes("usage::"),
+    "the refresh loop must not scan the transcripts",
+  );
+
+  const rustUsage = read("crates/nazar-tray/src/usage.rs");
+  assert.match(
+    rustUsage,
+    /pub const SCAN_INTERVAL_MS: u64 = 5 \* 60 \* 1000;/,
+    "docs/usage-contract.md says at most one scan every five minutes",
+  );
+  // One writer, many readers: the same advisory lock that already guards limits.json.
+  const main = read("crates/nazar-tray/src/main.rs");
+  assert.match(main, /let writes_usage = lock\.is_some\(\);/);
+  assert.match(main, /app\.manage\(usage::UsageState::new\(writes_usage\)\)/);
 });
 
 test("the tray menu offers the four actions, and can be rebuilt in another language", () => {

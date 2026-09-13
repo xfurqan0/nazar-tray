@@ -1032,3 +1032,81 @@ its first two items belong in the same commit as the readers they describe, beca
   points at the test that fails if it is. "Never reads your tokens, never talks to the network"
   stays, because it is about sign-in tokens and is still true — but it stops being the whole
   sentence.
+- 2026-09-13 — **T-WP15: `get_usage`, the one command that reads the usage store — and the
+  three rules that keep it from turning into a second refresh loop**
+  (`crates/nazar-tray/src/usage.rs`, `main.rs`, `ui/src/snapshot.ts`,
+  `ui/test/bridge.test.mjs`). T-WP13 built a store that nothing read. This is the bridge, and
+  it is deliberately thin: it decides **when** a scan may run, hands the store's own answer
+  back unchanged, and turns the ways this can fail into something a panel can put on screen.
+  No interface — T-WP16 is the view.
+
+  **The window arrives from the panel, already as instants.** A week starts on Monday in the
+  reader's own zone, and `nothing_in_the_workspace_asks_the_machine_what_time_zone_it_is_in`
+  fails the build if any Rust file tries to find out which zone that is. So the panel does the
+  arithmetic and sends `from` and `to`; `range` comes along as a **name** — `week`, `month` or
+  `all` — which is validated and echoed back, so the answer says which question it answers and
+  a panel that invents a fourth range gets an error rather than a silent empty week. Any legal
+  RFC 3339 spelling is accepted, an offset included, and what comes back is always UTC with a
+  `Z`, the rule `limits-contract.md` already applies to every timestamp this product writes.
+  The two ends are compared as **instants and not as text**, because an offset gives one
+  moment two spellings and sorting those spellings puts them in the wrong order.
+
+  **The scan is not on the refresh path.** Quota is why this application exists, it reads two
+  small files in milliseconds, and it must never queue behind a scan that walks hundreds of
+  megabytes — so the refresh loop does not scan at all, and a bridge test fails if it ever
+  starts. The scan runs here, when the usage view is opened, at most once every five minutes;
+  `force` is the Refresh button and nothing else. The throttle counts monotonic milliseconds
+  rather than wall-clock ones, for the reason `nazar-core::clock` already gives: a clock
+  correction, or a laptop waking with its time set by NTP, must not make a scan due a hundred
+  times. It is marked **before** the scan rather than after, because a scan that failed is a
+  scan that ran — a `cursors.json` that is no longer JSON is an error and not a fresh start —
+  and retrying it on every panel open would turn one broken file into a scan on every click.
+  Its mutex is held across the whole scan, which makes two panel opens at once cost one scan
+  for free.
+
+  **One writer, and the same lock.** The scan writes where `limits.json`'s single-writer rule
+  already reaches, so it runs only in the process that took `~/.nazar/limits.lock` —
+  `let writes_usage = lock.is_some()`, read off the same acquisition before the lock goes to
+  the refresh loop. A second instance, a `--demo` run and an `--autostart` run all still
+  *read* the store and would draw the view; none of them adds to it. No second lock and no
+  second discipline, which is what that phrase in the contract was promising.
+
+  **The document is snake_case on both sides, and that is the exception being taken on
+  purpose.** Everything else on this bridge is camelCase, because `limits.json` is a contract
+  with another program and has to give one spelling to an idea two sources spell differently;
+  the usage document keeps the shape `message.usage` already has at the source, which is the
+  trade `usage-contract.md` argues at length, and renaming it on the way to the panel would
+  have this product spelling the same five counters two ways in two files. So
+  `ui/src/snapshot.ts` carries `UsageRequest`, `UsageBucket`, `UsageScan`, `UsageResponse` and
+  `UsageError` with the store's own names and a comment saying why, and a bridge test fails if
+  a `rename_all = "camelCase"` ever appears in the command's module.
+
+  **An error is a key and a diagnostic, never a sentence.** `kind` is one of `bad_range`,
+  `bad_window`, `no_state_dir`, `scan_failed` or `store_unreadable`, which the panel looks up
+  in its catalogue like every other word on the page — the i18n gate is what catches the first
+  English sentence typed into this module, and it caught three of them while this was being
+  written. `detail` names the value that was refused, or repeats what a reader said with the
+  home directory collapsed to `~`: the settings page already collapses every path it shows,
+  and an error line that ends up in a screenshot is no different. A **damaged month is not an
+  error**. It rides back in `damaged`, the months beside it still load, and the scan's list is
+  merged with the query's so a month found outside the asked-for window is still reported.
+
+  **Two things this package did not do, both written down rather than worked around.**
+  `nazar_core::usage::scan_codex` does not exist yet — T-WP14 is writing it — so the single
+  line that will call it is marked in place instead of guessed at. And `CLAUDE_CONFIG_DIR` is
+  honoured here rather than in the core crate, which takes a *home* and derives
+  `<home>/.claude/projects` from it: an override naming a `.claude` directory is expressible,
+  because its parent is the home that yields it, and one naming anything else is not. Rather
+  than scan `~/.claude` behind the user's back, **no scan runs** and the store answers from
+  what it already holds. The fix belongs in the core crate — a `scan_claude_in(projects_dir,
+  state_dir)` beside the existing entry point would take the directory directly — and this is
+  recorded as a gap rather than patched around, because a scan of the wrong tree reports
+  numbers that are wrong without looking wrong.
+
+  **Measured on the maintainer's machine**, by an ignored end-to-end test that scans into a
+  throwaway directory so the real store is neither read nor added to: **129 files, 16 040
+  usage lines, 7 232 duplicates, 563 ms**, one provider, `since 2026-09-08T12:00:00Z`, no
+  damaged month — and the second call inside the window scanned nothing, which is the throttle
+  doing the thing it exists for. 91 tray tests where there were 76, 558 in the workspace,
+  `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -D warnings` clean; 78
+  panel tests where there were 76, and `npm run typecheck` clean.

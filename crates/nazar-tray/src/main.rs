@@ -60,6 +60,7 @@ mod state;
 mod statusline;
 mod system;
 mod tray;
+mod usage;
 
 use std::sync::{Arc, Mutex};
 
@@ -131,6 +132,12 @@ fn main() {
         }
     };
 
+    // The same claim decides both files. The usage store is written by whoever holds
+    // `~/.nazar/limits.lock` and by nobody else — one writer, many readers, no second lock —
+    // so this is read off the acquisition before the lock is handed to the refresh loop.
+    // `--demo` and `--autostart` never claim it, and so never scan.
+    let writes_usage = lock.is_some();
+
     let limits_path = paths::limits_path().unwrap_or_default();
     let request_path = paths::request_path().unwrap_or_default();
     let readers = ReaderSet::discover(&config);
@@ -170,6 +177,7 @@ fn main() {
             statusline::statusline_status,
             statusline::statusline_preview,
             statusline::statusline_apply,
+            usage::get_usage,
             state::quit
         ])
         .setup(move |app| {
@@ -183,6 +191,10 @@ fn main() {
 
             app.manage(PanelState::new(options.scale, options.demo));
             app.manage(Arc::clone(&setup_strings));
+            // The usage scan's own state: whether this instance may write, and when it last
+            // did. Managed here rather than inside the refresh loop because the scan is
+            // deliberately **not** on the refresh path — see `usage`.
+            app.manage(usage::UsageState::new(writes_usage));
             // A demo run remembers nothing: it must not write to `%APPDATA%\nazar`, and it
             // must not consume the keys of a real crossing nobody has been shown yet.
             app.manage(if options.demo {
