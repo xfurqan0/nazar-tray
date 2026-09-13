@@ -291,10 +291,10 @@ twenty keys:
 | `timestamp` | string | RFC 3339 in **UTC** with milliseconds, on every line observed. This is what puts a record in an hour bucket, and it is the only thing about the line that becomes a key. |
 | `message.model` | string | Through the identifier shape check, stored exactly as reported. **`<synthetic>` is skipped entirely** — those lines are Claude Code's own, not billed usage, and they carry no `requestId`. |
 | `message.id`, `requestId` | string | **The deduplication key, and nothing else.** Neither is written to disk; both are gone with the scan that read them. `requestId` is absent on a handful of lines (11 of 14 239 here), and absent is a valid half of a key rather than a reason to drop the record. |
-| `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | integer | The four counters. Reported by the server, not computed by Claude Code and not computed here. |
+| `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | integer | The four counters. Reported by the server, not computed by Claude Code and not computed here. **Read as a non-negative integer or not at all**: a float is not truncated and a string is not parsed, because either would invent a measurement out of a field that had changed shape. Such a line is counted as malformed and skipped; `null` is absent, which is a different and honest thing. |
 | `message.usage.iterations[]` | — | **Not read.** It repeats the same turn's counters in a nested form; adding it is a second, quieter way to double every number. |
 | `message.usage.output_tokens_details.thinking_tokens`, `cache_creation.ephemeral_5m/1h_input_tokens` | — | **Not read.** Both are already inside a counter above. |
-| `isApiErrorMessage: true` | — | Lines so marked are skipped: an error is not billed usage. |
+| `isApiErrorMessage` | boolean | **Read as a flag, and only `true` is true.** Lines so marked are skipped: an error is not billed usage, however complete the `usage` object beside it looks. Observed here: 11 such lines, every one of them also `model: "<synthetic>"` with four zero counters — so reading the flag changes no total on this machine, and it is read because the *flag* is what promises the line is an error while the model name is a second source that may not always agree. |
 | everything else | — | Read by nobody. See below. |
 
 ### Deduplication is not an optimisation
@@ -314,7 +314,11 @@ reports a number that is wrong by an amount nobody can name.
 
 Duplicates were measured to be **within a single file** — the same message repeated in one
 transcript, never the same message in two — which is why a scan can be resumed by byte offset
-per file rather than by carrying a global set of ids.
+per file, and why the set of credited keys it carries is per file rather than global. It is
+the **whole** set for that file rather than a window of recent keys: a transcript that is
+pruned, rotated or rewritten is read from the top again, and every key a window had forgotten
+would be counted a second time. Measured here: 9 457 keys across 136 transcripts, and the
+cursor document they live in is 382 KB.
 
 ### Never taken out of a transcript
 

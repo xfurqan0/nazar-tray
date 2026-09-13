@@ -31,13 +31,13 @@
 //! }
 //! ```
 //!
-//! Beside them, `<state dir>/usage/cursors.json` — and `cursors-codex.json` beside it, one
+//! Beside them, `<state dir>/usage/cursors-claude.json` and `cursors-codex.json`, one
 //! document per reader: where each log had been read up to. It is this module's own
 //! bookkeeping rather than part of the contract, and it names nothing — a log is filed
 //! under a hash of its path, not the path, because `~/.claude/projects/` is named after
 //! every working directory somebody has opened a session in; a credited message is filed
-//! under a hash of its identifiers, not the identifiers; and a rollout's opening events
-//! are filed under a hash of their timestamps and counters, not either.
+//! under a hash of its identifiers, not the identifiers; and a rollout's events are filed
+//! under a hash of their timestamps and counters, not either.
 //!
 //! # The invariant
 //!
@@ -52,19 +52,27 @@
 //!    state in which the offset moved past a record whose totals were not recorded.
 //! 2. *A pending total is applied once.* Every scan that has something to file takes the
 //!    next [`Cursors::generation`], and each provider's block in a month document records
-//!    the generation it last absorbed in `applied_through`. A pending block is added only
-//!    when that stamp is older, so replaying the same block is a no-operation.
+//!    the generation it last absorbed in `applied_through`. A pending entry is added only
+//!    when that stamp is older, so replaying the same entry is a no-operation.
 //!
-//! The write order is: apply anything left pending from last time → read the transcripts →
-//! **write the cursor with the new offsets and the new pending block** (this is the commit
-//! point) → add the pending block to each month → write the cursor again with the pending
-//! block cleared. A crash before the commit loses a pass that will simply be repeated; a
-//! crash after it leaves a pending block that the next pass replays, skipping the months
-//! that already carry its generation.
+//! The write order is: apply anything left outstanding from last time → read the transcripts
+//! → **write the cursor with the new offsets and the new pending entries** (this is the
+//! commit point) → add each entry to its month → write the cursor again with the entries
+//! that were filed removed. A crash before the commit loses a pass that will simply be
+//! repeated; a crash after it leaves entries the next pass replays, skipping the months that
+//! already carry their generation.
+//!
+//! **The journal is per month, and an entry that cannot be filed stays in it.** That is the
+//! second half of the invariant and it was missing from the first version: a month whose
+//! document no longer parses is skipped by [`apply`], and clearing the journal anyway threw
+//! away totals whose bytes were already behind a cursor that had moved. Repairing the month
+//! afterwards could not bring them back, because nothing would ever read those bytes again.
+//! Now the entry waits — through any number of scans — and the next pass that finds the
+//! month readable files it.
 //!
 //! Two states this cannot repair on its own, both deliberate:
 //!
-//! * A `cursors.json` that is no longer readable JSON is an **error**, not a fresh start.
+//! * A cursor document that is no longer readable JSON is an **error**, not a fresh start.
 //!   Defaulting it would reset every offset to zero and count every surviving transcript
 //!   into months that already hold it.
 //! * A month document that is no longer readable JSON is **reported and left exactly as it
@@ -105,24 +113,32 @@ pub const PROVIDER_CODEX: &str = "codex";
 ///
 /// The counter names are the ones the sources already use, rather than `limits.json`'s
 /// camelCase: this file is meant to be readable next to a raw `message.usage` block, and
-/// the contract page argues the trade. Each measurement is absent until a record reported
-/// it, so a bucket built from lines that never named an input count says so rather than
-/// claiming zero.
+/// the contract page argues the trade.
+///
+/// **All five counters are always present, and a counter nothing reported is `0`.** The
+/// first version let an unreported counter stay absent, on the argument that absent and zero
+/// are different facts — which is true of one record and false of a *bucket*, where the
+/// number being described is a sum over many. The contract says five non-negative integers,
+/// and a document that sometimes omitted two of them did not write what the contract
+/// promised: every reader would have needed the same `?? 0` the writer was avoiding. Where
+/// the distinction is real it is kept — [`super::scan::Usage`] still says `None` for a
+/// counter a line never named, which is how a line with no numbers at all is recognised and
+/// skipped rather than counted as four zeroes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
     /// `input_tokens`, summed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<u64>,
+    #[serde(default)]
+    pub input: u64,
     /// `output_tokens`, summed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<u64>,
+    #[serde(default)]
+    pub output: u64,
     /// `cache_creation_input_tokens`, summed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_create: Option<u64>,
+    #[serde(default)]
+    pub cache_create: u64,
     /// `cache_read_input_tokens`, summed. Around 98.5% of the raw total on a real machine,
     /// which is why the panel shows it beside the headline and never inside it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read: Option<u64>,
+    #[serde(default)]
+    pub cache_read: u64,
     /// Distinct messages, after dedupe.
     #[serde(default)]
     pub requests: u64,
@@ -136,12 +152,17 @@ impl Bucket {
     ///
     /// `fresh` says whether this is a message nothing has counted before; a reading that
     /// is the rest of a message counted in an earlier pass adds its tokens without adding
-    /// a request.
+    /// a request. A counter the reading never carried adds nothing, which is the one place
+    /// absent becomes zero and the place the contract says it does.
     pub fn add(&mut self, usage: &Usage, fresh: bool) {
-        self.input = sum(self.input, usage.input);
-        self.output = sum(self.output, usage.output);
-        self.cache_create = sum(self.cache_create, usage.cache_create);
-        self.cache_read = sum(self.cache_read, usage.cache_read);
+        self.input = self.input.saturating_add(usage.input.unwrap_or(0));
+        self.output = self.output.saturating_add(usage.output.unwrap_or(0));
+        self.cache_create = self
+            .cache_create
+            .saturating_add(usage.cache_create.unwrap_or(0));
+        self.cache_read = self
+            .cache_read
+            .saturating_add(usage.cache_read.unwrap_or(0));
         if fresh {
             self.requests = self.requests.saturating_add(1);
         }
@@ -149,19 +170,11 @@ impl Bucket {
 
     /// Add another bucket's totals to this one.
     pub fn absorb(&mut self, other: &Bucket) {
-        self.input = sum(self.input, other.input);
-        self.output = sum(self.output, other.output);
-        self.cache_create = sum(self.cache_create, other.cache_create);
-        self.cache_read = sum(self.cache_read, other.cache_read);
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_create = self.cache_create.saturating_add(other.cache_create);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
         self.requests = self.requests.saturating_add(other.requests);
-    }
-}
-
-/// Two measurements added, where absent is absent and not zero.
-fn sum(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (None, None) => None,
-        _ => Some(left.unwrap_or(0).saturating_add(right.unwrap_or(0))),
     }
 }
 
@@ -261,42 +274,69 @@ impl Month {
     }
 }
 
-/// A pass's totals, written with the cursor before they are written to the months.
+/// One month's totals from one pass, written with the cursor before they reach the month.
 ///
-/// This is the write-ahead half of the invariant in the module documentation: it exists on
-/// disk only between the commit and the moment every month has absorbed it.
+/// This is the write-ahead half of the invariant in the module documentation. **Per month
+/// rather than per pass**, because that is the granularity at which filing can fail: a
+/// damaged September must not take August's totals down with it, and must not lose its own.
+/// An entry lives on disk from the commit until the month it names has absorbed it, which is
+/// usually the next few milliseconds and is however long the user takes if the month is
+/// damaged.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
-    /// Which provider's totals these are.
-    pub provider: String,
-    /// The generation they belong to.
+    /// The UTC month these totals belong to, `YYYY-MM`.
+    pub month: String,
+    /// The generation they belong to. Compared with the month's `applied_through`.
     pub generation: u64,
-    /// When the pass ran, RFC 3339 UTC.
+    /// When the pass that read them ran, RFC 3339 UTC.
     pub scanned_at: String,
-    /// Month to hour to model to totals.
+    /// Hour to model to totals.
     #[serde(default)]
-    pub months: Months,
+    pub hours: Hours,
 }
 
 impl Pending {
     /// `true` when there is nothing to apply.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.months.is_empty()
+        self.hours.is_empty()
     }
 
-    /// The earliest hour anywhere in this block, as an RFC 3339 instant.
+    /// The earliest hour in this entry, as an RFC 3339 instant.
     #[must_use]
     pub fn earliest(&self) -> Option<String> {
-        self.months.values().filter_map(earliest_hour).min()
+        earliest_hour(&self.hours)
+    }
+
+    /// Fold another pass's totals for the same month into this entry.
+    ///
+    /// What keeps the journal bounded while a month stays damaged: a scan every five
+    /// minutes would otherwise leave an entry every five minutes, for as long as nobody
+    /// fixes the file. The merged entry carries the **newer** generation, so filing it fills
+    /// the month up to that generation in one step.
+    ///
+    /// The limit, written down rather than discovered: a user who "repairs" a damaged month
+    /// by restoring an *older* copy of it — one whose `applied_through` is behind some of
+    /// the generations merged here — gets those generations counted twice. Nothing can tell
+    /// that document apart from the one that was damaged, which is why the contract's answer
+    /// to a damaged month is a rebuild rather than surgery.
+    fn absorb(&mut self, other: Pending) {
+        for (hour, models) in other.hours {
+            let into = self.hours.entry(hour).or_default();
+            for (model, bucket) in models {
+                into.entry(model).or_default().absorb(&bucket);
+            }
+        }
+        self.generation = self.generation.max(other.generation);
+        self.scanned_at = other.scanned_at;
     }
 }
 
 /// Where one log had been read up to.
 ///
-/// Three of the five fields are one reader's and are absent in the other's document: a
+/// Three of the six fields are one reader's and are absent in the other's document: a
 /// transcript carries dedupe keys because Claude Code writes a message several times, and
-/// a rollout carries an opening fingerprint and a model because Codex writes neither an id
+/// a rollout carries its events' fingerprints and a model because Codex writes neither an id
 /// nor a model on the event that spends the tokens.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileCursor {
@@ -304,21 +344,41 @@ pub struct FileCursor {
     pub identity: String,
     /// Offset of the byte after the last complete line read.
     pub offset: u64,
-    /// The last few dedupe keys credited from this file, so a message whose content blocks
-    /// landed either side of the offset is still counted once. See [`super::dedupe`].
+    /// Hash of the bytes immediately before `offset`. A different one means the offset is
+    /// no longer the place it was, even when the identity says the file is the same file —
+    /// a rewrite in place. See [`super::scan::Resume`].
+    #[serde(default)]
+    pub fingerprint: u64,
+    /// **Every** dedupe key credited from this transcript, and the most that was credited
+    /// for each. The seed of the next pass's deduper, including a pass that had to start at
+    /// byte zero — which is the case it exists for. See [`super::dedupe`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent: Vec<Credit>,
-    /// Fingerprints of this log's opening events, in order, bounded at
-    /// [`super::codex::PREFIX_EVENTS`]. A rollout that opens with a copy of another's
-    /// opening run is a fork of it; see [`super::codex`]. Hashes rather than the values
-    /// they stand for, so the document still names nothing.
+    pub credited: Vec<Credit>,
+    /// Fingerprints of **every** event credited from this rollout, in the order they were
+    /// credited. Codex writes no event id, so this stands in for one: a log read again from
+    /// byte zero recognises the events it has already counted, and a log whose *opening run*
+    /// repeats another's is a fork of it (see [`super::codex`], which compares only the
+    /// first [`super::codex::PREFIX_EVENTS`] of them). Hashes rather than the values they
+    /// stand for, so the document still names nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub prefix: Vec<u64>,
+    pub events: Vec<u64>,
     /// The model in force at the offset — the last one this log named before it. Carried
     /// because a `token_count` event does not name the model that produced it and the next
     /// pass starts after the `turn_context` that did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+impl FileCursor {
+    /// This cursor as the reader takes it: identity, offset and fingerprint.
+    #[must_use]
+    pub fn resume(&self) -> super::scan::Resume<'_> {
+        super::scan::Resume {
+            identity: self.identity.as_str(),
+            offset: self.offset,
+            fingerprint: self.fingerprint,
+        }
+    }
 }
 
 /// The cursor document.
@@ -331,9 +391,11 @@ pub struct Cursors {
     /// The newest scan generation. Each pass that has something to file takes the next one.
     #[serde(default)]
     pub generation: u64,
-    /// Totals committed but not yet added to their month documents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending: Option<Pending>,
+    /// Totals committed but not yet added to their month documents, at most one entry per
+    /// month. Normally empty; an entry survives a scan only when its month could not be
+    /// written, which is the journal doing the thing it exists for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<Pending>,
     /// Hash of a transcript's path to where it had been read up to.
     #[serde(default)]
     pub files: BTreeMap<String, FileCursor>,
@@ -350,9 +412,22 @@ impl Cursors {
             version: VERSION,
             provider: provider.to_owned(),
             generation: 0,
-            pending: None,
+            pending: Vec::new(),
             files: BTreeMap::new(),
             extra: Map::new(),
+        }
+    }
+
+    /// Add a month's totals to the journal, merging with an entry already outstanding.
+    pub fn enqueue(&mut self, entry: Pending) {
+        if let Some(outstanding) = self
+            .pending
+            .iter_mut()
+            .find(|existing| existing.month == entry.month)
+        {
+            outstanding.absorb(entry);
+        } else {
+            self.pending.push(entry);
         }
     }
 }
@@ -380,8 +455,7 @@ pub fn month_path(state_dir: &Path, month: &str) -> PathBuf {
     usage_dir(state_dir).join(format!("{month}.json"))
 }
 
-/// `<state dir>/usage/cursors.json`, and `cursors-<provider>.json` for every reader
-/// after the first.
+/// `<state dir>/usage/cursors-<provider>.json`.
 ///
 /// One document per provider rather than one shared one. A pass writes the whole set of
 /// files it walked, so two readers sharing a document would take turns forgetting each
@@ -389,22 +463,27 @@ pub fn month_path(state_dir: &Path, month: &str) -> PathBuf {
 /// takes is compared against a stamp kept **per provider** inside a month document, so two
 /// sequences never meet. The provider name is a constant of this crate, never a value read
 /// off a disk, which is what makes it safe in a file name.
+///
+/// Named after its provider on both sides, where the first reader used to have the bare
+/// `cursors.json`: two documents that do the same job should not have two kinds of name, and
+/// a reader looking at the directory should not have to know which one came first.
 #[must_use]
 pub fn cursors_path(state_dir: &Path, provider: &str) -> PathBuf {
-    let name = if provider == PROVIDER {
-        "cursors.json".to_owned()
-    } else {
-        format!("cursors-{provider}.json")
-    };
-    usage_dir(state_dir).join(name)
+    usage_dir(state_dir).join(format!("cursors-{provider}.json"))
 }
 
 /// Every cursor document in the store, whichever reader wrote it.
+///
+/// The bare `cursors.json` is in the list and is not written by anything: it is what the
+/// transcript reader's cursor was called before it was named after its provider, and a
+/// rebuild that left one behind would be a rebuild that did not reset the store.
 fn cursor_documents(state_dir: &Path) -> Vec<PathBuf> {
-    [PROVIDER, PROVIDER_CODEX]
+    let mut found: Vec<PathBuf> = [PROVIDER, PROVIDER_CODEX]
         .iter()
         .map(|provider| cursors_path(state_dir, provider))
-        .collect()
+        .collect();
+    found.push(usage_dir(state_dir).join("cursors.json"));
+    found
 }
 
 /// Read one provider's cursor document.
@@ -526,19 +605,25 @@ pub struct Applied {
     pub damaged: Vec<String>,
 }
 
-/// Add a pending block to its month documents, skipping any that already carry it.
+/// Add outstanding journal entries to their month documents, skipping any that already
+/// carry them.
 ///
-/// Idempotent by construction: a provider block whose `applied_through` is at or past the
-/// block's generation is left exactly as it is, and a document that would not change is
-/// not rewritten. The store-wide `since` is recomputed here and stamped into every
-/// readable month, which is what makes that field mean what the contract says it means.
-pub fn apply(state_dir: &Path, pending: &Pending) -> Result<Applied> {
+/// Idempotent by construction: a provider block whose `applied_through` is at or past an
+/// entry's generation is left exactly as it is, and a document that would not change is not
+/// rewritten. The store-wide `since` is recomputed here and stamped into every readable
+/// month, which is what makes that field mean what the contract says it means.
+///
+/// **A month that could not be read is named in [`Applied::damaged`] and nothing else
+/// happens to it** — its entry is not applied and the caller is expected to keep it. Every
+/// other entry is done with: absorbed, or skipped because the month already carries its
+/// generation, which is the same thing from the journal's point of view.
+pub fn apply(state_dir: &Path, provider: &str, pending: &[Pending]) -> Result<Applied> {
     let mut outcome = Applied::default();
     let mut damaged = BTreeSet::new();
     let mut documents: BTreeMap<String, Month> = BTreeMap::new();
 
     let known = months(state_dir)?;
-    for month in known.iter().chain(pending.months.keys()) {
+    for month in known.iter().chain(pending.iter().map(|entry| &entry.month)) {
         if documents.contains_key(month) || damaged.contains(month) {
             continue;
         }
@@ -553,28 +638,25 @@ pub fn apply(state_dir: &Path, pending: &Pending) -> Result<Applied> {
         }
     }
 
-    for (month, hours) in &pending.months {
-        if damaged.contains(month) {
+    for entry in pending {
+        if damaged.contains(&entry.month) {
             continue;
         }
         let document = documents
-            .entry(month.clone())
-            .or_insert_with(|| Month::new(month));
-        let totals = document
-            .providers
-            .entry(pending.provider.clone())
-            .or_default();
-        if totals.applied_through >= pending.generation {
+            .entry(entry.month.clone())
+            .or_insert_with(|| Month::new(&entry.month));
+        let totals = document.providers.entry(provider.to_owned()).or_default();
+        if totals.applied_through >= entry.generation {
             continue;
         }
-        for (hour, models) in hours {
+        for (hour, models) in &entry.hours {
             let into = totals.buckets.entry(hour.clone()).or_default();
             for (model, bucket) in models {
                 into.entry(model.clone()).or_default().absorb(bucket);
             }
         }
-        totals.applied_through = pending.generation;
-        document.scanned_at = Some(pending.scanned_at.clone());
+        totals.applied_through = entry.generation;
+        document.scanned_at = Some(entry.scanned_at.clone());
     }
 
     let since = documents.values().filter_map(Month::earliest).min();
@@ -636,17 +718,15 @@ mod tests {
         }
     }
 
-    fn pending(generation: u64, month: &str, hour: &str, usage: &Usage) -> Pending {
+    fn pending(generation: u64, month: &str, hour: &str, usage: &Usage) -> Vec<Pending> {
         let mut hours = Hours::new();
         credit(&mut hours, hour, "claude-opus-5", usage, true);
-        let mut months = Months::new();
-        months.insert(month.to_owned(), hours);
-        Pending {
-            provider: PROVIDER.to_owned(),
+        vec![Pending {
+            month: month.to_owned(),
             generation,
             scanned_at: "2026-09-13T02:31:07Z".to_owned(),
-            months,
-        }
+            hours,
+        }]
     }
 
     fn document(dir: &Path, month: &str) -> Month {
@@ -661,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_measurement_stays_absent() {
+    fn a_counter_nothing_reported_is_zero_and_is_written() {
         let mut bucket = Bucket::default();
         bucket.add(
             &Usage {
@@ -672,9 +752,24 @@ mod tests {
             },
             true,
         );
-        assert_eq!(bucket.input, Some(2));
-        assert_eq!(bucket.output, None, "never a reassuring zero");
+        assert_eq!(bucket.input, 2);
+        assert_eq!(bucket.output, 0);
         assert_eq!(bucket.requests, 1);
+
+        // The contract says five non-negative integers. All five are in the document.
+        let text = serde_json::to_string(&bucket).unwrap();
+        for key in [
+            "\"input\"",
+            "\"output\"",
+            "\"cache_create\"",
+            "\"cache_read\"",
+            "\"requests\"",
+        ] {
+            assert!(
+                text.contains(key),
+                "the bucket does not spell {key}: {text}"
+            );
+        }
     }
 
     #[test]
@@ -682,7 +777,7 @@ mod tests {
         let mut bucket = Bucket::default();
         bucket.add(&usage(1, 10), true);
         bucket.add(&usage(0, 5), false);
-        assert_eq!(bucket.output, Some(15));
+        assert_eq!(bucket.output, 15);
         assert_eq!(bucket.requests, 1);
     }
 
@@ -726,10 +821,7 @@ mod tests {
 
         let read = self::document(&dir.path, "2026-09");
         assert_eq!(read.extra["writer_build"], Value::from("9.9"));
-        assert_eq!(
-            bucket(&dir.path, "2026-09", "2026-09-13T02").output,
-            Some(328)
-        );
+        assert_eq!(bucket(&dir.path, "2026-09", "2026-09-13T02").output, 328);
     }
 
     #[test]
@@ -737,6 +829,7 @@ mod tests {
         let dir = TempDir::new("usage-store-spelling");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(
                 1,
                 "2026-09",
@@ -768,11 +861,17 @@ mod tests {
         let dir = TempDir::new("usage-store-idempotent");
         let block = pending(1, "2026-09", "2026-09-13T02", &usage(2, 328));
 
-        assert_eq!(apply(&dir.path, &block).unwrap().written, vec!["2026-09"]);
+        assert_eq!(
+            apply(&dir.path, PROVIDER, &block).unwrap().written,
+            vec!["2026-09"]
+        );
         let text = std::fs::read_to_string(month_path(&dir.path, "2026-09")).unwrap();
 
         assert!(
-            apply(&dir.path, &block).unwrap().written.is_empty(),
+            apply(&dir.path, PROVIDER, &block)
+                .unwrap()
+                .written
+                .is_empty(),
             "the second apply must be a no-operation"
         );
         assert_eq!(
@@ -780,10 +879,7 @@ mod tests {
             text,
             "and must leave the document byte for byte as it was"
         );
-        assert_eq!(
-            bucket(&dir.path, "2026-09", "2026-09-13T02").output,
-            Some(328)
-        );
+        assert_eq!(bucket(&dir.path, "2026-09", "2026-09-13T02").output, 328);
     }
 
     #[test]
@@ -791,17 +887,19 @@ mod tests {
         let dir = TempDir::new("usage-store-later");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-09", "2026-09-13T02", &usage(2, 328)),
         )
         .unwrap();
         apply(
             &dir.path,
+            PROVIDER,
             &pending(2, "2026-09", "2026-09-13T02", &usage(1, 2)),
         )
         .unwrap();
 
         let bucket = bucket(&dir.path, "2026-09", "2026-09-13T02");
-        assert_eq!(bucket.output, Some(330));
+        assert_eq!(bucket.output, 330);
         assert_eq!(bucket.requests, 2);
         assert_eq!(
             document(&dir.path, "2026-09").since.as_deref(),
@@ -814,6 +912,7 @@ mod tests {
         let dir = TempDir::new("usage-store-since");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-09", "2026-09-05T10", &usage(1, 1)),
         )
         .unwrap();
@@ -825,6 +924,7 @@ mod tests {
         // An older month arrives; the newer document's `since` moves with it.
         apply(
             &dir.path,
+            PROVIDER,
             &pending(2, "2026-08", "2026-08-02T03", &usage(1, 1)),
         )
         .unwrap();
@@ -842,6 +942,7 @@ mod tests {
         let dir = TempDir::new("usage-store-providers");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-09", "2026-09-13T02", &usage(2, 328)),
         )
         .unwrap();
@@ -854,16 +955,15 @@ mod tests {
             &usage(9, 9),
             true,
         );
-        let mut months = Months::new();
-        months.insert("2026-09".to_owned(), hours);
         apply(
             &dir.path,
-            &Pending {
-                provider: "codex".to_owned(),
+            PROVIDER_CODEX,
+            &[Pending {
+                month: "2026-09".to_owned(),
                 generation: 1,
                 scanned_at: "2026-09-13T02:40:00Z".to_owned(),
-                months,
-            },
+                hours,
+            }],
         )
         .unwrap();
 
@@ -871,12 +971,67 @@ mod tests {
         assert_eq!(read.providers.len(), 2);
         assert_eq!(
             read.buckets("claude").unwrap()["2026-09-13T02"]["claude-opus-5"].output,
-            Some(328)
+            328
         );
         assert_eq!(
             read.buckets("codex").unwrap()["2026-09-13T02"]["gpt-6-astra"].output,
-            Some(9)
+            9
         );
+    }
+
+    #[test]
+    fn an_entry_for_a_damaged_month_is_the_callers_to_keep() {
+        let dir = TempDir::new("usage-store-outstanding");
+        apply(
+            &dir.path,
+            PROVIDER,
+            &pending(1, "2026-08", "2026-08-31T23", &usage(1, 1)),
+        )
+        .unwrap();
+        std::fs::write(month_path(&dir.path, "2026-08"), "{ not a month").unwrap();
+
+        // One pass, two months: the damaged one is named and the other is filed.
+        let mut entries = pending(2, "2026-08", "2026-08-31T23", &usage(5, 5));
+        entries.extend(pending(2, "2026-09", "2026-09-01T00", &usage(7, 7)));
+        let outcome = apply(&dir.path, PROVIDER, &entries).unwrap();
+        assert_eq!(outcome.damaged, vec!["2026-08"]);
+        assert_eq!(outcome.written, vec!["2026-09"]);
+
+        // What a caller does with that: keep what could not be filed, drop the rest.
+        entries.retain(|entry| outcome.damaged.contains(&entry.month));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].month, "2026-08");
+
+        // The month is repaired — here, by being removed, which is what a user does — and
+        // the entry that waited is filed, once.
+        std::fs::remove_file(month_path(&dir.path, "2026-08")).unwrap();
+        let outcome = apply(&dir.path, PROVIDER, &entries).unwrap();
+        assert!(outcome.damaged.is_empty());
+        assert_eq!(bucket(&dir.path, "2026-08", "2026-08-31T23").output, 5);
+
+        let again = apply(&dir.path, PROVIDER, &entries).unwrap();
+        assert!(again.written.is_empty(), "and replaying it changes nothing");
+        assert_eq!(bucket(&dir.path, "2026-08", "2026-08-31T23").output, 5);
+    }
+
+    #[test]
+    fn two_entries_for_one_month_merge_and_keep_the_newer_generation() {
+        let mut outstanding = Cursors::new(PROVIDER);
+        for entry in pending(4, "2026-09", "2026-09-01T00", &usage(1, 1)) {
+            outstanding.enqueue(entry);
+        }
+        for entry in pending(5, "2026-09", "2026-09-01T01", &usage(2, 2)) {
+            outstanding.enqueue(entry);
+        }
+        for entry in pending(5, "2026-10", "2026-10-01T00", &usage(3, 3)) {
+            outstanding.enqueue(entry);
+        }
+
+        assert_eq!(outstanding.pending.len(), 2, "one entry per month");
+        let september = &outstanding.pending[0];
+        assert_eq!(september.month, "2026-09");
+        assert_eq!(september.generation, 5);
+        assert_eq!(september.hours.len(), 2);
     }
 
     #[test]
@@ -884,6 +1039,7 @@ mod tests {
         let dir = TempDir::new("usage-store-damaged");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-08", "2026-08-31T23", &usage(1, 1)),
         )
         .unwrap();
@@ -893,6 +1049,7 @@ mod tests {
 
         let outcome = apply(
             &dir.path,
+            PROVIDER,
             &pending(2, "2026-08", "2026-08-31T23", &usage(5, 5)),
         )
         .unwrap();
@@ -906,13 +1063,11 @@ mod tests {
         // And the months beside it keep working.
         apply(
             &dir.path,
+            PROVIDER,
             &pending(3, "2026-09", "2026-09-01T00", &usage(1, 1)),
         )
         .unwrap();
-        assert_eq!(
-            bucket(&dir.path, "2026-09", "2026-09-01T00").output,
-            Some(1)
-        );
+        assert_eq!(bucket(&dir.path, "2026-09", "2026-09-01T00").output, 1);
     }
 
     #[test]
@@ -920,11 +1075,13 @@ mod tests {
         let dir = TempDir::new("usage-store-months");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-08", "2026-08-31T23", &usage(1, 1)),
         )
         .unwrap();
         apply(
             &dir.path,
+            PROVIDER,
             &pending(2, "2026-09", "2026-09-01T00", &usage(1, 1)),
         )
         .unwrap();
@@ -942,6 +1099,7 @@ mod tests {
         let dir = TempDir::new("usage-store-rebuild");
         apply(
             &dir.path,
+            PROVIDER,
             &pending(1, "2026-09", "2026-09-01T00", &usage(1, 1)),
         )
         .unwrap();

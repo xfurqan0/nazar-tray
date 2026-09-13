@@ -96,10 +96,24 @@ the application copies the directory; a user who ticks the box meant it.
 | `cache_read` | `message.usage.cache_read_input_tokens` | `last_token_usage.cached_input_tokens` |
 | `requests` | deduplicated assistant messages that carried a `usage` object | `token_count` events counted |
 
-All five are non-negative integers. **Nothing nested is added to them**: not
-`output_tokens_details.thinking_tokens`, not `usage.iterations[]`, not
-`cache_creation.ephemeral_5m/1h`, not Codex's `reasoning_output_tokens` — every one of those
-is already inside a counter above, and adding it is how a total silently doubles.
+All five are non-negative integers, **always present, and `0` where nothing reported one**.
+A bucket never omits a counter and never writes `null`: it is a sum over many records, and a
+sum of nothing is zero. (The distinction between *absent* and *zero* is real one record at a
+time, and it is kept there — a line that named no counter at all is skipped rather than
+counted as four zeroes — but it does not survive into a total, and a document that sometimes
+omitted two of five fields would make every reader write the `?? 0` the writer was avoiding.)
+
+**Nothing nested is added to them**: not `output_tokens_details.thinking_tokens`, not
+`usage.iterations[]`, not `cache_creation.ephemeral_5m/1h`, not Codex's
+`reasoning_output_tokens` — every one of those is already inside a counter above, and adding
+it is how a total silently doubles.
+
+**A counter that is not a non-negative integer is not read as one.** `1.9` is not truncated
+to `1` and `"7"` is not parsed to `7`: the line is counted as malformed and skipped, and the
+rest of the file is read as usual. A source that changed the shape of a field has stopped
+saying what it used to say, and a reader that guesses at the new meaning produces a number
+that is wrong without looking wrong. `null` is not a changed shape — it is a counter the
+source did not report, and it lands as `0` in the bucket like any other absence.
 
 `requests` is a count of *records that carried usage*, not of your prompts: one turn can be
 several assistant messages, and a subagent's messages are its own. It is there so a reader can
@@ -222,12 +236,21 @@ Three consequences worth naming:
   but because there are no new bytes to read. Every offset is already past the end, no month
   document differs from what is on disk, and nothing is rewritten: the directory is left byte
   for byte as it was.
+- **And reading the same bytes *again* also adds nothing.** A log that was truncated, rotated
+  or rewritten is read from the top, which is the one moment the offset stops being a
+  guarantee. What stands in for it is the cursor's record of everything that log has already
+  been credited for: a message it holds credits only what it has grown by, and an event it
+  holds credits nothing. So the totals are the same after a prune as before one — which is
+  what the word idempotent above is worth, and what the first version got wrong past the last
+  sixteen messages of a file.
 - **Largest-wins is a rule about copies of one message, and it lives before the buckets.**
   Claude Code writes a message once per content block and every copy carries the whole
   `usage` object; the scan keeps the copy with the largest total, credits that one, and a
-  bucket never sees the others. Codex writes each event once and gives it no id, so there is
-  nothing to deduplicate there — and nothing to deduplicate *with*; see the Codex section
-  below for what stands in its place.
+  bucket never sees the others. What is remembered for the key is the **largest** reading
+  ever seen, counter by counter, and never the latest: three passes seeing 100, then 90, then
+  100 credit 100 once, where remembering 90 would have let the third pass add another 10.
+  Codex writes each event once and gives it no id, so there is nothing to deduplicate there —
+  and nothing to deduplicate *with*; see the Codex section below for what stands in its place.
 - **Numbers are never revised, including a wrong one.** There is no pass that could revise
   them: the scan that would have to notice is the one that already moved its cursor past
   those bytes. If a scan ever over-counts, the fix is a **rebuild** — the cursors and the
@@ -237,10 +260,10 @@ Three consequences worth naming:
 
 ## The cursor documents, and the one way to double count
 
-Beside the month documents, in the same directory: `cursors.json`, and `cursors-codex.json`
-beside it — **one per reader**. They are not part of this contract. They are the writer's own
-bookkeeping, nothing reads them but the scan that wrote them, and their shape may change in
-any release without a `version` bump here.
+Beside the month documents, in the same directory: `cursors-claude.json` and
+`cursors-codex.json` — **one per reader**. They are not part of this contract. They are the
+writer's own bookkeeping, nothing reads them but the scan that wrote them, and their shape
+may change in any release without a `version` bump here.
 
 What is worth writing down is what they are *for*, because deleting one has a consequence
 nobody would guess:
@@ -248,16 +271,35 @@ nobody would guess:
 - **They hold where each log was read up to**, filed under a hash of its path rather than the
   path — `~/.claude/projects/` is named after every working directory somebody has opened a
   session in, and none of that belongs in a file this product writes. A credited message is
-  filed under a hash of its identifiers, and a rollout's opening events under a hash of their
+  filed under a hash of its identifiers, and a rollout's events under a hash of their
   timestamps and counters. Nothing in these documents names anything on the machine.
+- **"Where it was read up to" is three things, not two.** The file's identity says *this is
+  the same file*; the byte offset says *this is how far*; and a hash of the 64 bytes
+  immediately before that offset says *and this is still the same place*. The third exists
+  because the first two can both be satisfied by a file that was rewritten in place — same
+  birth time, same first 512 bytes, same length — inside which the old offset now points at
+  different content, and everything written before it would never be read. A mismatch is
+  treated exactly like a truncation: read the file again from the top.
+- **They hold what has already been credited, per log, in full.** For a transcript that is
+  every `(message.id, requestId)` key it has produced and the largest reading of each, as a
+  bare array of five numbers per key; for a rollout, the fingerprint of every event. That is
+  what makes reading a log from the top again *safe* rather than a doubling: a re-read record
+  credits the difference between the largest copy now and the most already credited, which
+  for the same bytes is nothing. It is also the size of these documents — a few hundred
+  kilobytes on a machine with 9 500 messages of history — and the trade is deliberate: a
+  bounded window of recent keys is smaller and only protects the last few messages of each
+  file, which is not where a truncation starts.
 - **They are also the write-ahead half of the counting invariant.** A pass writes its new
-  offsets *and* the totals read from them in one atomic write, as a `pending` block, before
+  offsets *and* the totals read from them in one atomic write, as a `pending` journal, before
   those totals reach any month; then each provider's block in a month document stamps the
-  scan `generation` it last absorbed in `applied_through`, so replaying a pending block is a
+  scan `generation` it last absorbed in `applied_through`, so replaying a pending entry is a
   no-operation for a month that already carries it. A crash before that write loses a pass
-  that is simply repeated; a crash after it leaves a block the next pass files. There is no
+  that is simply repeated; a crash after it leaves entries the next pass files. There is no
   state in which an offset moved past bytes whose totals were never recorded, and none in
   which totals were recorded twice.
+- **The journal is per month, and an entry that cannot be filed stays in it.** A month whose
+  document no longer parses is skipped, and its entry waits — through any number of scans —
+  until the month can be written. See the damaged-month section below for what that is worth.
 - **A cursor document that no longer parses is an error, not a fresh start.** Treating it as
   absent would reset every offset to zero and count every surviving log into months that
   already hold it. The scan stops and says so instead.
@@ -275,8 +317,15 @@ nobody would guess:
 offsets, and a month may hold one, both, or neither.
 
 The Claude side is `message.usage` as the server reported it, deduplicated by
-`(message.id, requestId)`. The Codex side reads `payload.info.last_token_usage` on every
-`token_count` event and differs in four ways that are visible in the file:
+`(message.id, requestId)` — minus two kinds of line that carry a full set of counters and are
+not billed usage: a message whose model is `<synthetic>`, and a line marked
+**`isApiErrorMessage`**, which is what an API failure looks like in a transcript. (On the
+maintainer's machine all 11 of those were also `<synthetic>`, so reading the flag changed no
+total there; it is read because the flag, not the model name, is what promises the line is an
+error, and a billed model name marked as an error would otherwise be counted.)
+
+The Codex side reads `payload.info.last_token_usage` on every `token_count` event and differs
+in four ways that are visible in the file:
 
 - **`input` has the cache taken out of it.** Codex's `input_tokens` **includes** the cached
   part, so the store writes `input_tokens − cached_input_tokens` as `input` and
@@ -300,9 +349,18 @@ The Claude side is `message.usage` as the server reported it, deduplicated by
 
 **Counting an event once, without an event id.** Claude Code's `(message.id, requestId)` has
 no counterpart in a rollout log, so *which bytes have been read* is the whole answer, and it
-is exact as long as a log is only appended to. One shape gets past it: a fork or a resume that
-copies a run of events into a **new** log, which arrives as a new path with a cursor that has
-read nothing. The rule, stated so it can be argued with:
+is exact as long as a log is only appended to. Two shapes get past it, and each has a rule.
+
+The first is a log that is **truncated or rewritten**, after which the reader goes back to
+byte zero and reads events it has already counted. So the cursor carries a fingerprint of
+every event it has credited — the event's timestamp to the millisecond and its four raw
+counters, hashed — and a pass that had to restart matches what it reads against that set
+before crediting anything, consuming each match, so a log that genuinely holds two identical
+events keeps both. It is the same thing the transcript reader does with its dedupe keys, built
+out of the only evidence a rollout offers.
+
+The second is a fork or a resume that copies a run of events into a **new** log, which arrives
+as a new path with a cursor that has read nothing. The rule, stated so it can be argued with:
 
 > A log whose **opening run** of events is, event for event — same timestamp to the
 > millisecond, same four counters — the opening run of a log already known is a copy of it up
@@ -311,11 +369,11 @@ read nothing. The rule, stated so it can be argued with:
 
 Only a leading run, and only against another log's leading run: the same event in the middle
 of two sessions is a coincidence worth nothing, while the same event *first in both files* is
-not a coincidence at all. The guard is bounded — the first 32 events of each log are
-fingerprinted, because the fingerprints live in a document rewritten on every scan — so a copy
-longer than that is caught for its first 32 events and counted again for the rest. No fork on
-the maintainer's machine copied any events at all; the rule is there because a byte offset
-alone would have no answer if one did.
+not a coincidence at all. The guard is bounded — only the first 32 events of each log are
+compared, because the rule asks every log about every other log — so a copy longer than that
+is caught for its first 32 events and counted again for the rest. No fork on the maintainer's
+machine copied any events at all; the rule is there because a byte offset alone would have no
+answer if one did.
 
 **`archived_sessions/` is not read.** Codex keeps logs of exactly this shape in a second tree,
 and this store walks only `sessions/`. The reason is mechanical rather than squeamish: a cursor
@@ -336,11 +394,24 @@ That is the opposite of `alerts.json`'s rule, and for the opposite reason: a los
 costs one extra toast, while a lost month costs a month that may no longer exist anywhere else.
 Deleting it is a thing the user does, once they know.
 
-**What it costs in the pass that finds it**, stated because it is not obvious: the totals that
-scan had just read *for that month* are dropped rather than held. The bytes they came from are
-behind a cursor that has already moved, and a pending block is not kept waiting for a file
-somebody may never fix. Every month beside it keeps its own. A rebuild is what brings a damaged
-month back, and only as far back as the logs still reach.
+**What it costs in the pass that finds it: nothing, and that is the fix.** The totals that
+scan had just read for that month stay in the journal inside the cursor document, one entry
+per month, and every later scan tries again. The moment the month becomes readable — the user
+deleted the broken file, or put back a copy of it — the entry is filed, once, guarded by the
+same `applied_through` stamp as everything else. Every month beside it keeps its own totals
+and files them immediately.
+
+The first version dropped those totals instead, which was a quiet way of losing them for good:
+the bytes they came from are behind a cursor that has already moved, so nothing would ever
+read them again, and repairing the month afterwards could not bring them back. A journal that
+waits is the whole of the difference.
+
+Two honest limits. A month that stays damaged keeps one merged entry, carrying the newest
+generation, so the journal does not grow with every scan — and a user who "repairs" the month
+by restoring an **older** copy of it, one whose `applied_through` is behind some of the
+generations merged into that entry, gets those generations counted twice. Nothing can tell
+that document apart from the one that was damaged. A rebuild is still the supported answer,
+and it brings a month back only as far as the logs still reach.
 
 ## One writer
 

@@ -83,8 +83,8 @@ pub use store::{
 ///
 /// Derived from the home directory the caller passes rather than from the environment, so
 /// a test points the whole scan at a throwaway tree without touching the machine it runs
-/// on. A caller that honours `CLAUDE_CONFIG_DIR` has to resolve it itself; see
-/// [`crate::paths::claude_config_dir`].
+/// on. A caller that honours `CLAUDE_CONFIG_DIR` names the directory itself and calls
+/// [`scan_claude_in`]; see [`crate::paths::claude_config_dir`].
 #[must_use]
 pub fn projects_dir(home: &Path) -> PathBuf {
     home.join(".claude").join("projects")
@@ -117,6 +117,10 @@ pub struct UsageSummary {
     pub dedupe_fallbacks: u64,
     /// Messages the server never billed, `model` being `<synthetic>`.
     pub synthetic: u64,
+    /// Lines marked `isApiErrorMessage`: an error the server answered with, carrying a full
+    /// set of counters and billed for none of them.
+    #[serde(default)]
+    pub skipped_api_errors: u64,
     /// Messages whose source named no model, filed under [`UNKNOWN_MODEL`].
     pub unnamed_model: u64,
     /// Usage lines dropped for want of a message id, a timestamp, or any number at all.
@@ -154,27 +158,33 @@ pub struct UsageSummary {
 /// read up to is committed in the same write as the totals read from it — the invariant is
 /// spelled out in [`store`].
 pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
-    let mut cursors = store::read_cursors(state_dir, PROVIDER)?;
-    resume(state_dir, &mut cursors)?;
+    scan_claude_in(&projects_dir(home), state_dir)
+}
 
+/// [`scan_claude`] against an explicit `projects` directory.
+///
+/// The entry point for a caller that honours `CLAUDE_CONFIG_DIR`. That variable names a
+/// configuration directory rather than a home, and it need not be called `.claude`, so a
+/// scan derived from a home directory cannot express it: the only honest answer was to
+/// scan nothing, which is what the tray did and wrote down as a gap. This is the directory
+/// being named instead of guessed at.
+pub fn scan_claude_in(projects_dir: &Path, state_dir: &Path) -> Result<UsageSummary> {
+    let mut cursors = store::read_cursors(state_dir, PROVIDER)?;
     let mut summary = UsageSummary {
         scanned_at: now_rfc3339(),
         ..UsageSummary::default()
     };
+    resume(state_dir, &mut cursors, &mut summary)?;
+
     let mut months = Months::new();
     let mut files: BTreeMap<String, store::FileCursor> = BTreeMap::new();
 
-    for path in scan::transcripts(&projects_dir(home)) {
+    for path in scan::transcripts(projects_dir) {
         summary.files_seen += 1;
         let key = store::path_key(&path);
         let previous = cursors.files.get(&key).cloned();
 
-        let pass = match scan::scan_file(
-            &path,
-            previous
-                .as_ref()
-                .map(|cursor| (cursor.identity.as_str(), cursor.offset)),
-        ) {
+        let pass = match scan::scan_file(&path, previous.as_ref().map(store::FileCursor::resume)) {
             Ok(pass) => pass,
             Err(_) => {
                 // A transcript that is locked, or gone between the walk and the read, is a
@@ -198,17 +208,21 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
         summary.lines += pass.lines;
         summary.malformed += pass.malformed;
         summary.synthetic += pass.skipped(scan::Skipped::Synthetic);
+        summary.skipped_api_errors += pass.skipped(scan::Skipped::ApiError);
         summary.unattributable += pass.skipped(scan::Skipped::NoMessageId)
             + pass.skipped(scan::Skipped::NoTimestamp)
             + pass.skipped(scan::Skipped::NoNumbers);
 
-        // A file that was replaced is a different file: what the previous one had credited
-        // stays in the months, where it belongs, but its carried keys mean nothing here.
-        let carried = match (&previous, pass.restarted) {
-            (Some(cursor), false) => cursor.recent.clone(),
-            _ => Vec::new(),
-        };
-        let mut deduper = Deduper::with_recent(&carried);
+        // Carried whatever happened to the file, and **especially** when the pass had to
+        // start at byte zero: a truncated or rewritten transcript hands back records that
+        // are already in the months, and this map is the only thing that knows it. A key
+        // it does not hold is a message nothing has counted; a key it holds credits the
+        // difference, which for the same bytes is nothing.
+        let carried = previous
+            .as_ref()
+            .map(|cursor| cursor.credited.clone())
+            .unwrap_or_default();
+        let mut deduper = Deduper::with_credited(&carried);
         for item in deduper.reduce(pass.records) {
             let Some(month) = scan::month_of(&item.record.hour) else {
                 continue;
@@ -235,8 +249,9 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
             store::FileCursor {
                 identity: pass.identity,
                 offset: pass.offset,
-                recent: deduper.recent(),
-                prefix: Vec::new(),
+                fingerprint: pass.fingerprint,
+                credited: deduper.credited(),
+                events: Vec::new(),
                 model: None,
             },
         );
@@ -274,12 +289,12 @@ pub fn scan_codex(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
 /// [`scan_codex`] against an explicit Codex home directory.
 pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSummary> {
     let mut cursors = store::read_cursors(state_dir, PROVIDER_CODEX)?;
-    resume(state_dir, &mut cursors)?;
-
     let mut summary = UsageSummary {
         scanned_at: now_rfc3339(),
         ..UsageSummary::default()
     };
+    resume(state_dir, &mut cursors, &mut summary)?;
+
     let mut months = Months::new();
     let mut files: BTreeMap<String, store::FileCursor> = BTreeMap::new();
 
@@ -288,7 +303,17 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
     let known: Vec<(String, Vec<u64>)> = cursors
         .files
         .iter()
-        .map(|(key, cursor)| (key.clone(), cursor.prefix.clone()))
+        .map(|(key, cursor)| {
+            (
+                key.clone(),
+                cursor
+                    .events
+                    .iter()
+                    .copied()
+                    .take(codex::PREFIX_EVENTS)
+                    .collect(),
+            )
+        })
         .collect();
 
     for path in codex::rollouts(&codex::sessions_dir(codex_home)) {
@@ -298,9 +323,7 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
 
         let pass = match codex::scan_file(
             &path,
-            previous
-                .as_ref()
-                .map(|cursor| (cursor.identity.as_str(), cursor.offset)),
+            previous.as_ref().map(store::FileCursor::resume),
             previous.as_ref().and_then(|cursor| cursor.model.as_deref()),
         ) {
             Ok(pass) => pass,
@@ -327,37 +350,60 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
         summary.unattributable +=
             pass.skipped(codex::Skipped::NoTimestamp) + pass.skipped(codex::Skipped::NoNumbers);
 
-        // A file that was replaced is a different file, and what it said before is not
-        // evidence about what it says now.
-        let mut prefix = match (&previous, pass.restarted) {
-            (Some(cursor), false) => cursor.prefix.clone(),
-            _ => Vec::new(),
-        };
-        let seen_before = prefix.len();
-        for event in &pass.events {
-            if prefix.len() < codex::PREFIX_EVENTS {
-                prefix.push(event.fingerprint);
+        // Every event this log has already been credited for. A rollout carries no event
+        // id, so this stands in for one — and a pass that restarted at byte zero is
+        // re-reading events that are already in the months. `remaining` is that set with
+        // multiplicity, consumed as the pass matches it, so a log that legitimately holds
+        // two identical events is not made to lose one of them.
+        let mut credited: Vec<u64> = previous
+            .as_ref()
+            .map(|cursor| cursor.events.clone())
+            .unwrap_or_default();
+        let mut remaining: BTreeMap<u64, usize> = BTreeMap::new();
+        if pass.restarted {
+            for fingerprint in &credited {
+                *remaining.entry(*fingerprint).or_default() += 1;
             }
         }
+
+        let seen_before = credited.len();
+        let opening: Vec<u64> = credited
+            .iter()
+            .copied()
+            .chain(pass.events.iter().map(|event| event.fingerprint))
+            .take(codex::PREFIX_EVENTS)
+            .collect();
         // Against every log the store already knew and every log read earlier in this
         // walk: a fork and its parent usually arrive in the same pass, and the parent is
         // read first because the paths sort as dates.
         let copied = codex::copied_prefix(
-            &prefix,
+            &opening,
             known
                 .iter()
                 .filter(|(other, _)| *other != key)
-                .map(|(_, opening)| opening.as_slice())
+                .map(|(_, seen)| seen.as_slice())
                 .chain(
                     files
                         .iter()
                         .filter(|(other, _)| *other != &key)
-                        .map(|(_, cursor)| cursor.prefix.as_slice()),
+                        .map(|(_, cursor)| {
+                            let end = cursor.events.len().min(codex::PREFIX_EVENTS);
+                            &cursor.events[..end]
+                        }),
                 ),
         );
 
         for (at, event) in pass.events.iter().enumerate() {
             summary.naive_total = summary.naive_total.saturating_add(event.usage.total());
+            // An event this log has been credited for before, arriving again because the
+            // bytes it was written in were read again.
+            if let Some(left) = remaining.get_mut(&event.fingerprint)
+                && *left > 0
+            {
+                *left -= 1;
+                summary.duplicates += 1;
+                continue;
+            }
             // An event inside a run this log copied from another one. The tokens are real
             // and are already counted, under the log that was read first.
             if seen_before + at < copied {
@@ -367,6 +413,7 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
             let Some(month) = scan::month_of(&event.hour) else {
                 continue;
             };
+            credited.push(event.fingerprint);
             summary.credited += 1;
             if event.model == UNKNOWN_MODEL {
                 summary.unnamed_model += 1;
@@ -386,8 +433,9 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
             store::FileCursor {
                 identity: pass.identity,
                 offset: pass.offset,
-                recent: Vec::new(),
-                prefix,
+                fingerprint: pass.fingerprint,
+                credited: Vec::new(),
+                events: credited,
                 model: pass.model,
             },
         );
@@ -404,15 +452,28 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
     Ok(summary)
 }
 
-/// File anything the previous run committed but did not finish filing.
+/// File anything a previous run committed but could not finish filing.
 ///
-/// Replaying it is a no-operation for every month that already carries its generation, so
-/// this is safe however many times it runs. See the invariant in [`store`].
-fn resume(state_dir: &Path, cursors: &mut store::Cursors) -> Result<()> {
-    if let Some(block) = cursors.pending.take() {
-        store::apply(state_dir, &block)?;
-        store::write_cursors(state_dir, cursors)?;
+/// Replaying an entry is a no-operation for a month that already carries its generation, so
+/// this is safe however many times it runs — and it runs for as long as it has to: an entry
+/// whose month is damaged stays in the journal until the month can be written, which may be
+/// the next pass or may be after the user has dealt with the file. See the invariant in
+/// [`store`].
+fn resume(
+    state_dir: &Path,
+    cursors: &mut store::Cursors,
+    summary: &mut UsageSummary,
+) -> Result<()> {
+    if cursors.pending.is_empty() {
+        return Ok(());
     }
+    let applied = store::apply(state_dir, &cursors.provider, &cursors.pending)?;
+    cursors
+        .pending
+        .retain(|entry| applied.damaged.contains(&entry.month));
+    summary.months = applied.written;
+    summary.damaged = applied.damaged;
+    store::write_cursors(state_dir, cursors)?;
     Ok(())
 }
 
@@ -423,36 +484,52 @@ fn resume(state_dir: &Path, cursors: &mut store::Cursors) -> Result<()> {
 /// A pass that did take one writes **the new offsets and the totals read from them in the
 /// same atomic write**, and only then adds those totals to the month documents — which is
 /// the whole of why a crash between the two cannot count anything twice.
+///
+/// What it then removes from the journal is **only what was filed**. A month that could not
+/// be written keeps its entry, and the pass after it, and the one after that, will try
+/// again; the alternative is what the first version did, which was to drop totals whose
+/// bytes were already behind a moved cursor and could never be read again.
 fn commit(
     state_dir: &Path,
     cursors: &mut store::Cursors,
     months: Months,
     summary: &mut UsageSummary,
 ) -> Result<()> {
-    let block = if months.is_empty() {
-        None
-    } else {
+    if !months.is_empty() {
         cursors.generation += 1;
-        Some(store::Pending {
-            provider: cursors.provider.clone(),
-            generation: cursors.generation,
-            scanned_at: summary.scanned_at.clone(),
-            months,
-        })
-    };
-    cursors.pending = block.clone();
+        for (month, hours) in months {
+            cursors.enqueue(store::Pending {
+                month,
+                generation: cursors.generation,
+                scanned_at: summary.scanned_at.clone(),
+                hours,
+            });
+        }
+    }
 
     // The commit: the offsets and the totals read from them reach the disk together.
     store::write_cursors(state_dir, cursors)?;
 
-    if let Some(block) = block {
-        let applied = store::apply(state_dir, &block)?;
-        summary.months = applied.written;
-        summary.damaged = applied.damaged;
-        cursors.pending = None;
+    if !cursors.pending.is_empty() {
+        let applied = store::apply(state_dir, &cursors.provider, &cursors.pending)?;
+        cursors
+            .pending
+            .retain(|entry| applied.damaged.contains(&entry.month));
+        merge(&mut summary.months, applied.written);
+        merge(&mut summary.damaged, applied.damaged);
         store::write_cursors(state_dir, cursors)?;
     }
     Ok(())
+}
+
+/// Add what a second `apply` reported to what the first one did, without repeating a name.
+fn merge(into: &mut Vec<String>, more: Vec<String>) {
+    for name in more {
+        if !into.contains(&name) {
+            into.push(name);
+        }
+    }
+    into.sort();
 }
 
 /// The hourly buckets the store holds for `[from, to)`, both RFC 3339 UTC instants.

@@ -34,6 +34,14 @@
 //! * **A partial trailing line is bytes, not text.** A read that lands mid-line may land
 //!   mid-UTF-8-sequence. The cursor stops at the last newline; the fragment after it is
 //!   read again next time, whole.
+//!
+//! A fourth came out of the review of the first version, and it asks the identity's own
+//! question one layer down: **the identity says this is the same file, and the fingerprint
+//! says the offset is still the same place in it.** A transcript rewritten in place keeps
+//! its birth time and its first 512 bytes, so the identity matches and the old offset is
+//! still inside the file — and everything written before that offset would never be read.
+//! So the cursor carries [`Resume::fingerprint`], a hash of the bytes immediately before
+//! the offset, and a mismatch is a restart like any other.
 
 use std::fmt;
 use std::fs::{File, Metadata};
@@ -80,6 +88,13 @@ const MAX_LINE: usize = 8 * 1024 * 1024;
 
 /// Bytes of the head of a file mixed into its identity.
 const HEAD_BYTES: usize = 512;
+
+/// Bytes before the cursor mixed into the fingerprint that guards it.
+///
+/// Sixty-four, because what is being asked is "are these the same bytes", not "what are
+/// they": the tail of a transcript line is a closing brace and a few counters, and two
+/// different lines agree on that much for a byte or two and never for sixty-four.
+const FINGERPRINT_BYTES: usize = 64;
 
 /// The four measurements a usage object carries, each absent until the source reported it.
 ///
@@ -145,10 +160,41 @@ impl Usage {
             cache_read: step(self.cache_read, credited.cache_read),
         }
     }
+
+    /// The larger of two readings of the same message, counter by counter.
+    ///
+    /// What a key's *credit* is: the most this message has ever been observed to have cost.
+    /// Keeping the latest reading instead loses the difference the moment a smaller copy
+    /// arrives after a larger one — three passes seeing 100, 90 and 100 credit 100, then
+    /// nothing, then another 10, and the largest-copy rule quietly becomes 110. Counter by
+    /// counter rather than by total, because [`Usage::since`] subtracts counter by counter
+    /// and the two have to agree about what "already credited" means.
+    #[must_use]
+    pub fn largest(&self, other: &Usage) -> Usage {
+        fn step(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+            match (left, right) {
+                (None, None) => None,
+                _ => Some(left.unwrap_or(0).max(right.unwrap_or(0))),
+            }
+        }
+        Usage {
+            input: step(self.input, other.input),
+            output: step(self.output, other.output),
+            cache_create: step(self.cache_create, other.cache_create),
+            cache_read: step(self.cache_read, other.cache_read),
+        }
+    }
 }
 
 /// One billable message, reduced to what the store keeps.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **`Debug` is redacted by hand** rather than derived: `message_id` and `request_id` are a
+/// dedupe key and nothing else, they are never written to disk, and a derived `Debug` would
+/// put them into the first diagnostic anybody printed. What the redacted form shows is what
+/// the store already holds — the hour, the model, the four counters — plus whether a request
+/// id was there at all, because that is a real and interesting fact about a line. See the
+/// leak test in `usage::tests`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Record {
     /// The UTC hour the message falls in, `YYYY-MM-DDTHH`. Never a local hour: this crate
     /// stores instants and the panel draws them wherever the reader happens to be.
@@ -163,11 +209,26 @@ pub struct Record {
     pub usage: Usage,
 }
 
+impl fmt::Debug for Record {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.debug_struct("Record")
+            .field("hour", &self.hour)
+            .field("model", &self.model)
+            .field("request_id", &self.request_id.is_some())
+            .field("usage", &self.usage)
+            .finish()
+    }
+}
+
 /// Why a line that was shaped like a usage line produced no record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
     /// `model` was `<synthetic>`: a message the server never billed.
     Synthetic,
+    /// `isApiErrorMessage` was true: an error the server answered with, not usage it
+    /// billed. The line carries counters, ids, a timestamp and a model like any other,
+    /// which is exactly why it has to be named rather than noticed.
+    ApiError,
     /// No `message.id`, so the record cannot be told apart from its own copies.
     NoMessageId,
     /// No `timestamp` this crate can read, so the record belongs to no hour.
@@ -177,7 +238,9 @@ pub enum Skipped {
 }
 
 /// What one line turned out to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is redacted for the same reason [`Record`]'s is, and by delegating to it.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// A billable message.
     Usage(Record),
@@ -187,6 +250,17 @@ pub enum Outcome {
     Other,
     /// Not JSON, or not the shape a transcript line has.
     Malformed,
+}
+
+impl fmt::Debug for Outcome {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Outcome::Usage(record) => out.debug_tuple("Usage").field(record).finish(),
+            Outcome::Skipped(reason) => out.debug_tuple("Skipped").field(reason).finish(),
+            Outcome::Other => out.write_str("Other"),
+            Outcome::Malformed => out.write_str("Malformed"),
+        }
+    }
 }
 
 /// Read one transcript line.
@@ -207,6 +281,13 @@ pub fn parse_line(line: &str) -> Outcome {
     let Some(usage) = message.usage else {
         return Outcome::Other;
     };
+
+    // An error the server answered with is not usage it billed, and the line that records
+    // one carries a full set of counters. `pinned-internal-formats.md` has said so since it
+    // was written; this is the field being read rather than the sentence being believed.
+    if parsed.is_api_error {
+        return Outcome::Skipped(Skipped::ApiError);
+    }
 
     // A source that named no model, or named something that is not a model name, gets the
     // one id this reader writes itself rather than losing the tokens.
@@ -269,6 +350,13 @@ struct Line {
     timestamp: Option<String>,
     #[serde(rename = "requestId", default, deserialize_with = "identifier_field")]
     request_id: Option<String>,
+    /// `isApiErrorMessage == true`, decided while reading so the value is never kept.
+    #[serde(
+        rename = "isApiErrorMessage",
+        default,
+        deserialize_with = "error_message_flag"
+    )]
+    is_api_error: bool,
     #[serde(default, deserialize_with = "message_field")]
     message: Option<Message>,
 }
@@ -308,6 +396,57 @@ fn assistant_flag<'de, D: Deserializer<'de>>(source: D) -> std::result::Result<b
             source.deserialize_any(Flag)
         }
         fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<bool, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(false)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<bool, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(false)
+        }
+    }
+    source.deserialize_any(Flag)
+}
+
+/// Read `isApiErrorMessage` as a flag, keeping nothing.
+///
+/// Only `true` is true. A field that turned into a string, an object or anything else is a
+/// field that is not the one we think it is, and the safe reading of *that* is "this is an
+/// ordinary line" — the alternative drops billed usage on a shape nobody promised.
+fn error_message_flag<'de, D: Deserializer<'de>>(source: D) -> std::result::Result<bool, D::Error> {
+    struct Flag;
+    impl<'de> Visitor<'de> for Flag {
+        type Value = bool;
+        fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+            out.write_str("an error flag")
+        }
+        fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<bool, E> {
+            Ok(value)
+        }
+        fn visit_unit<E: de::Error>(self) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_none<E: de::Error>(self) -> std::result::Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_some<D2: Deserializer<'de>>(
+            self,
+            source: D2,
+        ) -> std::result::Result<bool, D2::Error> {
+            source.deserialize_any(Flag)
+        }
+        fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<bool, E> {
             Ok(false)
         }
         fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<bool, E> {
@@ -550,7 +689,20 @@ fn usage_field<'de, D: Deserializer<'de>>(
 }
 
 /// A count that refuses to become a number when it is not one.
+///
+/// **A token count is a non-negative JSON integer, or `null`, or the line is malformed.**
+/// The first version accepted a float by truncating it and a string by parsing it, which
+/// meant `"input_tokens": 1.9` became 1 and `"input_tokens": "7"` became 7 — inventing a
+/// measurement out of a field that had changed shape, in the one place where a wrong number
+/// looks exactly like a right one. Refusing is a `serde` error, so the whole line comes back
+/// as [`Outcome::Malformed`] and is counted as such: the reader says "I did not understand
+/// this line" instead of quietly understanding it wrongly, and the rest of the file is read
+/// as usual. `null` and an absent field stay *absent*, which is a different thing and an
+/// honest one.
 pub(super) struct Count(pub(super) Option<u64>);
+
+/// What a counter that is not a counter says, with no value in it.
+const NOT_A_COUNT: &str = "a token count must be a non-negative integer";
 
 impl<'de> Deserialize<'de> for Count {
     fn deserialize<D: Deserializer<'de>>(source: D) -> std::result::Result<Self, D::Error> {
@@ -564,20 +716,18 @@ impl<'de> Deserialize<'de> for Count {
                 Ok(Some(value))
             }
             fn visit_i64<E: de::Error>(self, value: i64) -> std::result::Result<Self::Value, E> {
-                Ok(u64::try_from(value).ok())
+                u64::try_from(value)
+                    .map(Some)
+                    .map_err(|_| E::custom(NOT_A_COUNT))
             }
-            fn visit_f64<E: de::Error>(self, value: f64) -> std::result::Result<Self::Value, E> {
-                if value.is_finite() && value >= 0.0 {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    return Ok(Some(value as u64));
-                }
-                Ok(None)
+            fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Err(E::custom(NOT_A_COUNT))
             }
-            fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
-                Ok(value.parse::<u64>().ok())
+            fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<Self::Value, E> {
+                Err(E::custom(NOT_A_COUNT))
             }
             fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<Self::Value, E> {
-                Ok(None)
+                Err(E::custom(NOT_A_COUNT))
             }
             fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
                 Ok(None)
@@ -596,14 +746,14 @@ impl<'de> Deserialize<'de> for Count {
                 mut map: A,
             ) -> std::result::Result<Self::Value, A::Error> {
                 while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
-                Ok(None)
+                Err(<A::Error as de::Error>::custom(NOT_A_COUNT))
             }
             fn visit_seq<A: SeqAccess<'de>>(
                 self,
                 mut seq: A,
             ) -> std::result::Result<Self::Value, A::Error> {
                 while seq.next_element::<IgnoredAny>()?.is_some() {}
-                Ok(None)
+                Err(<A::Error as de::Error>::custom(NOT_A_COUNT))
             }
         }
         source.deserialize_any(Number).map(Count)
@@ -661,7 +811,12 @@ fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
 }
 
 /// What one pass over one file produced.
-#[derive(Debug, Default)]
+///
+/// `Debug` is redacted, like [`Record`]'s and for the same reason: this value holds every
+/// record a pass read, so a derived one would print a file's worth of identifiers. What it
+/// shows is the shape of the pass — where it got to, how much it walked past, how many
+/// records it found and what it refused — and no identifier and no path.
+#[derive(Default)]
 pub struct FileScan {
     /// The file's identity as it stands now. Stored with the offset; a change means the
     /// file was replaced and the offset means nothing any more.
@@ -669,6 +824,9 @@ pub struct FileScan {
     /// Absolute offset of the byte after the last complete line read. A trailing fragment
     /// is deliberately left behind it.
     pub offset: u64,
+    /// Hash of the bytes immediately before [`FileScan::offset`]. Stored with it, and
+    /// checked on the next pass; see [`Resume::fingerprint`].
+    pub fingerprint: u64,
     /// `true` when the file was replaced or truncated and the pass started from the top.
     pub restarted: bool,
     /// Bytes read in this pass.
@@ -680,43 +838,60 @@ pub struct FileScan {
     /// Lines that matched the needle and were not JSON.
     pub malformed: u64,
     /// Lines that were usage lines this crate deliberately does not count, by reason.
-    pub skipped: [u64; 4],
+    pub skipped: [u64; 5],
 }
 
 impl FileScan {
     fn note(&mut self, reason: Skipped) {
-        let at = match reason {
-            Skipped::Synthetic => 0,
-            Skipped::NoMessageId => 1,
-            Skipped::NoTimestamp => 2,
-            Skipped::NoNumbers => 3,
-        };
-        self.skipped[at] += 1;
+        self.skipped[FileScan::at(reason)] += 1;
     }
 
     /// How many lines were skipped for `reason`.
     #[must_use]
     pub fn skipped(&self, reason: Skipped) -> u64 {
+        self.skipped[FileScan::at(reason)]
+    }
+
+    const fn at(reason: Skipped) -> usize {
         match reason {
-            Skipped::Synthetic => self.skipped[0],
-            Skipped::NoMessageId => self.skipped[1],
-            Skipped::NoTimestamp => self.skipped[2],
-            Skipped::NoNumbers => self.skipped[3],
+            Skipped::Synthetic => 0,
+            Skipped::NoMessageId => 1,
+            Skipped::NoTimestamp => 2,
+            Skipped::NoNumbers => 3,
+            Skipped::ApiError => 4,
         }
     }
 }
 
-/// Read everything appended to `path` since the offset `previous` names.
+impl fmt::Debug for FileScan {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.debug_struct("FileScan")
+            .field("offset", &self.offset)
+            .field("restarted", &self.restarted)
+            .field("bytes", &self.bytes)
+            .field("records", &self.records.len())
+            .field("lines", &self.lines)
+            .field("malformed", &self.malformed)
+            .field("skipped", &self.skipped)
+            .finish()
+    }
+}
+
+/// Read everything appended to `path` since the place `previous` names.
 ///
-/// `previous` is `(identity, offset)` as the last pass left them. When the identity no
-/// longer matches — the file was replaced, or rotated, or the offset is past the end
-/// because it was truncated — the pass starts at byte zero and says so, and the caller
-/// is expected to throw away whatever it had credited for that file's identity.
+/// `previous` is the cursor as the last pass left it. When it no longer describes this
+/// file — a different identity, an offset past the end because the file was truncated, or a
+/// fingerprint that says the bytes before the offset are not the bytes that were there —
+/// the pass starts at byte zero and says so. What the caller does about the records it had
+/// already credited is [`super::dedupe`]'s answer, not this one's: it carries them, so a
+/// restart re-reads without re-counting.
 ///
 /// The length is pinned at the `metadata` call: bytes that arrive while this is reading
 /// are the next pass's work, so a live transcript can be polled without ever reading a
 /// line that is still being written.
-pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan> {
+///
+/// An error names the file by a hash rather than by its path. See [`Error::Log`].
+pub fn scan_file(path: &Path, previous: Option<Resume<'_>>) -> Result<FileScan> {
     let mut scan = FileScan::default();
     let pass = read_new_lines(
         path,
@@ -731,6 +906,7 @@ pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan>
     )?;
     scan.identity = pass.identity;
     scan.offset = pass.offset;
+    scan.fingerprint = pass.fingerprint;
     scan.restarted = pass.restarted;
     scan.bytes = pass.bytes;
     scan.lines = pass.lines;
@@ -751,6 +927,9 @@ pub struct Pass {
     pub identity: String,
     /// Absolute offset of the byte after the last complete line read.
     pub offset: u64,
+    /// Hash of the [`FINGERPRINT_BYTES`] immediately before [`Pass::offset`], or `0` when
+    /// the offset is zero and there are none. Stored with the offset; see [`Resume`].
+    pub fingerprint: u64,
     /// `true` when the file was replaced or truncated and the pass started from the top.
     pub restarted: bool,
     /// Bytes read in this pass.
@@ -765,26 +944,28 @@ pub struct Pass {
 
 /// Read every complete new line of `path` that contains one of `needles`, in file order.
 ///
-/// The same contract as [`scan_file`], which is one caller of it: `previous` is
-/// `(identity, offset)` as the last pass left them, a mismatch starts again from byte zero
-/// and says so, and the length is pinned at the `metadata` call so that bytes arriving
-/// during the read are the next pass's work.
+/// The same contract as [`scan_file`], which is one caller of it: `previous` is the cursor
+/// as the last pass left it, anything that says it no longer describes this file starts
+/// again from byte zero and says so, and the length is pinned at the `metadata` call so that
+/// bytes arriving during the read are the next pass's work.
 ///
 /// `needles` is a prefilter and nothing more: a line has to contain one of them to be worth
 /// turning into text, and a line that contains one still has to survive the caller's parser.
 /// It is what keeps a pass over a few hundred megabytes of prompts and tool output cheap.
 pub fn read_new_lines(
     path: &Path,
-    previous: Option<(&str, u64)>,
+    previous: Option<Resume<'_>>,
     needles: &[&[u8]],
     on_line: &mut dyn FnMut(&str),
 ) -> Result<Pass> {
-    let metadata = std::fs::metadata(path).map_err(|source| Error::io(path, source))?;
+    let label = log_label(path);
+    let metadata = std::fs::metadata(path).map_err(|source| Error::log(label.clone(), source))?;
     let length = metadata.len();
 
-    let mut file = File::open(path).map_err(|source| Error::io(path, source))?;
+    let mut file = File::open(path).map_err(|source| Error::log(label.clone(), source))?;
     let mut head = [0u8; HEAD_BYTES];
-    let filled = read_head(&mut file, &mut head).map_err(|source| Error::io(path, source))?;
+    let filled =
+        read_head(&mut file, &mut head).map_err(|source| Error::log(label.clone(), source))?;
     let fresh_window = HEAD_BYTES.min(usize::try_from(length).unwrap_or(HEAD_BYTES));
 
     // The head window is fixed the first time a file is measured and never widened. A
@@ -792,11 +973,22 @@ pub fn read_new_lines(
     // over those two hundred bytes when it is two megabytes long, because otherwise every
     // append to a young file would change its identity and be read as a rotation.
     let (identity, start, restarted) = match previous {
-        Some((known, offset)) => {
-            let window = window_of(known).unwrap_or(fresh_window);
+        Some(resume) => {
+            let window = window_of(resume.identity).unwrap_or(fresh_window);
             let candidate = identity_of(&metadata, &head[..window.min(filled)], window);
-            if candidate == known && offset <= length {
-                (candidate, offset, false)
+            // Three questions, and all three have to answer yes. Is this the same file;
+            // is the offset still inside it; and are the bytes just before the offset the
+            // bytes that were there when it was written. The third is the one a rewrite in
+            // place gets past — same birth time, same first 512 bytes, same length — and
+            // without it every record such a rewrite added before the old offset is never
+            // read at all.
+            let same_place = candidate == resume.identity
+                && resume.offset <= length
+                && fingerprint_before(&mut file, resume.offset)
+                    .map_err(|source| Error::log(label.clone(), source))?
+                    == resume.fingerprint;
+            if same_place {
+                (candidate, resume.offset, false)
             } else {
                 (
                     identity_of(&metadata, &head[..fresh_window.min(filled)], fresh_window),
@@ -819,11 +1011,13 @@ pub fn read_new_lines(
         ..Pass::default()
     };
     if start >= length {
+        scan.fingerprint = fingerprint_before(&mut file, scan.offset)
+            .map_err(|source| Error::log(label.clone(), source))?;
         return Ok(scan);
     }
 
     file.seek(SeekFrom::Start(start))
-        .map_err(|source| Error::io(path, source))?;
+        .map_err(|source| Error::log(label.clone(), source))?;
 
     let tables: Vec<[usize; 256]> = needles.iter().map(|needle| skip_table(needle)).collect();
     let mut buffer = vec![0u8; CHUNK];
@@ -836,7 +1030,7 @@ pub fn read_new_lines(
         let want = CHUNK.min(usize::try_from(remaining).unwrap_or(CHUNK));
         let read = file
             .read(&mut buffer[..want])
-            .map_err(|source| Error::io(path, source))?;
+            .map_err(|source| Error::log(label.clone(), source))?;
         if read == 0 {
             break;
         }
@@ -879,7 +1073,62 @@ pub fn read_new_lines(
         chunk_start += read as u64;
     }
 
+    scan.fingerprint =
+        fingerprint_before(&mut file, scan.offset).map_err(|source| Error::log(label, source))?;
     Ok(scan)
+}
+
+/// Where a previous pass stopped, and the two pieces of evidence that it is still there.
+///
+/// `identity` answers *is this the same file*; `fingerprint` answers *is this still the same
+/// place in it*. The second exists because the first can be right while the answer is still
+/// no: a transcript truncated and rewritten in place keeps its birth time, its inode and its
+/// first 512 bytes, so a reader that trusted the identity alone would resume at an offset
+/// that now sits in the middle of different content and never read a byte before it.
+#[derive(Debug, Clone, Copy)]
+pub struct Resume<'a> {
+    /// The file's identity as the last pass computed it.
+    pub identity: &'a str,
+    /// Offset of the byte after the last complete line that pass read.
+    pub offset: u64,
+    /// Hash of the [`FINGERPRINT_BYTES`] immediately before `offset`, as that pass left it.
+    /// `0` for an offset of zero, and for a cursor written before this check existed.
+    pub fingerprint: u64,
+}
+
+/// The redacted name of a log, and the same one its cursor is filed under.
+///
+/// A transcript's path is `~/.claude/projects/<a directory somebody works in>/…` and a
+/// rollout's is a date tree; neither belongs in an error, a log line or a bug report. The
+/// hash is stable, so two mentions of the same file are recognisably the same file.
+fn log_label(path: &Path) -> String {
+    format!("log {:016x}", fnv1a(path.to_string_lossy().as_bytes()))
+}
+
+/// Hash the [`FINGERPRINT_BYTES`] immediately before `offset`.
+///
+/// Deliberately a second, tiny read rather than something carried out of the main loop: the
+/// offset a pass ends on may be the offset it started on — a poll that found nothing new —
+/// and the fingerprint has to be right in that case too. Sixty-four bytes is one `read` of
+/// the tail of a line; a file whose last complete line was rewritten differs in them with
+/// certainty long before it differs in anything a hash could miss.
+fn fingerprint_before(file: &mut File, offset: u64) -> std::io::Result<u64> {
+    if offset == 0 {
+        return Ok(0);
+    }
+    let window = offset.min(FINGERPRINT_BYTES as u64);
+    file.seek(SeekFrom::Start(offset - window))?;
+    let mut tail = [0u8; FINGERPRINT_BYTES];
+    let want = usize::try_from(window).unwrap_or(FINGERPRINT_BYTES);
+    let mut filled = 0;
+    while filled < want {
+        let read = file.read(&mut tail[filled..want])?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(fnv1a(&tail[..filled]))
 }
 
 /// Hand one complete line to the caller, if it is worth parsing.
@@ -1027,6 +1276,15 @@ mod tests {
         }
     }
 
+    /// The cursor a pass left, as the next pass takes it.
+    fn resume(scan: &FileScan) -> Resume<'_> {
+        Resume {
+            identity: scan.identity.as_str(),
+            offset: scan.offset,
+            fingerprint: scan.fingerprint,
+        }
+    }
+
     #[test]
     fn the_six_values_come_out_and_nothing_else_does() {
         let text = line(
@@ -1102,8 +1360,76 @@ mod tests {
 
     #[test]
     fn a_field_that_changed_shape_is_dropped_rather_than_guessed_at() {
-        let text = r#"{"type":"assistant","timestamp":404,"requestId":{"was":"a string"},"message":{"id":"msg_four","model":"claude-sonnet-5","usage":{"input_tokens":"7","output_tokens":null}}}"#;
+        let text = r#"{"type":"assistant","timestamp":404,"requestId":{"was":"a string"},"message":{"id":"msg_four","model":"claude-sonnet-5","usage":{"input_tokens":7,"output_tokens":null}}}"#;
         assert_eq!(parse_line(text), Outcome::Skipped(Skipped::NoTimestamp));
+    }
+
+    #[test]
+    fn a_counter_that_is_not_an_integer_makes_the_line_malformed() {
+        // 1.9 became 1 and "7" became 7 in the first version: a measurement invented out of
+        // a field that had changed shape, in the one place where a wrong number looks
+        // exactly like a right one.
+        for numbers in [
+            r#"{"input_tokens":1.9,"output_tokens":2}"#,
+            r#"{"input_tokens":"7","output_tokens":2}"#,
+            r#"{"input_tokens":-3,"output_tokens":2}"#,
+            r#"{"input_tokens":true,"output_tokens":2}"#,
+            r#"{"input_tokens":{"value":7},"output_tokens":2}"#,
+        ] {
+            let text = line(
+                "2026-09-11T15:00:00Z",
+                "claude-opus-5",
+                "msg_shape",
+                "req_shape",
+                numbers,
+            );
+            assert_eq!(parse_line(&text), Outcome::Malformed, "for {numbers}");
+        }
+
+        // `null` is not a changed shape. It is a counter the source did not report, which
+        // is a thing this crate has always been able to say.
+        let text = line(
+            "2026-09-11T15:00:00Z",
+            "claude-opus-5",
+            "msg_null",
+            "req_null",
+            r#"{"input_tokens":null,"output_tokens":2}"#,
+        );
+        let record = usage(&text);
+        assert_eq!(record.usage.input, None);
+        assert_eq!(record.usage.output, Some(2));
+    }
+
+    #[test]
+    fn an_api_error_carries_counters_and_is_not_billed_usage() {
+        let text = r#"{"type":"assistant","timestamp":"2026-09-11T15:00:00Z","requestId":"req_err","isApiErrorMessage":true,"message":{"id":"msg_err","model":"claude-opus-5","usage":{"input_tokens":11,"output_tokens":22}}}"#;
+        assert_eq!(parse_line(text), Outcome::Skipped(Skipped::ApiError));
+
+        // False, absent, and a shape nobody promised all mean "an ordinary line".
+        let ordinary = r#"{"type":"assistant","timestamp":"2026-09-11T15:00:00Z","requestId":"req_ok","isApiErrorMessage":false,"message":{"id":"msg_ok","model":"claude-opus-5","usage":{"input_tokens":11}}}"#;
+        assert_eq!(usage(ordinary).usage.input, Some(11));
+        let odd = ordinary.replace(
+            "\"isApiErrorMessage\":false",
+            "\"isApiErrorMessage\":\"no\"",
+        );
+        assert_eq!(usage(&odd).usage.input, Some(11));
+    }
+
+    #[test]
+    fn the_public_debug_of_a_record_carries_no_identifier() {
+        let text = line(
+            "2026-09-11T15:00:00Z",
+            "claude-opus-5",
+            "msg_secret",
+            "req_secret",
+            r#"{"input_tokens":1}"#,
+        );
+        let outcome = parse_line(&text);
+        let printed = format!("{outcome:?}");
+        assert!(!printed.contains("msg_secret"), "{printed}");
+        assert!(!printed.contains("req_secret"), "{printed}");
+        // And it still says the things a diagnostic is for.
+        assert!(printed.contains("claude-opus-5") && printed.contains("2026-09-11T15"));
     }
 
     #[test]
@@ -1174,7 +1500,7 @@ mod tests {
         file.write_all(format!("{second}\n").as_bytes()).unwrap();
         drop(file);
 
-        let two = scan_file(&path, Some((one.identity.as_str(), one.offset))).unwrap();
+        let two = scan_file(&path, Some(resume(&one))).unwrap();
         assert_eq!(two.records.len(), 1);
         assert_eq!(two.records[0].message_id, "msg_b");
     }
@@ -1204,7 +1530,7 @@ mod tests {
         file.write_all(format!("{tail}\n").as_bytes()).unwrap();
         drop(file);
 
-        let two = scan_file(&path, Some((one.identity.as_str(), one.offset))).unwrap();
+        let two = scan_file(&path, Some(resume(&one))).unwrap();
         assert_eq!(two.records.len(), 1);
         assert_eq!(two.records[0].message_id, "msg_partial");
     }
@@ -1224,9 +1550,58 @@ mod tests {
         let one = scan_file(&path, None).unwrap();
 
         std::fs::write(&path, format!("{text}\n")).unwrap();
-        let two = scan_file(&path, Some((one.identity.as_str(), one.offset))).unwrap();
+        let two = scan_file(&path, Some(resume(&one))).unwrap();
         assert!(two.restarted);
         assert_eq!(two.records.len(), 1);
+    }
+
+    #[test]
+    fn a_file_rewritten_in_place_behind_the_cursor_is_noticed_and_read_again() {
+        let dir = TempDir::new("usage-rewritten");
+        let path = dir.join("transcript.jsonl");
+
+        // Long enough that the first 512 bytes — the ones the identity hashes — are inside
+        // the first line and survive the rewrite untouched.
+        let padding = "x".repeat(600);
+        let head = format!(
+            r#"{{"type":"assistant","timestamp":"2026-09-11T15:00:00Z","requestId":"req_head","note":"{padding}","message":{{"id":"msg_head","model":"claude-opus-5","usage":{{"input_tokens":1}}}}}}"#
+        );
+        let before = line(
+            "2026-09-11T15:00:00Z",
+            "claude-opus-5",
+            "msg_one",
+            "req_one",
+            r#"{"input_tokens":2}"#,
+        );
+        std::fs::write(&path, format!("{head}\n{before}\n")).unwrap();
+        let one = scan_file(&path, None).unwrap();
+        assert_eq!(one.records.len(), 2);
+
+        // The shape the review found: same birth time, same first 512 bytes, and a length
+        // no shorter than the old offset — so the identity matches and the offset is still
+        // inside the file, while everything after the head is different.
+        let after = line(
+            "2026-09-11T16:00:00Z",
+            "claude-opus-5",
+            "msg_two",
+            "req_two",
+            r#"{"input_tokens":3}"#,
+        );
+        assert_eq!(before.len(), after.len(), "the same length, on purpose");
+        std::fs::write(&path, format!("{head}\n{after}\n")).unwrap();
+
+        let two = scan_file(&path, Some(resume(&one))).unwrap();
+        assert!(
+            two.restarted,
+            "the identity still matches; only the fingerprint says the place is not the place"
+        );
+        assert_eq!(two.records.len(), 2);
+        assert!(
+            two.records
+                .iter()
+                .any(|record| record.usage.input == Some(3)),
+            "the record written behind the old cursor has to be read"
+        );
     }
 
     #[test]

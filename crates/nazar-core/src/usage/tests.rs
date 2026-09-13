@@ -109,6 +109,18 @@ impl Machine {
             .unwrap_or_else(|| panic!("no {provider} bucket for {hour} / {model}"))
     }
 
+    /// Every month document this machine has written, byte for byte.
+    ///
+    /// The cursor documents are deliberately left out: a pass that read the same records
+    /// again after a truncation *does* move an offset, and the claim being checked is about
+    /// the totals rather than about the bookkeeping that produced them.
+    fn month_documents(&self) -> Vec<(String, String)> {
+        self.documents()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("2026-"))
+            .collect()
+    }
+
     /// Every byte this machine has written under `usage/`.
     fn documents(&self) -> Vec<(String, String)> {
         let dir = store::usage_dir(&self.state());
@@ -129,10 +141,10 @@ impl Machine {
 
 fn bucket(input: u64, output: u64, cache_create: u64, cache_read: u64, requests: u64) -> Bucket {
     Bucket {
-        input: Some(input),
-        output: Some(output),
-        cache_create: Some(cache_create),
-        cache_read: Some(cache_read),
+        input,
+        output,
+        cache_create,
+        cache_read,
         requests,
         extra: serde_json::Map::new(),
     }
@@ -235,6 +247,10 @@ fn synthetic_messages_and_iteration_copies_are_not_counted() {
     let summary = machine.scan();
     assert_eq!(summary.synthetic, 1, "a message the server never billed");
     assert_eq!(
+        summary.skipped_api_errors, 1,
+        "an error the server answered with carries counters and is not billed usage"
+    );
+    assert_eq!(
         summary.malformed, 1,
         "a truncated line, counted not guessed at"
     );
@@ -246,10 +262,10 @@ fn synthetic_messages_and_iteration_copies_are_not_counted() {
     assert_eq!(summary.credited, 2);
 
     let counted = machine.bucket("2026-09", "2026-09-03T08", "claude-opus-5");
-    assert_eq!(counted.input, Some(7));
-    assert_eq!(counted.output, Some(70));
+    assert_eq!(counted.input, 7);
+    assert_eq!(counted.output, 70);
     assert_eq!(
-        counted.cache_read, None,
+        counted.cache_read, 0,
         "the 700 lives only inside iterations[], which is never read"
     );
     assert_eq!(counted.requests, 1);
@@ -257,8 +273,8 @@ fn synthetic_messages_and_iteration_copies_are_not_counted() {
     // The line whose source named no model keeps its tokens under the one id this
     // reader writes itself, rather than losing them to a missing field.
     let unnamed = machine.bucket("2026-09", "2026-09-03T08", UNKNOWN_MODEL);
-    assert_eq!(unnamed.input, Some(321));
-    assert_eq!(unnamed.output, Some(654));
+    assert_eq!(unnamed.input, 321);
+    assert_eq!(unnamed.output, 654);
 
     // The nine-hundred-thousands of the synthetic line reached nothing.
     assert_eq!(summary.credited_total, 1052);
@@ -334,8 +350,27 @@ fn nothing_but_the_allow_listed_values_leaves_the_reader() {
         other => panic!("expected a usage record, got {other:?}"),
     }
 
+    // The three public types whose `Debug` a diagnostic would reach for. `message.id` and
+    // `requestId` are a dedupe key, they are never written to disk, and they must not
+    // arrive in a log line either — so the `Debug` of each is written by hand.
     let machine = Machine::new("usage-sentinel");
-    machine.put("e-project/session-e.jsonl", &text);
+    let path = machine.put("e-project/session-e.jsonl", &text);
+    let scanned = scan::scan_file(&path, None).unwrap();
+    for printed in [
+        format!("{scanned:?}"),
+        format!("{:?}", scanned.records),
+        format!("{:?}", scan::parse_line(text.trim_end())),
+    ] {
+        assert!(
+            !printed.contains("msg_sentinel"),
+            "a message id reached a Debug: {printed}"
+        );
+        assert!(
+            !printed.contains(CONTENT) && !printed.contains(FIELD),
+            "{printed}"
+        );
+    }
+
     let summary = machine.scan();
 
     let printed = format!("{summary:?}");
@@ -414,14 +449,12 @@ fn a_commit_that_was_never_filed_is_filed_once_when_the_next_scan_finds_it() {
     let september = machine.month("2026-09");
     let totals = &september.providers[PROVIDER];
     let mut cursors = store::read_cursors(&machine.state(), PROVIDER).unwrap();
-    let mut months = super::Months::new();
-    months.insert("2026-09".to_owned(), totals.buckets.clone());
-    cursors.pending = Some(store::Pending {
-        provider: PROVIDER.to_owned(),
+    cursors.pending = vec![store::Pending {
+        month: "2026-09".to_owned(),
         generation: totals.applied_through,
         scanned_at: september.scanned_at.clone().unwrap(),
-        months,
-    });
+        hours: totals.buckets.clone(),
+    }];
     store::write_cursors(&machine.state(), &cursors).unwrap();
 
     machine.scan();
@@ -495,7 +528,7 @@ fn a_query_answers_in_hours_and_leaves_the_calendar_to_the_panel() {
         vec!["2026-09-01T00", "2026-09-01T01"],
         "half open: the hour at the end is not in the range"
     );
-    assert_eq!(claude["2026-09-01T00"]["claude-opus-5"].output, Some(700));
+    assert_eq!(claude["2026-09-01T00"]["claude-opus-5"].output, 700);
     assert_eq!(
         view.since.as_deref(),
         Some("2026-08-31T23:00:00Z"),
@@ -586,6 +619,151 @@ fn a_message_whose_blocks_straddle_the_cursor_is_still_one_message() {
         machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5"),
         bucket(6, 649_213, 50, 500, 2),
         "the same totals as one pass over the whole file"
+    );
+}
+
+#[test]
+fn a_truncated_transcript_is_read_again_and_counted_once() {
+    let machine = Machine::new("usage-truncated");
+    let text = fixture("known-totals.jsonl");
+    let lines: Vec<&str> = text.lines().collect();
+    let head: String = lines[..3]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+
+    let path = machine.put("n-project/session-n.jsonl", &text);
+    let first = machine.scan();
+    assert_eq!(first.credited, 6);
+    let before = machine.month_documents();
+
+    // Claude Code prunes a transcript in place. The offset is now past the end, so the
+    // next pass reads the file from the top — and every record it finds there is one the
+    // months already hold.
+    std::fs::write(&path, &head).unwrap();
+    let second = machine.scan();
+    assert_eq!(second.files_restarted, 1, "the pass has to notice");
+    assert_eq!(
+        second.credited, 0,
+        "and must credit nothing it has credited before"
+    );
+    assert_eq!(second.credited_total, 0);
+
+    assert_eq!(
+        machine.month_documents(),
+        before,
+        "a truncation must leave the totals byte for byte as they were"
+    );
+
+    // And the records the truncation removed are still there, counted once each.
+    assert_eq!(
+        machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
+        bucket(60, 600, 6000, 60_000, 1)
+    );
+}
+
+#[test]
+fn a_month_that_could_not_be_written_keeps_its_totals_until_it_can() {
+    let machine = Machine::new("usage-journal");
+    let text = fixture("known-totals.jsonl");
+    let lines: Vec<&str> = text.lines().collect();
+    let path = machine.put(
+        "o-project/session-o.jsonl",
+        &lines[..6]
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    );
+    machine.scan();
+    let september =
+        std::fs::read_to_string(store::month_path(&machine.state(), "2026-09")).unwrap();
+
+    // September stops parsing, and a record for September arrives.
+    let broken = "{ this was a month once";
+    std::fs::write(store::month_path(&machine.state(), "2026-09"), broken).unwrap();
+    std::fs::write(&path, &text).unwrap();
+
+    let damaged = machine.scan();
+    assert_eq!(damaged.credited, 1, "the last line was read");
+    assert_eq!(damaged.damaged, vec!["2026-09"], "and could not be filed");
+    assert_eq!(
+        std::fs::read_to_string(store::month_path(&machine.state(), "2026-09")).unwrap(),
+        broken,
+        "never replaced by an empty one and never repaired"
+    );
+    // The bytes it came from are behind a cursor that has moved, so the totals have to be
+    // somewhere: they are in the journal.
+    let cursors = store::read_cursors(&machine.state(), PROVIDER).unwrap();
+    assert_eq!(cursors.pending.len(), 1);
+    assert_eq!(cursors.pending[0].month, "2026-09");
+
+    // The month is repaired — here by putting back what was there, which is the best case
+    // and the one that could double count.
+    std::fs::write(store::month_path(&machine.state(), "2026-09"), &september).unwrap();
+
+    let repaired = machine.scan();
+    assert!(repaired.damaged.is_empty());
+    assert!(
+        store::read_cursors(&machine.state(), PROVIDER)
+            .unwrap()
+            .pending
+            .is_empty(),
+        "the journal is emptied only by filing"
+    );
+    // The record that waited is there, and the records that were already filed did not
+    // arrive a second time.
+    assert_eq!(
+        machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
+        bucket(60, 600, 6000, 60_000, 1),
+        "the record the journal held"
+    );
+    assert_eq!(
+        machine.bucket("2026-09", "2026-09-01T00", "claude-opus-5"),
+        bucket(70, 700, 7000, 70_000, 2),
+        "and the ones that were filed before the damage, counted once"
+    );
+
+    let again = machine.scan();
+    assert_eq!(again.credited, 0);
+    assert_eq!(
+        machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
+        bucket(60, 600, 6000, 60_000, 1)
+    );
+}
+
+#[test]
+fn a_truncated_rollout_is_read_again_and_counted_once() {
+    let machine = Machine::new("usage-codex-truncated");
+    let text = fixture("rollout-known-totals.jsonl");
+    let lines: Vec<&str> = text.lines().collect();
+    let path = machine.put_rollout(&rollout("12", "2026-09-12T09-59-58-session-a"), &text);
+
+    let first = machine.scan_codex();
+    assert_eq!(first.credited, 4);
+    let before = machine.month_documents();
+
+    // A rollout event has no id, so the cursor is the whole dedupe — until the cursor has
+    // to go back to zero, which is what the carried fingerprints are for.
+    std::fs::write(
+        &path,
+        lines[..4]
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let second = machine.scan_codex();
+    assert_eq!(second.files_restarted, 1);
+    assert_eq!(second.credited, 0, "every event was counted before");
+    assert_eq!(
+        machine.month_documents(),
+        before,
+        "and the totals are byte for byte what they were"
+    );
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T11", "gpt-6-astra"),
+        bucket(1000, 300, 0, 3000, 1),
+        "including the events the truncation removed"
     );
 }
 
@@ -682,10 +860,7 @@ fn the_cumulative_counter_resets_mid_session_and_the_per_turn_sum_does_not() {
     // one would report 1430 for a session that spent 4730.
     let counted = machine.codex_bucket("2026-09", "2026-09-12T14", "gpt-5.6-sol");
     assert_eq!(counted, bucket(2900, 430, 0, 1400, 4));
-    let total = counted.input.unwrap()
-        + counted.output.unwrap()
-        + counted.cache_create.unwrap()
-        + counted.cache_read.unwrap();
+    let total = counted.input + counted.output + counted.cache_create + counted.cache_read;
     assert_eq!(total, 4730, "the sum of every turn");
     assert_ne!(total, 1430, "not the cumulative counter's last word");
 }
@@ -934,6 +1109,76 @@ fn nothing_but_the_allow_listed_values_leaves_the_rollout_reader() {
 // ---------------------------------------------------------------------------
 // Cost
 // ---------------------------------------------------------------------------
+
+/// The numbers this module's documentation quotes, measured again.
+///
+/// Ignored by default: it reads the transcripts this machine actually has, which is a
+/// corpus rather than a fixture, and a machine without `~/.claude` has nothing to measure —
+/// that is CI, and it is a pass rather than a failure. The store it writes is a throwaway
+/// directory, so the maintainer's own history is neither read nor added to.
+///
+/// `cargo test -p nazar-core --release -- --ignored usage_scan_this_machine --nocapture`
+#[test]
+#[ignore = "reads the machine's own transcripts"]
+fn usage_scan_this_machine_and_print_what_the_docs_quote() {
+    let Some(home) = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+    else {
+        println!("no home directory in the environment; nothing to measure");
+        return;
+    };
+    let projects = projects_dir(&home);
+    if !projects.is_dir() {
+        println!("no transcripts on this machine; nothing to measure");
+        return;
+    }
+
+    let dir = TempDir::new("usage-measure");
+    let started = Instant::now();
+    let summary = super::scan_claude_in(&projects, &dir.path).unwrap();
+    let took = started.elapsed();
+
+    let inflation = if summary.credited_total == 0 {
+        0.0
+    } else {
+        summary.naive_total as f64 / summary.credited_total as f64
+    };
+    let cursors = std::fs::metadata(store::cursors_path(&dir.path, PROVIDER))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    println!(
+        "files {} · lines {} · unique {} · duplicates {} · api errors {} · malformed {} \
+         · credited {} · naive {} · inflation {inflation:.3}x · {:?} · cursors {:.1} KB",
+        summary.files_seen,
+        summary.lines,
+        summary.credited,
+        summary.duplicates,
+        summary.skipped_api_errors,
+        summary.malformed,
+        summary.credited_total,
+        summary.naive_total,
+        took,
+        cursors as f64 / 1024.0
+    );
+
+    // A second pass reads only what arrived between the two — which on this machine is
+    // whatever the session running the test has written since, and is usually nothing.
+    let before = std::fs::read_to_string(store::cursors_path(&dir.path, PROVIDER)).unwrap();
+    let again = super::scan_claude_in(&projects, &dir.path).unwrap();
+    println!(
+        "second pass: {} bytes, {} new messages, {} duplicates",
+        again.bytes_read, again.credited, again.duplicates
+    );
+    if again.bytes_read == 0 {
+        assert_eq!(again.credited, 0, "no new bytes, so nothing new to credit");
+        assert_eq!(
+            std::fs::read_to_string(store::cursors_path(&dir.path, PROVIDER)).unwrap(),
+            before,
+            "and the cursor document is byte for byte what it was"
+        );
+    }
+}
 
 /// A full pass over a corpus the size of a real one.
 ///

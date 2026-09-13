@@ -1183,3 +1183,67 @@ its first two items belong in the same commit as the readers they describe, beca
   tested without running the tray, so the layout at 360 px, the scroll ceiling and the tab row
   in six languages are argued rather than seen. The numbers, the re-bucketing and the words are
   tested; the pixels are owed a look.
+- 2026-09-13 — **T-WP13b landed: the nine findings of an independent review of the usage
+  module, fixed.** A read-only audit of `crates/nazar-core/src/usage/` at `ba015f2` found one
+  critical, three high, one medium and four low. Three of them were the same bug wearing
+  different clothes — *what happens when a log is read a second time* — and the fix is one
+  idea rather than three.
+
+  **The cursor carries everything it has credited, not the last sixteen keys.** A transcript
+  that is truncated, rotated or rewritten is read from byte zero again, and the first version
+  recognised sixteen of the records it found there; the rest were credited a second time,
+  into months that already held them, permanently and with nothing able to detect it
+  afterwards. So `cursors-claude.json` now holds every `(message.id, requestId)` key a
+  transcript has produced and the **largest** reading of each — the largest, never the latest,
+  which is the fourth finding: three passes seeing `cache_read` 100, 90 and 100 used to credit
+  110. A restart seeds the deduper with that map rather than clearing it, so re-reading the
+  same bytes adds nothing. Codex has no event id, so the same guarantee is built out of the
+  only evidence a rollout offers: the fingerprint of every credited event — its timestamp to
+  the millisecond and its four raw counters — matched with multiplicity, so a log that
+  genuinely holds two identical events keeps both. The cost is the document: **382 KB for
+  9 457 messages across 136 transcripts here**, against 176 KB before, and the trade is
+  written into `usage-contract.md` rather than discovered.
+
+  **The identity says it is the same file; a fingerprint says the offset is still the same
+  place in it.** A transcript truncated and rewritten in place keeps its birth time, its inode
+  and its first 512 bytes, and if its new length reaches the old offset then every record
+  written before that offset is never read. The cursor now carries a hash of the 64 bytes
+  immediately before it, checked on resume, and a mismatch takes the restart path above. It
+  lives in the byte reader both providers share.
+
+  **A month that cannot be written keeps its totals.** `pending` was one block per pass and
+  was cleared whether or not it was filed, so a damaged `2026-09.json` swallowed the records
+  that pass had just read — their bytes already behind a cursor that had moved, so repairing
+  the month afterwards could not bring them back. It is now a journal of one entry per month,
+  and an entry survives until its month accepts it. Two limits are written down: entries for
+  the same month merge and carry the newest generation, so the journal stays bounded, and a
+  user who "repairs" a month by restoring an older copy of it can still double count.
+
+  **And five smaller ones.** `isApiErrorMessage` is deserialised and such lines are skipped
+  and counted — all 11 on this machine were also `<synthetic>`, so no total moved, and the
+  flag is read because the flag is what promises the line is an error. A token counter is a
+  non-negative integer or the line is malformed: `1.9` is no longer truncated to `1` and `"7"`
+  is no longer parsed to `7`. `Record`, `Outcome` and `FileScan` have hand-written `Debug`
+  that prints counters and classification and never a `message.id` or a `requestId`, and the
+  sentinel leak test now formats all three. `scan_file` errors carry `Error::Log`, a redacted
+  label — the same hash the cursor files the log under — instead of a path made of the
+  directories somebody works in. And a stored bucket now always writes all five counters,
+  `0` where nothing reported one, which is what the contract said and what the writer was not
+  doing; the absent-versus-zero distinction is real one record at a time and is kept there.
+
+  Two things that are not fixes. `cursors.json` becomes `cursors-claude.json`, so that two
+  documents doing the same job have the same kind of name (`rebuild()` still removes the old
+  spelling, so a store written by an earlier build cannot be left behind to double count).
+  And `scan_claude_in(projects_dir, state_dir)` joins the core crate, which is the gap T-WP15
+  recorded rather than patched around: `CLAUDE_CONFIG_DIR` names a directory that need not be
+  called `.claude`, and a scan derived from a home directory could not express it. Calling it
+  is the tray crate's, which this package deliberately did not touch.
+
+  **Measured against a frozen copy of this machine's transcripts, old code and new**: 136
+  files, 17 132 usage lines, **9 457 unique messages, 7 664 duplicates, inflation 1.701×** —
+  byte for byte the same totals, credited and naive, on both sides. The only differences are
+  the 11 API-error lines, now named rather than counted under `<synthetic>`, and the cursor
+  document's size. 13 new tests, 421 in the crate's own suite where there were 408, and 589
+  passing across the workspace; `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -D warnings`, the hygiene gate and
+  `--no-default-features` all clean.

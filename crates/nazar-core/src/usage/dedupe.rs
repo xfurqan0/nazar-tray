@@ -20,55 +20,63 @@
 //!   way (their issue #888): a streaming view can write an early, partial snapshot of a
 //!   message and a complete one later, and keeping the first loses the difference.
 //!
-//! # How much memory this holds
+//! # What is carried between passes, and why it is all of it
 //!
-//! The working set is **one file's new records**, not the whole scan and not the whole
-//! corpus. Within a pass the deduper holds one entry per distinct key in the file being
-//! read — 7 979 for the 230 MB of transcripts on the maintainer's machine, spread across
-//! 118 files, so a few thousand entries at the peak — and it is dropped when the file is.
-//! What survives between passes is [`Deduper::recent`]: the last [`RECENT_KEYS`] keys of
-//! that file and the usage already credited for them, which is what keeps a message whose
-//! blocks landed either side of a cursor from being counted twice. Copies of a key are
-//! written as consecutive lines, so a window of sixteen covers a message with far more
-//! blocks than any real one while keeping the cursor document small.
+//! The working set inside a pass is one file's new records. What survives *between* passes
+//! is [`Deduper::credited`]: **every key this file has ever credited, and the most that was
+//! ever credited for it.** The first version kept the last sixteen, on the argument that
+//! copies of a message are consecutive lines and a window of sixteen covers any real one.
+//! That argument is right about the case it was written for — a message whose blocks
+//! straddle the cursor — and wrong about the one the review found:
+//!
+//! > A transcript is truncated, or rewritten in place, or replaced. The reader notices, goes
+//! > back to byte zero, and reads records it has already counted. With sixteen keys in hand
+//! > it recognises sixteen of them; everything else is credited a second time, into months
+//! > that already hold it, permanently and with nothing able to detect it afterwards.
+//!
+//! So the whole map is carried, and **a restart seeds the deduper with it** rather than
+//! clearing it. A re-read record then credits `max(new) − already credited` per counter and
+//! never less than zero: reading the same bytes again adds nothing, which is what the
+//! contract's idempotence rule says and what the sixteen-key window could only promise for
+//! the last sixteen messages of a file.
+//!
+//! The cost is the cursor document. On the maintainer's machine that is ~8 500 distinct
+//! messages across 129 transcripts — a few hundred kilobytes of `cursors-claude.json`, at
+//! five numbers per key written as a bare array rather than an object.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 
 use super::scan::{Record, Usage, fnv1a};
 
-/// Keys carried from one pass to the next, per file.
-///
-/// Sixteen because copies of a message are consecutive lines and no observed message has
-/// more than a handful of content blocks; small because this is written to disk on every
-/// scan, once per transcript file.
-pub const RECENT_KEYS: usize = 16;
-
-/// A key that has already been credited, and what was credited for it.
+/// A key that has already been credited, and the most that was ever credited for it.
 ///
 /// The key is a 64-bit hash rather than the identifiers themselves, for two reasons: the
-/// cursor document stays small, and it cannot be read as a list of the message identifiers
-/// a machine has produced. Two distinct keys colliding inside a sixteen-entry window would
-/// under-count one message by the difference between them; at 2⁻⁶⁴ per pair that is not a
-/// risk worth a bigger file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// cursor document stays small, and it cannot be read as a list of the message identifiers a
+/// machine has produced. Two distinct keys colliding would under-count one message by the
+/// difference between them; at 2⁻⁶⁴ per pair that is not a risk worth a bigger file.
+///
+/// **Serialised as a five-element array**, `[key, input, output, cache_create, cache_read]`,
+/// because there is one of these per message a transcript holds and the field names would be
+/// most of the bytes. A counter the source never reported is written as `0`: the only thing a
+/// credit is ever used for is [`Usage::since`], which subtracts it, and subtracting nothing
+/// and subtracting zero are the same subtraction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Credit {
     /// Hash of `(message.id, requestId)`.
     pub key: u64,
     /// `input_tokens` already credited for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<u64>,
+    pub input: u64,
     /// `output_tokens` already credited for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<u64>,
+    pub output: u64,
     /// `cache_creation_input_tokens` already credited for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_create: Option<u64>,
+    pub cache_create: u64,
     /// `cache_read_input_tokens` already credited for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read: Option<u64>,
+    pub cache_read: u64,
 }
 
 impl Credit {
@@ -76,21 +84,69 @@ impl Credit {
     #[must_use]
     pub fn usage(&self) -> Usage {
         Usage {
-            input: self.input,
-            output: self.output,
-            cache_create: self.cache_create,
-            cache_read: self.cache_read,
+            input: Some(self.input),
+            output: Some(self.output),
+            cache_create: Some(self.cache_create),
+            cache_read: Some(self.cache_read),
         }
     }
 
-    fn new(key: u64, usage: Usage) -> Self {
+    fn new(key: u64, usage: &Usage) -> Self {
         Credit {
             key,
-            input: usage.input,
-            output: usage.output,
-            cache_create: usage.cache_create,
-            cache_read: usage.cache_read,
+            input: usage.input.unwrap_or(0),
+            output: usage.output.unwrap_or(0),
+            cache_create: usage.cache_create.unwrap_or(0),
+            cache_read: usage.cache_read.unwrap_or(0),
         }
+    }
+}
+
+impl Serialize for Credit {
+    fn serialize<S: Serializer>(&self, out: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = out.serialize_seq(Some(5))?;
+        for value in [
+            self.key,
+            self.input,
+            self.output,
+            self.cache_create,
+            self.cache_read,
+        ] {
+            seq.serialize_element(&value)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Credit {
+    fn deserialize<D: Deserializer<'de>>(source: D) -> std::result::Result<Self, D::Error> {
+        struct Row;
+        impl<'de> Visitor<'de> for Row {
+            type Value = Credit;
+            fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+                out.write_str("a credit row of five numbers")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Credit, A::Error> {
+                let mut values = [0u64; 5];
+                for (at, slot) in values.iter_mut().enumerate() {
+                    *slot = seq.next_element()?.ok_or_else(|| {
+                        <A::Error as de::Error>::invalid_length(at, &"five numbers")
+                    })?;
+                }
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(Credit {
+                    key: values[0],
+                    input: values[1],
+                    output: values[2],
+                    cache_create: values[3],
+                    cache_read: values[4],
+                })
+            }
+        }
+        source.deserialize_seq(Row)
     }
 }
 
@@ -128,10 +184,15 @@ pub struct Credited {
 }
 
 /// One file's dedupe state for one pass.
+///
+/// Ordered rather than hashed, for a reason that is about the disk and not about speed: what
+/// comes out of [`Deduper::credited`] is written to the cursor document on every scan, and a
+/// document whose rows moved about would be rewritten on a pass that changed nothing. The
+/// contract's "a second scan leaves the directory byte for byte as it was" is the claim, and
+/// a `HashMap`'s iteration order is not the same twice.
 #[derive(Debug, Default)]
 pub struct Deduper {
-    credited: HashMap<u64, Usage>,
-    order: Vec<u64>,
+    credited: BTreeMap<u64, Usage>,
     /// Lines that were a copy of a key already seen.
     pub duplicates: u64,
     /// Records keyed on `message.id` alone because they carried no `requestId`.
@@ -145,13 +206,17 @@ pub struct Deduper {
 }
 
 impl Deduper {
-    /// A deduper that already knows what the previous pass credited for this file.
+    /// A deduper that already knows everything this file has been credited for.
+    ///
+    /// Handed the cursor's whole map, on every pass and **including a pass that restarted at
+    /// byte zero** — that is the case it exists for. A record read a second time is then a
+    /// key that is already credited, and what it adds is the difference, which for the same
+    /// bytes is nothing.
     #[must_use]
-    pub fn with_recent(recent: &[Credit]) -> Self {
+    pub fn with_credited(credited: &[Credit]) -> Self {
         let mut deduper = Deduper::default();
-        for credit in recent {
+        for credit in credited {
             deduper.credited.insert(credit.key, credit.usage());
-            deduper.order.push(credit.key);
         }
         deduper
     }
@@ -199,8 +264,14 @@ impl Deduper {
                 }
                 None => (record.usage, true),
             };
-            self.credited.insert(key, record.usage);
-            self.order.push(key);
+            // The credit is the **largest** reading of this message, never the latest one.
+            // A smaller copy arriving after a larger one credits nothing, and must not lower
+            // the mark the next copy is measured against; see [`Usage::largest`].
+            let credit = match self.credited.get(&key) {
+                Some(already) => already.largest(&record.usage),
+                None => record.usage,
+            };
+            self.credited.insert(key, credit);
             if !fresh && (delta.is_empty() || delta.total() == 0) {
                 continue;
             }
@@ -213,29 +284,17 @@ impl Deduper {
         out
     }
 
-    /// The last [`RECENT_KEYS`] keys this file credited, newest last.
+    /// Every key this file has credited and the most that was credited for it, by key.
     ///
-    /// Stored with the cursor. Everything older is forgotten on purpose: the bytes those
-    /// keys were read from are behind the cursor and will not be read again.
+    /// Stored with the cursor, and handed back to [`Deduper::with_credited`] on the next
+    /// pass. Nothing is forgotten: a cursor can go backwards — a truncation, a rewrite, a
+    /// replacement — and the bytes behind it can be read again, at which point a key this
+    /// map no longer held would be counted a second time.
     #[must_use]
-    pub fn recent(&self) -> Vec<Credit> {
-        let mut seen = Vec::new();
-        for key in self.order.iter().rev() {
-            if seen.len() >= RECENT_KEYS {
-                break;
-            }
-            if seen.contains(key) {
-                continue;
-            }
-            seen.push(*key);
-        }
-        seen.reverse();
-        seen.into_iter()
-            .filter_map(|key| {
-                self.credited
-                    .get(&key)
-                    .map(|usage| Credit::new(key, *usage))
-            })
+    pub fn credited(&self) -> Vec<Credit> {
+        self.credited
+            .iter()
+            .map(|(key, usage)| Credit::new(*key, usage))
             .collect()
     }
 }
@@ -324,7 +383,7 @@ mod tests {
         let out = first.reduce(vec![record("msg_split", Some("req_split"), 100)]);
         assert_eq!(out.len(), 1);
 
-        let mut second = Deduper::with_recent(&first.recent());
+        let mut second = Deduper::with_credited(&first.credited());
         let out = second.reduce(vec![record("msg_split", Some("req_split"), 100)]);
         assert!(out.is_empty(), "a second copy must add nothing");
         assert_eq!(second.duplicates, 1);
@@ -335,7 +394,7 @@ mod tests {
         let mut first = Deduper::default();
         first.reduce(vec![record("msg_grow", Some("req_grow"), 100)]);
 
-        let mut second = Deduper::with_recent(&first.recent());
+        let mut second = Deduper::with_credited(&first.credited());
         let out = second.reduce(vec![record("msg_grow", Some("req_grow"), 250)]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].delta.output, Some(150));
@@ -343,17 +402,85 @@ mod tests {
     }
 
     #[test]
-    fn the_carried_window_is_bounded() {
+    fn a_smaller_copy_never_lowers_what_was_credited() {
+        // The sequence the review found: 100, then 90, then 100. The second credits
+        // nothing; the third must credit nothing either, because 100 is what the
+        // largest-copy rule says this message cost.
+        let mut credited = Vec::new();
+        let mut totals = 0u64;
+        for output in [100u64, 90, 100] {
+            let mut deduper = Deduper::with_credited(&credited);
+            for item in deduper.reduce(vec![record("msg_wobble", Some("req_wobble"), output)]) {
+                totals += item.delta.output.unwrap_or(0);
+            }
+            credited = deduper.credited();
+        }
+        assert_eq!(totals, 100, "100, 90, 100 is one message that cost 100");
+    }
+
+    #[test]
+    fn every_key_the_file_credited_is_carried_not_the_last_few() {
         let mut deduper = Deduper::default();
-        let records: Vec<Record> = (0..RECENT_KEYS * 3)
+        let records: Vec<Record> = (0..200)
             .map(|at| record(&format!("msg_{at}"), Some("req"), 1))
             .collect();
         deduper.reduce(records);
 
-        let recent = deduper.recent();
-        assert_eq!(recent.len(), RECENT_KEYS);
-        // The newest keys are the ones kept.
-        let newest = key_of(&format!("msg_{}", RECENT_KEYS * 3 - 1), Some("req"));
-        assert_eq!(recent.last().unwrap().key, newest);
+        let credited = deduper.credited();
+        assert_eq!(credited.len(), 200, "a window would have kept sixteen");
+        // Including the first, which is the one a restart re-reads first of all.
+        let oldest = key_of("msg_0", Some("req"));
+        assert!(credited.iter().any(|credit| credit.key == oldest));
+
+        // And the rows are in key order, so an unchanged pass writes an unchanged document.
+        let keys: Vec<u64> = credited.iter().map(|credit| credit.key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn reading_a_whole_file_again_credits_nothing_again() {
+        let records = || {
+            vec![
+                record("msg_a", Some("req_a"), 10),
+                record("msg_b", Some("req_b"), 20),
+                record("msg_c", None, 30),
+            ]
+        };
+        let mut first = Deduper::default();
+        let one: u64 = first
+            .reduce(records())
+            .iter()
+            .map(|item| item.delta.total())
+            .sum();
+        assert_eq!(one, 63);
+
+        // The restart path: the same records, the carried map as the seed.
+        let mut second = Deduper::with_credited(&first.credited());
+        let two: u64 = second
+            .reduce(records())
+            .iter()
+            .map(|item| item.delta.total())
+            .sum();
+        assert_eq!(two, 0, "the same bytes must add nothing the second time");
+    }
+
+    #[test]
+    fn a_credit_row_is_five_numbers_and_survives_a_round_trip() {
+        let credit = Credit {
+            key: 0x0123_4567_89ab_cdef,
+            input: 1,
+            output: 2,
+            cache_create: 3,
+            cache_read: 4,
+        };
+        let text = serde_json::to_string(&credit).unwrap();
+        assert_eq!(text, "[81985529216486895,1,2,3,4]");
+        assert_eq!(
+            serde_json::from_str::<Credit>(&text).unwrap(),
+            credit,
+            "the cursor document has one of these per message; it is an array on purpose"
+        );
     }
 }

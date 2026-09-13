@@ -40,11 +40,19 @@
 //!
 //! **3. There is no event id.** Claude Code writes `message.id` and `requestId`, and the
 //! transcript reader deduplicates on them. A Codex event carries neither, so *which bytes
-//! have been read* is the whole answer: the cursor's `(file identity, byte offset)` is what
-//! keeps an event from being counted twice, and it is exact as long as a log is only ever
-//! appended to. The one shape that defeats it is a **fork or resume that copies a run of
-//! events into a new log**, which arrives as a new path with a new cursor; see
-//! [`copied_prefix`] for the rule that catches it and `rollout-fork.jsonl` for the test.
+//! have been read* is the whole answer: the cursor's `(file identity, byte offset,
+//! fingerprint)` is what keeps an event from being counted twice, and it is exact as long as
+//! a log is only ever appended to. Two shapes defeat it, and each has a rule:
+//!
+//! * A **fork or resume that copies a run of events into a new log**, which arrives as a new
+//!   path with a cursor that has read nothing. See [`copied_prefix`], and
+//!   `rollout-fork.jsonl` for the test.
+//! * A log that is **truncated or rewritten**, after which the reader goes back to byte zero
+//!   and reads events it has already counted. So the cursor carries a fingerprint of every
+//!   event it has credited — `(timestamp to the millisecond, four raw counters)`, which is
+//!   the same evidence the fork rule stands on — and a restarted pass matches what it reads
+//!   against that set before crediting anything. The set is consumed as it matches, so a log
+//!   that genuinely holds two identical events keeps both.
 //!
 //! # What is not read
 //!
@@ -63,7 +71,8 @@ use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
 use super::scan::{
-    Count, UNKNOWN_MODEL, Usage, fnv1a, hour_key, identifier_field, read_new_lines, timestamp_field,
+    Count, Resume, UNKNOWN_MODEL, Usage, fnv1a, hour_key, identifier_field, read_new_lines,
+    timestamp_field,
 };
 use crate::error::Result;
 
@@ -82,13 +91,14 @@ const TURN_CONTEXT: &str = "turn_context";
 /// The payload type that carries the counters.
 const TOKEN_COUNT: &str = "token_count";
 
-/// How many of a log's opening events are fingerprinted in the cursor.
+/// How many of a log's opening events the fork rule compares.
 ///
-/// The fork rule needs the opening run of every log it has seen, and that run lives in a
-/// document rewritten on every scan, so it is bounded. Thirty-two events is far more than
-/// any observed fork copied and costs about half a kilobyte per log; a copy longer than
-/// this is detected for its first thirty-two events and counted twice for the rest, which
-/// is the honest limit of a bounded guard and is written down rather than discovered.
+/// The cursor now holds every event's fingerprint — it has to, for a log that was truncated
+/// or rewritten — so this is no longer a bound on what is stored. It is a bound on the
+/// *comparison*: the fork rule asks every log about every other log, and a leading run of
+/// thirty-two is far more than any observed fork copied. A copy longer than this is caught
+/// for its first thirty-two events and counted twice for the rest, which is the honest limit
+/// of a bounded guard and is written down rather than discovered.
 pub const PREFIX_EVENTS: usize = 32;
 
 /// How deep the walk goes below `sessions/`.
@@ -249,6 +259,9 @@ pub struct FileScan {
     pub identity: String,
     /// Absolute offset of the byte after the last complete line read.
     pub offset: u64,
+    /// Hash of the bytes immediately before [`FileScan::offset`]; see
+    /// [`super::scan::Resume`].
+    pub fingerprint: u64,
     /// `true` when the file was replaced or truncated and the pass started from the top.
     pub restarted: bool,
     /// Bytes read in this pass.
@@ -295,7 +308,7 @@ impl FileScan {
 /// work — the same reader the transcripts go through, and the same invariants.
 pub fn scan_file(
     path: &Path,
-    previous: Option<(&str, u64)>,
+    previous: Option<Resume<'_>>,
     model: Option<&str>,
 ) -> Result<FileScan> {
     /// One thing a line said, in the order the file said it.
@@ -342,6 +355,7 @@ pub fn scan_file(
 
     scan.identity = pass.identity;
     scan.offset = pass.offset;
+    scan.fingerprint = pass.fingerprint;
     scan.restarted = pass.restarted;
     scan.bytes = pass.bytes;
     scan.lines = pass.lines;
