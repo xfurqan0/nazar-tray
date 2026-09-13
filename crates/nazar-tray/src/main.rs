@@ -108,6 +108,14 @@ fn main() {
         suggest: options.offer,
         locale: options.locale.clone(),
         open_settings: options.view.as_deref() == Some("settings"),
+        // The tab is only meaningful with the view, so the two travel as one value: `None`
+        // means the panel opens where it always does.
+        open_usage: (options.view.as_deref() == Some("usage")).then(|| {
+            options
+                .usage_tab
+                .clone()
+                .unwrap_or_else(|| cli::USAGE_TAB_DEFAULT.to_owned())
+        }),
     };
     // A run that was told what to look like does not get to remember it: the screenshot
     // flags must leave the maintainer's settings exactly as they found them.
@@ -194,7 +202,14 @@ fn main() {
             // The usage scan's own state: whether this instance may write, and when it last
             // did. Managed here rather than inside the refresh loop because the scan is
             // deliberately **not** on the refresh path — see `usage`.
-            app.manage(usage::UsageState::new(writes_usage));
+            //
+            // A demo run gets a state with no store behind it at all: it must not add invented
+            // numbers to a real history, and it must not photograph one either.
+            app.manage(if options.demo {
+                usage::UsageState::demo()
+            } else {
+                usage::UsageState::new(writes_usage)
+            });
             // A demo run remembers nothing: it must not write to `%APPDATA%\nazar`, and it
             // must not consume the keys of a real crossing nobody has been shown yet.
             app.manage(if options.demo {

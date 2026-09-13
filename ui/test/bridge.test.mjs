@@ -194,7 +194,34 @@ test("the usage scan is not on the refresh path, and only the lock holder runs i
   // One writer, many readers: the same advisory lock that already guards limits.json.
   const main = read("crates/nazar-tray/src/main.rs");
   assert.match(main, /let writes_usage = lock\.is_some\(\);/);
-  assert.match(main, /app\.manage\(usage::UsageState::new\(writes_usage\)\)/);
+  assert.match(main, /usage::UsageState::new\(writes_usage\)/);
+});
+
+test("a demo run answers from the fixture and has no usage store to open", () => {
+  // 0.2.0's privacy rule. `--demo` used to have no usage document of its own, so the usage
+  // view and the tray tooltip read the real store — and every picture of the usage view would
+  // have carried a month of the maintainer's own model use into a public repository.
+  const main = read("crates/nazar-tray/src/main.rs");
+  assert.match(
+    main,
+    /usage::UsageState::demo\(\)/,
+    "a --demo run must manage a usage state with no store behind it",
+  );
+
+  const rustUsage = read("crates/nazar-tray/src/usage.rs");
+  assert.match(
+    rustUsage,
+    /fn store_dir\(state: &UsageState\) -> Result<Option<PathBuf>, UsageError>/,
+    "one gate decides whether this process has a store at all",
+  );
+  // The Rust side asserts this at run time as well; this is the cross-language half, so that
+  // deleting the gate fails both suites rather than one.
+  const body = rustUsage.split("#[cfg(test)]")[0] ?? "";
+  assert.equal(
+    body.match(/paths::settings_dir\(\)/g)?.length,
+    1,
+    "the settings directory may be named in exactly one place in crates/nazar-tray/src/usage.rs",
+  );
 });
 
 test("the tray menu offers the four actions, and can be rebuilt in another language", () => {

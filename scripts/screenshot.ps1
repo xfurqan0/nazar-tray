@@ -15,6 +15,11 @@
 #   powershell -File scripts/screenshot.ps1                      # every documented shot
 #   powershell -File scripts/screenshot.ps1 -Scale 2 -Theme nazar -Mode dark -Out x.png
 #   powershell -File scripts/screenshot.ps1 -View settings -Scroll 6 -Out x.png
+#   powershell -File scripts/screenshot.ps1 -View usage -UsageTab all -Out x.png
+#
+# The usage view draws a synthetic history of its own since 0.2.0 — five weeks, four model
+# ids, both providers — so a picture of it carries nobody's real model use. See
+# crates/nazar-tray/src/demo.rs.
 #
 # Requires the debug or release binary to have been built already.
 
@@ -25,8 +30,14 @@ param(
     [ValidateSet('light', 'dark')] [string] $Mode = 'dark',
     [ValidateSet('on', 'off')] [string] $Hint = 'off',
     [ValidateSet('on', 'off')] [string] $Offer = 'off',
-    [ValidateSet('quota', 'settings')] [string] $View = 'quota',
+    [ValidateSet('quota', 'settings', 'usage')] [string] $View = 'quota',
+    # Which tab `-View usage` lands on. 'day' is the Week tab with its newest day opened,
+    # which is the one state of that view no tab name reaches.
+    [ValidateSet('week', 'weeks', 'all', 'models', 'day')] [string] $UsageTab = 'week',
     [int] $Scroll = 0,
+    # How long to let the panel settle before the shutter. The usage view asks Rust for its
+    # numbers after the window is already up, so it needs longer than the quota view does.
+    [int] $Settle = 0,
     [string] $Locale = 'en',
     [string] $Out = '',
     # Where the cursor is put before the panel opens: the panel appears just above it, the
@@ -36,6 +47,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# A tray that is already running is the one thing that stops this script dead, and the symptom
+# says nothing about the cause: `--scale` passes WebView2 a browser argument, two processes
+# cannot share one WebView2 user-data folder with different arguments, so the panel is created
+# and never shown and every scaled shot waits out its timeout. Quit the running tray from its
+# own menu first — which also releases the advisory lock, where killing it would not.
+if (Get-Process -Name nazar-tray -ErrorAction SilentlyContinue) {
+    throw 'a nazar-tray is already running: quit it from its tray menu first, or the scaled shots will never open a panel'
+}
+
 $repo = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $repo 'target\debug\nazar-tray.exe'
 if (-not (Test-Path $exe)) { $exe = Join-Path $repo 'target\release\nazar-tray.exe' }
@@ -110,11 +131,13 @@ public class NazarShot {
 }
 
 function Capture-Panel {
-    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Offer, [string] $View, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY, [int] $Scroll = 0)
+    param([double] $Scale, [string] $Theme, [string] $Mode, [string] $Hint, [string] $Offer, [string] $View, [string] $UsageTab, [string] $Locale, [string] $Out, [int] $CursorX, [int] $CursorY, [int] $Scroll = 0, [int] $Settle = 0)
 
     $arguments = @('--demo', '--theme', $Theme, '--mode', $Mode, '--hint', $Hint, '--offer', $Offer, '--locale', $Locale)
     if ($View -eq 'settings') { $arguments += @('--view', 'settings') }
+    if ($View -eq 'usage') { $arguments += @('--view', 'usage', '--usage-tab', $UsageTab) }
     if ($Scale -gt 0) { $arguments += @('--scale', $Scale.ToString([System.Globalization.CultureInfo]::InvariantCulture)) }
+    if ($Settle -le 0) { $Settle = if ($View -eq 'usage') { 2200 } else { 900 } }
 
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     if ($CursorX -lt 0) { $CursorX = $screen.Width - 160 }
@@ -126,12 +149,18 @@ function Capture-Panel {
         $window = [IntPtr]::Zero
         # The panel opens as soon as the webview has drawn; give it a moment to settle so
         # the countdown and the bars are painted rather than half-painted.
-        for ($try = 0; $try -lt 60 -and $window -eq [IntPtr]::Zero; $try++) {
+        #
+        # Forty seconds rather than fifteen. `--scale` passes WebView2 a browser argument, and
+        # a WebView2 environment it has not seen before is built from scratch — on a cold
+        # machine, or one whose antivirus is reading a binary that was linked a minute ago,
+        # that is slower than a run with no argument at all. Waiting longer costs a failed run
+        # nothing; waiting too little costs the whole set.
+        for ($try = 0; $try -lt 160 -and $window -eq [IntPtr]::Zero; $try++) {
             Start-Sleep -Milliseconds 250
             $window = [NazarShot]::FindVisibleWindow($process.Id)
         }
         if ($window -eq [IntPtr]::Zero) { throw "the panel never appeared ($Out)" }
-        Start-Sleep -Milliseconds 900
+        Start-Sleep -Milliseconds $Settle
 
         $rect = [NazarShot]::VisibleBounds($window)
         $width = $rect.Right - $rect.Left
@@ -171,7 +200,7 @@ function Capture-Panel {
 }
 
 if ($Out) {
-    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Offer $Offer -View $View -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY -Scroll $Scroll
+    Capture-Panel -Scale $Scale -Theme $Theme -Mode $Mode -Hint $Hint -Offer $Offer -View $View -UsageTab $UsageTab -Locale $Locale -Out $Out -CursorX $CursorX -CursorY $CursorY -Scroll $Scroll -Settle $Settle
     return
 }
 
@@ -189,7 +218,17 @@ $shots = @(
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Out = 'docs/screenshots/wp5-100-settings.png' },
     @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; Offer = 'on'; Out = 'docs/screenshots/wp5-100-offer.png' },
     # WP7: the status-line section, which sits below the fold of the settings page.
-    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Scroll = 6; Out = 'docs/screenshots/wp7-100-statusline.png' }
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Scroll = 6; Out = 'docs/screenshots/wp7-100-statusline.png' },
+    # 0.2.0: the usage view, one picture per tab, plus the day a click opens and the two
+    # switches that decide what the numbers mean. Named for what they show rather than for a
+    # work package, because the four tabs are one feature and `wp20`..`wp23` would spread it
+    # over four prefixes nobody outside this repository could read.
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'usage'; UsageTab = 'week'; Out = 'docs/screenshots/usage-100-week.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'usage'; UsageTab = 'weeks'; Out = 'docs/screenshots/usage-100-weeks.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'usage'; UsageTab = 'all'; Out = 'docs/screenshots/usage-100-all.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'usage'; UsageTab = 'models'; Out = 'docs/screenshots/usage-100-models.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'usage'; UsageTab = 'day'; Out = 'docs/screenshots/usage-100-day.png' },
+    @{ Scale = 1.0; Theme = 'nazar'; Mode = 'dark'; Hint = 'off'; View = 'settings'; Scroll = 8; Out = 'docs/screenshots/usage-100-settings.png' }
 )
 
 # WP6: the same panel in all six languages. The point of the set is the *width* — the panel
@@ -211,5 +250,6 @@ foreach ($shot in $shots) {
     $shotOffer = if ($shot.ContainsKey('Offer')) { $shot.Offer } else { 'off' }
     $shotLocale = if ($shot.ContainsKey('Locale')) { $shot.Locale } else { $Locale }
     $shotScroll = if ($shot.ContainsKey('Scroll')) { $shot.Scroll } else { 0 }
-    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -Locale $shotLocale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY -Scroll $shotScroll
+    $shotTab = if ($shot.ContainsKey('UsageTab')) { $shot.UsageTab } else { 'week' }
+    Capture-Panel -Scale $shot.Scale -Theme $shot.Theme -Mode $shot.Mode -Hint $shot.Hint -Offer $shotOffer -View $shotView -UsageTab $shotTab -Locale $shotLocale -Out $shot.Out -CursorX $CursorX -CursorY $CursorY -Scroll $shotScroll
 }

@@ -123,6 +123,14 @@ interface UiState {
   readonly demo: boolean;
   /** `--view settings`: open on the settings page rather than on the numbers. */
   readonly openSettings: boolean;
+  /**
+   * `--view usage --usage-tab <name>`: open on the usage view, on that tab.
+   *
+   * `week`, `weeks`, `all` and `models` are the tabs; `day` is the Week tab with its newest
+   * day already opened, which is the one state of this view a tab name cannot reach. `null`
+   * on every run that did not ask, which is every run but a screenshot.
+   */
+  readonly openUsage: string | null;
 }
 
 /**
@@ -216,6 +224,7 @@ let ui: UiState = {
   hintDismissed: true,
   demo: false,
   openSettings: false,
+  openUsage: null,
 };
 
 /**
@@ -1475,6 +1484,36 @@ async function load(): Promise<void> {
   // waited for as an event, because an event emitted while this file was still loading
   // would have had nobody listening for it.
   if (ui.openSettings) showView("settings");
+  else if (ui.openUsage) await openUsageAt(ui.openUsage);
+}
+
+/**
+ * Open the usage view on one tab, for `--view usage`.
+ *
+ * The tab is set before the answer is asked for, so the window asked of the store is the one
+ * that tab wants and the picture is never of a tab drawn from another tab's range. `day` is
+ * the Week tab with its **last** cell opened — the day the history ends on, which is today —
+ * because a detail is a state of the view no tab name reaches and a screenshot of it is the
+ * only way the *Back* button appears in the documentation.
+ */
+async function openUsageAt(tab: string): Promise<void> {
+  showView("usage");
+  const name = tab === "day" ? "week" : tab;
+  if (name === "week" || name === "weeks" || name === "all" || name === "models") {
+    usage = withTab(closeDetail(usage), name satisfies UsageTab);
+  }
+  await askUsage();
+  if (tab !== "day") return;
+
+  // The cells are drawn by the paint above, so the day to open is read off the page rather
+  // than recomputed here: one definition of "the last day with anything in it", and it is
+  // the one the reader would have clicked.
+  const cells = [...document.querySelectorAll<HTMLElement>("[data-usage-strip] [data-usage-day]")];
+  const cell = cells[cells.length - 1];
+  const key = cell?.dataset["usageDay"];
+  const at = Number(cell?.dataset["usageAt"] ?? Number.NaN);
+  if (key === undefined || !Number.isFinite(at)) return;
+  openScope({ kind: "day", key, at });
 }
 
 // ------------------------------------------------------------------ actions

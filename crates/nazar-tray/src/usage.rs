@@ -344,6 +344,12 @@ pub struct UsageState {
     /// same moment; this one keeps its answer for the life of the process, which is the
     /// conservative direction — the loser of a race never starts writing.
     writer: bool,
+    /// Whether this process answers from [`crate::demo::usage`] instead of from a store.
+    ///
+    /// `--demo`. It is a **stronger** statement than `!writer`: a second tray instance does
+    /// not write and still reads the real store, while a demo run has no store at all. See
+    /// [`store_dir`], which is the single place that difference is acted on.
+    demo: bool,
     /// The throttle, and the thing that makes two panel opens at once mean one scan.
     ///
     /// Held **across** the scan rather than only around the check. That serialises scans
@@ -359,11 +365,27 @@ pub struct UsageState {
 }
 
 impl UsageState {
-    /// The state for a process that may or may not write.
+    /// The state for a real process, which may or may not write.
     #[must_use]
     pub fn new(writer: bool) -> Self {
         UsageState {
             writer,
+            demo: false,
+            throttle: Mutex::new(Throttle::default()),
+            phase: Mutex::new(UTC_MONDAY_PHASE),
+        }
+    }
+
+    /// The state for a `--demo` run: no store to read, and never a writer.
+    ///
+    /// Both at once, and neither is derivable from the other. Not a writer because a
+    /// screenshot session must not add invented numbers to a real history, and no store
+    /// because it must not photograph a real one either.
+    #[must_use]
+    pub fn demo() -> Self {
+        UsageState {
+            writer: false,
+            demo: true,
             throttle: Mutex::new(Throttle::default()),
             phase: Mutex::new(UTC_MONDAY_PHASE),
         }
@@ -373,6 +395,12 @@ impl UsageState {
     #[must_use]
     pub fn writes(&self) -> bool {
         self.writer
+    }
+
+    /// Whether the answers come from [`crate::demo::usage`] rather than from a store.
+    #[must_use]
+    pub fn is_demo(&self) -> bool {
+        self.demo
     }
 
     /// Where the tooltip's week begins, as seconds into a week from the epoch.
@@ -391,6 +419,25 @@ impl UsageState {
     }
 }
 
+/// Where this process's usage store lives, or `None` for a run that has none.
+///
+/// **Every path in this module that opens a file comes from here**, which is what makes the
+/// `--demo` guarantee structural rather than a promise: a demo run gets `None`, so there is no
+/// directory for it to scan, query or write, and the answer has to come from
+/// [`crate::demo::usage`] instead. A test asserts both halves of that — the `None`, and that
+/// this is the only place in the module that can name the directory at all.
+///
+/// `Err` is the real run whose settings directory cannot be resolved, which is the same
+/// `no_state_dir` this command has always reported.
+fn store_dir(state: &UsageState) -> Result<Option<PathBuf>, UsageError> {
+    if state.is_demo() {
+        return Ok(None);
+    }
+    paths::settings_dir()
+        .map(Some)
+        .map_err(|error| UsageError::from_core("no_state_dir", &error))
+}
+
 /// The usage store, for one range.
 ///
 /// Runs a scan first when it is allowed to and one is due, then reads the store back for the
@@ -405,8 +452,6 @@ pub fn get_usage(
     request: UsageRequest,
 ) -> Result<UsageResponse, UsageError> {
     let (from, to) = window(&request)?;
-    let state_dir =
-        paths::settings_dir().map_err(|error| UsageError::from_core("no_state_dir", &error))?;
 
     // The panel has just told this process where its week begins, in the only way that is
     // allowed to: by naming the instant. See [`week_window`].
@@ -420,6 +465,19 @@ pub fn get_usage(
     // reported days, which counters leave this function, and what the tooltip redrawn at the
     // end of it says. Reading them once is what keeps those three from disagreeing.
     let settings = usage_settings(&app);
+
+    // A demo run leaves here, before anything has named a directory. The tooltip is still
+    // redrawn, and it reads the same fixture through [`week_usage`], so the two surfaces
+    // agree on a screenshot exactly as they do on a real machine.
+    let Some(state_dir) = store_dir(&state)? else {
+        crate::tray::refresh_tooltip(&app);
+        return Ok(demo_answer(
+            &request,
+            from,
+            to,
+            settings.count_like_claude_code,
+        ));
+    };
 
     let scanned = if state.writes() {
         scan_if_due(
@@ -461,7 +519,7 @@ pub fn get_usage(
     if settings.count_like_claude_code {
         providers = providers
             .into_iter()
-            .map(|(provider, hours)| (provider, per_line(hours)))
+            .map(|(provider, hours)| (provider, per_line_hours(hours)))
             .collect();
     }
 
@@ -477,6 +535,71 @@ pub fn get_usage(
         damaged,
         scan: scanned.map(|scanned| scanned.scan),
     })
+}
+
+/// The answer a `--demo` run gives, cut out of [`crate::demo::usage`].
+///
+/// The same shape a store produces, so the panel cannot tell the difference and nothing on
+/// the drawing side needs a demo branch of its own. Three fields say what they honestly are:
+/// `damaged` is empty because a fixture cannot be damaged, `scan` is absent because no scan
+/// ran, and `reported` carries the two days the fixture keeps behind its transcripts **whether
+/// or not the setting that fills them is on** — they are what the outline on the calendar is
+/// for, and a demo store has nothing else to photograph that distinction with.
+fn demo_answer(request: &UsageRequest, from: String, to: String, per_line: bool) -> UsageResponse {
+    let now = clock::wall_seconds(&SystemClock).unwrap_or_default();
+    let store = crate::demo::usage(now);
+    UsageResponse {
+        range: request.range.clone(),
+        providers: demo_providers(&store, &from, &to, per_line),
+        from,
+        to,
+        since: Some(store.since),
+        scanned_at: Some(store.scanned_at),
+        mode: mode_name(per_line).to_owned(),
+        reported: store.reported,
+        damaged: Vec::new(),
+        scan: None,
+    }
+}
+
+/// The fixture's buckets for one half-open window, in the count the setting asks for.
+///
+/// The window rule is the store's own: an hour is in the answer when **its start** falls
+/// inside `[from, to)`. An instant this build cannot parse excludes nothing, because a demo
+/// run showing its whole history is a better failure than one showing none of it.
+fn demo_providers(
+    store: &crate::demo::Usage,
+    from: &str,
+    to: &str,
+    per_line: bool,
+) -> BTreeMap<String, Hours> {
+    let first = timefmt::unix_seconds_from_rfc3339(from).unwrap_or(i64::MIN);
+    let last = timefmt::unix_seconds_from_rfc3339(to).unwrap_or(i64::MAX);
+    store
+        .providers
+        .iter()
+        .map(|(provider, hours)| {
+            let hours: Hours = hours
+                .iter()
+                .filter(|(hour, _)| match hour_seconds(hour) {
+                    Some(at) => at >= first && at < last,
+                    None => false,
+                })
+                .map(|(hour, models)| (hour.clone(), models.clone()))
+                .collect();
+            let hours = if per_line {
+                per_line_hours(hours)
+            } else {
+                hours
+            };
+            (provider.clone(), hours)
+        })
+        .collect()
+}
+
+/// The instant a `YYYY-MM-DDTHH` bucket key starts at.
+fn hour_seconds(hour: &str) -> Option<i64> {
+    timefmt::unix_seconds_from_rfc3339(&format!("{hour}:00:00Z"))
 }
 
 /// Which of the two counts a setting asks for, as the answer spells it.
@@ -509,7 +632,7 @@ fn usage_settings(app: &tauri::AppHandle) -> nazar_core::config::UsageSwitches {
 /// about what a week adds up to. What changes is the four numbers; `requests` does not,
 /// because a request is a message in both readings and a count of content blocks under that
 /// label would be a number the label lies about.
-fn per_line(hours: Hours) -> Hours {
+fn per_line_hours(hours: Hours) -> Hours {
     hours
         .into_iter()
         .map(|(hour, models)| {
@@ -944,18 +1067,26 @@ pub fn fold(providers: &BTreeMap<String, Hours>, per_line: bool) -> Option<WeekU
 /// `None` for every way this can come to nothing — no settings directory, a clock that is
 /// not a timestamp, a store that will not read, a week with nothing in it — because a
 /// tooltip has no room to explain itself and the panel says all four properly.
+///
+/// **A `--demo` run folds the fixture instead**, through the same [`store_dir`] gate the
+/// command uses, so the tooltip a screenshot catches is the week the panel behind it draws.
 #[must_use]
 pub fn week_usage(state: &UsageState, per_line: bool) -> Option<WeekUsage> {
-    let state_dir = paths::settings_dir().ok()?;
     let now = clock::wall_seconds(&SystemClock)?;
     let (from, to) = week_window(now, state.phase());
-    let view = nazar_core::usage::query(
-        &state_dir,
-        &timefmt::rfc3339_from_unix_seconds(from),
-        &timefmt::rfc3339_from_unix_seconds(to),
-    )
-    .ok()?;
-    fold(&view.providers, per_line)
+    let from = timefmt::rfc3339_from_unix_seconds(from);
+    let to = timefmt::rfc3339_from_unix_seconds(to);
+    // The same gate the command goes through, so a demo tooltip and a demo panel are two
+    // readings of one fixture rather than an invented number beside a real one.
+    let providers = match store_dir(state).ok()? {
+        Some(state_dir) => {
+            nazar_core::usage::query(&state_dir, &from, &to)
+                .ok()?
+                .providers
+        }
+        None => demo_providers(&crate::demo::usage(now), &from, &to, per_line),
+    };
+    fold(&providers, per_line)
 }
 
 /// An error message with the home directory collapsed to `~`.
@@ -1220,7 +1351,7 @@ mod tests {
         });
         let hours = hours("2026-09-09T12", "claude-opus-5", bucket.clone());
 
-        let swapped = per_line(hours.clone());
+        let swapped = per_line_hours(hours.clone());
         let out = &swapped["2026-09-09T12"]["claude-opus-5"];
         assert_eq!((out.input, out.output), (4, 656));
         assert_eq!((out.cache_create, out.cache_read), (49_686, 71_226));
@@ -1250,7 +1381,7 @@ mod tests {
         // Codex writes one of these for every event, and so does every month document
         // written before T-WP22. Turning the setting on must show them, not zero them.
         let hours = hours("2026-09-09T12", "gpt-5.6-sol", spent(1000, 300, 0, 3000));
-        let swapped = per_line(hours);
+        let swapped = per_line_hours(hours);
         let out = &swapped["2026-09-09T12"]["gpt-5.6-sol"];
         assert_eq!((out.input, out.output, out.cache_read), (1000, 300, 3000));
     }
@@ -1804,5 +1935,139 @@ mod tests {
                 "2026-09-13T21:00:00Z".to_owned()
             )
         );
+    }
+
+    /// The whole of what `--demo` promises about the usage store: there is not one.
+    ///
+    /// Two halves, and neither is enough on its own. The **runtime** half is that a demo state
+    /// resolves no directory. The **source** half is that this module can only learn the
+    /// directory from [`store_dir`], which is what makes `None` there the end of the matter
+    /// rather than the beginning of it: a test that checked only the first would still pass
+    /// the day somebody added a second call to the settings directory further down the file.
+    #[test]
+    fn a_demo_run_has_no_store_to_open() {
+        assert_eq!(
+            store_dir(&UsageState::demo())
+                .expect("a demo run resolves nothing and fails at nothing"),
+            None,
+            "a --demo run must have no usage store: a screenshot must not carry a real history"
+        );
+        if paths::settings_dir().is_ok() {
+            assert!(
+                store_dir(&UsageState::new(false))
+                    .expect("a machine with a settings directory")
+                    .is_some(),
+                "a real run still reads the store even when it does not write to it"
+            );
+        }
+
+        // Assembled rather than written out, so this test's own source is not counted as an
+        // occurrence of the thing it is counting.
+        let needle = concat!("paths::", "settings_dir()");
+        let source = include_str!("usage.rs");
+        let body = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(before, _)| before);
+        assert_eq!(
+            body.matches(needle).count(),
+            1,
+            "the settings directory may be named in exactly one place in this module, so that \
+             `store_dir` returning None is the whole of the --demo guarantee"
+        );
+        let (above, _) = body
+            .split_once("fn store_dir(")
+            .expect("store_dir is the function that names it");
+        assert!(
+            !above.contains(needle),
+            "the one occurrence has to be inside `store_dir`, not above it"
+        );
+    }
+
+    /// A demo answer is the fixture and nothing else, in either count.
+    #[test]
+    fn the_demo_answer_carries_only_the_fixture() {
+        let now = timefmt::unix_seconds_from_rfc3339("2026-09-13T18:00:00Z").unwrap();
+        let store = crate::demo::usage(now);
+        let known: std::collections::BTreeSet<&str> = crate::demo::MODELS.into_iter().collect();
+
+        for per_line in [false, true] {
+            let cut = demo_providers(
+                &store,
+                "1970-01-01T00:00:00Z",
+                "2100-01-01T00:00:00Z",
+                per_line,
+            );
+            assert_eq!(
+                cut.keys().collect::<Vec<_>>(),
+                vec![PROVIDER, PROVIDER_CODEX],
+                "both providers, and only the two this product reads"
+            );
+            let mut buckets = 0;
+            for hours in cut.values() {
+                for models in hours.values() {
+                    for model in models.keys() {
+                        assert!(
+                            known.contains(model.as_str()),
+                            "{model} is not one of the fixture's model ids, so something from \
+                             outside the fixture reached the answer"
+                        );
+                        buckets += 1;
+                    }
+                }
+            }
+            assert!(buckets > 200, "five weeks of a history, not a stub");
+        }
+    }
+
+    /// The window is cut the way the store cuts it, and the two counts differ by the factor.
+    #[test]
+    fn a_demo_window_holds_only_the_hours_inside_it() {
+        let now = timefmt::unix_seconds_from_rfc3339("2026-09-13T18:00:00Z").unwrap();
+        let store = crate::demo::usage(now);
+        let (from, to) = ("2026-09-07T00:00:00Z", "2026-09-14T00:00:00Z");
+
+        let deduped = demo_providers(&store, from, to, false);
+        for hours in deduped.values() {
+            for hour in hours.keys() {
+                assert!(
+                    hour.as_str() >= "2026-09-07T00" && hour.as_str() < "2026-09-14T00",
+                    "{hour} is outside the window that was asked for"
+                );
+            }
+        }
+
+        let week = fold(&deduped, false).expect("a week with tokens in it");
+        let counted_like_claude_code = fold(&demo_providers(&store, from, to, true), true)
+            .expect("the same week, counted the other way");
+        assert!(
+            counted_like_claude_code.headline > week.headline,
+            "counting every line has to come to more than counting every message"
+        );
+        assert_eq!(
+            week.model, counted_like_claude_code.model,
+            "the busiest model is the busiest model in either count"
+        );
+    }
+
+    /// The tooltip's week and the panel's week are two readings of one fixture.
+    #[test]
+    fn a_demo_tooltip_reads_the_same_fixture_the_panel_does() {
+        let state = UsageState::demo();
+        let now = clock::wall_seconds(&SystemClock).expect("a machine with a clock");
+        let (from, to) = week_window(now, state.phase());
+        let expected = fold(
+            &demo_providers(
+                &crate::demo::usage(now),
+                &timefmt::rfc3339_from_unix_seconds(from),
+                &timefmt::rfc3339_from_unix_seconds(to),
+                false,
+            ),
+            false,
+        );
+        assert!(
+            expected.is_some(),
+            "the fixture always reaches today, so its week is never empty"
+        );
+        assert_eq!(week_usage(&state, false), expected);
     }
 }

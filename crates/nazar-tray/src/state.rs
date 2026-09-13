@@ -103,6 +103,12 @@ pub struct UiState {
     /// Carried in the state rather than sent as an event, because an event emitted while
     /// the webview is still loading has nobody listening for it yet.
     pub open_settings: bool,
+    /// Which tab the panel should open the usage view on, or `None` for the numbers.
+    ///
+    /// `--view usage`, with `--usage-tab` naming one of `week`, `weeks`, `all`, `models` or
+    /// `day`. Carried here for the reason above, and a **string** rather than an enum because
+    /// the tab names are the panel's own and a Rust spelling would be a second set of them.
+    pub open_usage: Option<String>,
 }
 
 impl Default for UiState {
@@ -115,6 +121,7 @@ impl Default for UiState {
             hint_dismissed: false,
             demo: false,
             open_settings: false,
+            open_usage: None,
         }
     }
 }
@@ -139,6 +146,8 @@ pub struct Overrides {
     pub locale: Option<String>,
     /// `--view settings`.
     pub open_settings: bool,
+    /// `--view usage`, and the tab `--usage-tab` asked for.
+    pub open_usage: Option<String>,
 }
 
 /// Everything the settings form draws itself from.
@@ -423,6 +432,7 @@ impl AppState {
                 .unwrap_or(config.first_run_hint_dismissed),
             demo: self.overrides.demo,
             open_settings: self.overrides.open_settings,
+            open_usage: self.overrides.open_usage.clone(),
         }
     }
 

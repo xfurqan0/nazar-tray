@@ -131,10 +131,10 @@ pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
 /// `None` before [`UsageState`] is managed, which is the only moment in a real run when it
 /// is missing, and `None` for every way [`crate::usage::week_usage`] can come to nothing.
 ///
-/// A `--demo` run reads the real store here, exactly as the usage view has done since
-/// T-WP15: there is no demo usage document, so a screenshot run shows made-up quota numbers
-/// beside real usage. That is a question about `--demo`, not about the tooltip, and it is
-/// answered in one place or in neither.
+/// A `--demo` run reads [`crate::demo::usage`] instead of the real store, which is the same
+/// answer [`crate::usage::get_usage`] gives the panel: one fixture, two surfaces. Until 0.2.0
+/// it read the real store here and a screenshot carried the maintainer's own month of model
+/// use; `crate::usage::store_dir` is where that is now impossible rather than merely avoided.
 fn week(app: &AppHandle) -> Option<WeekUsage> {
     let state = app.try_state::<UsageState>()?;
     // The same setting the panel's headline follows, read from the same place: a tooltip and

@@ -48,6 +48,8 @@
 //! | `--locale tr` | the panel and the tooltip in one language, whatever the machine's is |
 //! | `--icons <dir>` | writes the bead's two states — the mark, and unknown — at 16, 32 and 64 px, plus one strip of all six, then exits; nothing else happens |
 //! | `--view settings` | opens the panel on the settings page, which is otherwise a click away |
+//! | `--view usage` | the same for the usage view, and `--usage-tab` says which of its tabs |
+//! | `--usage-tab <name>` | `week`, `weeks`, `all`, `models`, or `day` for the Week tab with its newest day opened |
 //!
 //! `--demo` is the one that matters for safety: a screenshot session must not be able to
 //! overwrite the real `~/.nazar/limits.json` with invented numbers, so it never becomes the
@@ -187,6 +189,19 @@ fn write_icons(directory: &std::path::Path) -> bool {
     true
 }
 
+/// The pages `--view` can open the panel on, other than the numbers it opens on anyway.
+///
+/// A list rather than an enum, because the value crosses into the webview as a string and a
+/// Rust spelling in `UiState` would be a third name for the same page. A name this build does
+/// not know is dropped: a typo leaves the panel where it opens rather than blanking it.
+const VIEWS: [&str; 2] = ["settings", "usage"];
+
+/// What `--usage-tab` may name: the usage view's four tabs, plus one state inside the first.
+const USAGE_TABS: [&str; 5] = ["week", "weeks", "all", "models", "day"];
+
+/// The tab the usage view opens on, and so the one `--view usage` lands on unasked.
+pub const USAGE_TAB_DEFAULT: &str = USAGE_TABS[0];
+
 /// Settings that change how the tray runs, taken from the command line.
 ///
 /// All five exist for the screenshots in `docs/screenshots` and for looking at a state that
@@ -228,12 +243,19 @@ pub struct Options {
     /// promise rather than a behaviour — but it is a promise worth being able to make, and
     /// it is the flag that keeps `--demo`'s automatic panel out of a start-up run.
     pub hidden: bool,
-    /// `--view settings`: open the panel on the settings page rather than on the numbers.
+    /// `--view settings|usage`: open the panel somewhere other than on the numbers.
     ///
-    /// A screenshot flag like the others. The settings page is reached with a click, and a
-    /// script cannot click; without this there would be no picture of it in the
-    /// documentation, and no way to look at the whole form at three display scales.
+    /// A screenshot flag like the others. Both pages are reached with a click, and a script
+    /// cannot click; without this there would be no picture of either in the documentation,
+    /// and no way to look at a whole form at three display scales.
     pub view: Option<String>,
+    /// `--usage-tab <name>`: which tab `--view usage` lands on.
+    ///
+    /// `week`, `weeks`, `all` and `models` are the four tabs; `day` is the Week tab with its
+    /// newest day already opened, which is the one state of that view a flag naming a tab
+    /// cannot otherwise reach. `None` — including for a name this build does not know — leaves
+    /// the view on `week`, the tab it opens on.
+    pub usage_tab: Option<String>,
     /// `--demo-cross`: step the demo numbers across the thresholds, for the acceptance run.
     ///
     /// Implies `--demo`. See the module note for the sequence and for what it proves.
@@ -351,7 +373,9 @@ fn parse_options(arguments: &[String]) -> Options {
         hint: value_of(arguments, "--hint").and_then(|value| on_or_off(&value)),
         offer: value_of(arguments, "--offer").and_then(|value| on_or_off(&value)),
         locale: value_of(arguments, "--locale"),
-        view: value_of(arguments, "--view").filter(|name| name == "settings"),
+        view: value_of(arguments, "--view").filter(|name| VIEWS.contains(&name.as_str())),
+        usage_tab: value_of(arguments, "--usage-tab")
+            .filter(|name| USAGE_TABS.contains(&name.as_str())),
         autostart: value_of(arguments, "--autostart")
             .as_deref()
             .and_then(Autostart::parse),
@@ -633,6 +657,30 @@ mod tests {
         assert!(
             parse_options(&words("--view settings")).may_persist(),
             "opening a page is navigation, not a claim about what the settings are: a user              who is shown the form may still save from it"
+        );
+
+        assert_eq!(
+            parse_options(&words("--view usage")).view.as_deref(),
+            Some("usage"),
+            "the usage view is reachable by a flag, or there is no picture of it"
+        );
+        for tab in ["week", "weeks", "all", "models", "day"] {
+            assert_eq!(
+                parse_options(&words(&format!("--view usage --usage-tab {tab}")))
+                    .usage_tab
+                    .as_deref(),
+                Some(tab)
+            );
+        }
+        assert_eq!(
+            parse_options(&words("--view usage --usage-tab nonsense")).usage_tab,
+            None,
+            "a tab nobody defined leaves the view on the one it opens with"
+        );
+        assert_eq!(
+            parse_options(&words("--usage-tab models")).view,
+            None,
+            "the tab is only meaningful with the view, and naming it alone opens nothing"
         );
 
         let crossing = parse_options(&words("--demo-cross"));
