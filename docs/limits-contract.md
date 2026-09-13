@@ -9,8 +9,12 @@ Nazar's quota strip reads this file and nothing else from nazar-tray.
   `~/.nazar` — `limits.json`, `limits.lock`, `tray.request` and `statusline/` — while the
   files that are the *user's* rather than a consumer's live in the platform's own settings
   location, `%APPDATA%\nazar` on Windows and `$XDG_CONFIG_HOME/nazar` or `~/.config/nazar`
-  elsewhere: `config.json`, which the user edits, and `alerts.json`, which only nazar-tray
-  writes. `NAZAR_HOME` overrides **both**, which is what makes a whole installation
+  elsewhere: `config.json`, which the user edits, `alerts.json`, which only nazar-tray
+  writes, and — from 0.2.0 — `usage/YYYY-MM.json`, the usage history, which is the user's
+  own and which [`usage-contract.md`](usage-contract.md) describes. **Nothing about that file
+  changes this one:** `limits.json` stays frozen at `schemaVersion: 1` with the same fields,
+  and a consumer that reads it needs no change on account of it.
+  `NAZAR_HOME` overrides **both**, which is what makes a whole installation
   pointable at a throwaway directory. So a consumer that resolves `~/.nazar` for data and
   never opens `%APPDATA%` is reading exactly the right places, and two resolvers that
   disagree about Windows are not in disagreement if one of them is resolving settings.

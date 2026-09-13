@@ -31,6 +31,7 @@ What the research found that nobody ships:
 | nazar-tray **is** | nazar-tray **is not** |
 |---|---|
 | Tray icon + popup panel: Claude and Codex windows, percentages, reset countdowns | A launcher, session manager, or cost analytics dashboard |
+| A third panel view that answers *how much did I spend, on which model* from numbers the providers already reported (2026-09-13) | **Still not an analytics dashboard.** One view, three ranges, one row per model, no currency in v1 — the non-goal on the right is what keeps the usage packages from growing a cost column, a project breakdown and a session list |
 | A passive reader of local files that writes `~/.nazar/limits.json` | Anything that **stores or forwards** a token, or reads one without being asked to. WP2b's opt-in mode reads one, in memory, for one request, only with the switch on |
 | Windows release first; macOS and Linux builds later from the same code | A Windows-only codebase |
 | Six UI languages from day one: EN, TR, ZH, KO, RU, ES | — |
@@ -68,7 +69,7 @@ What the research found that nobody ships:
 - Windows 11 tray overflow: first-run hint to pin the icon.
 - DPI-aware rendering (Tauri handles the window; icon rendered per scale factor).
 - Config at `%APPDATA%\nazar\config.json`; data at `~/.nazar/limits.json`. No absolute paths in code.
-- Transcript scanning for "estimated usage" (the prototype read up to 400 transcript files on 401) is **dropped**; no estimates, only reported numbers.
+- Transcript scanning for "estimated usage" (the prototype read up to 400 transcript files on 401) is **dropped**; no estimates, only reported numbers. — **Half of this was reversed on 2026-09-13, see §8.** Transcripts *are* read, for usage history; what stays dropped is the estimating. No quota percentage is derived from them, and "only reported numbers" is now the argument **for** reading them rather than against it.
 
 ## 6. `limits.json` contract (frozen at v1, shared with Nazar)
 
@@ -133,7 +134,35 @@ the GitHub Release, the winget pull request, the SignPath application and the re
 visibility are five one-way doors, and every one of them is a command in `docs/RELEASE.md`
 for the maintainer to run. Nothing in this repository runs them.
 
+### The usage-history packages (T-WP12 – T-WP19)
+
+Requested by the maintainer 2026-09-09, planned 2026-09-13, and **this is where the
+`docs/FUTURE.md` entry went** — an entry leaves that file when it becomes work packages here.
+The decision underneath them, including what was disproven on the way, is §8. None of them
+has landed.
+
+| # | Package | Done when |
+|---|---|---|
+| T-WP12 | **Theme toggle leaves the panel footer**, which is where the Usage button goes; the settings page's two selects become the only way to change a theme | The footer has no theme button, the settings selects still switch theme and locale, UI tests green |
+| T-WP13 | **The Claude usage reader**: recursive scan of `~/.claude/projects/**/*.jsonl` including `subagents/`, deduplication by `(message.id, requestId)`, hourly UTC buckets, the monthly store | A fixture with known totals matches to the token; a duplicate fixture inflates by zero; the sentinel leak test passes; 230 MB in under two seconds |
+| T-WP14 | **The Codex usage reader**: every `token_count` event, `last_token_usage` summed, the model from the session's newest `turn_context` | The mid-session reset fixture totals correctly; a model that was never named reads `unknown`; sentinel leak test passes |
+| T-WP15 | **`get_usage`**: one Tauri command and one view type — range × provider × model, plus `since` | The command returns hourly buckets and the panel does its own local-week arithmetic |
+| T-WP16 | **The usage view**: the third view, three ranges, one row per model, headline `input + output + cache_create` with `cache_read` beside it, and a *since {date}* line | Fits 360 × 720; CSS bars, no charting library (decision K2); the three i18n gates pass |
+| T-WP17 | **The tray tooltip's second line**: this week's tokens and the model that spent most of them | Under 127 characters in all six languages; the icon still says nothing about usage |
+| T-WP19 | *(optional, after v1)* a `pricing.json` data file and cost in currency | A model that is not in the table shows no cost rather than a guess |
+
+T-WP12, T-WP13 and T-WP18 are independent; T-WP14 follows T-WP13; T-WP15 → T-WP16 → T-WP17
+is a chain. **T-WP18 is this one** — the written decisions, the contract and the README — and
+its first two items belong in the same commit as the readers they describe, because rule 4 of
+`pinned-internal-formats.md` says a fixture and its row land together.
+
 ## 8. Open decisions
+- ~~Does usage history mean reading Claude Code's transcripts, which §5 says are not read?~~ → **decided 2026-09-13 03:35, maintainer approved: yes, metadata only — and the §5 line above is corrected rather than quietly outgrown.** `~/.claude/projects/**` moves from "not read, on purpose" into the inventory in [`pinned-internal-formats.md`](pinned-internal-formats.md), with the nine fields it may read, the version observed and its fixtures.
+  - **Why the old rule does not cover this.** The retired prototype read up to 400 transcripts to *estimate a quota percentage* when a fetch failed — it manufactured a number to stand in for one the server would not give. Usage history reads `message.usage`, which is **the server's own reported number**, written to disk by Claude Code rather than computed by it, and it replaces nothing: the quota view keeps coming from the status line and the endpoint, and no percentage is derived from a transcript. "No estimates, only reported numbers" is the rule this obeys, not the rule it breaks.
+  - **Why it is not a new privacy stance.** It is the second application of the one this repository has shipped since WP1: the Codex reader already opens files full of prompts and takes seven values out of them, protected by an allow-list construction (a new object built from named fields, never a filtered line) and a sentinel leak test. The usage readers get the same two mechanisms, and the sentinel test is extended to the accumulated state and the file that is written, which is the stricter form Nazar's reader uses. What is read is nine fields; prompt text, response text, reasoning, tool input and output, paths, project names and session ids are not among them, and a test fails the build if any of them appears in the output.
+  - **What it costs to say it.** The README's privacy paragraph is rewritten in the same change rather than left to age — "never reads your tokens and never talks to the network" is still true and stays, because "token" there is a sign-in token, and the sentence now says in plain words which files are read and which fields are taken. A promise that has to be read carefully to stay true is a promise that has already broken.
+  - **The FUTURE.md plan it replaces is recorded as disproven, not as superseded.** That entry had the panel differencing the status line's own counters. Measured on the maintainer's machine on 2026-09-13: `context_window.total_input_tokens` = **562 431**, and `current_usage.{input + cache_creation + cache_read}` = 32 + 3 891 + 558 508 = **562 431** — the same number to the token, and the same identity holds in both committed fixtures. That field is **the current size of the context window, not a cumulative session total**: it *falls* when the context is compacted, so the plan's "a counter going backwards means a new session" would have fired on every `/compact` and thrown the session's usage away. The only genuinely cumulative counter in the payload is `cost.total_cost_usd`. **So the status line can give a cost history and cannot give a token history**, and the transcripts are not a convenience here, they are the only source.
+  - **Scope, so this does not become the dashboard §2 says it is not:** the store is a new file (`docs/usage-contract.md`), `limits.json` does not change, Nazar reads nothing new, and there is no currency in v1.
 - ~~Opt-in official-endpoint mode~~ → **decided 2026-09-07 03:20: in v1 as WP2b, off by default** (maintainer approved; the maintainer's own binding window is the Fable weekly, invisible to the passive path).
 - ~~Panel technology inside Tauri: plain HTML/CSS vs. a tiny framework~~ → **closed 2026-09-07 in WP0: plain TypeScript, HTML and CSS, bundled by esbuild, no framework** (decision K2). The panel's only runtime dependency is `@tauri-apps/api`; `ui/` has two dev dependencies, esbuild and TypeScript.
 - ~~Icon rendering: pre-rendered bead PNG set per fill level vs. runtime drawing~~ → **decided 2026-09-07 in WP4: drawn at run time in Rust, and without `tiny-skia`** (decision K3). A pre-rendered set was one file per fill level per severity per freshness per scale, invalidated all at once by a theme change; the drawing is no dependency and, since 2026-09-09, not even arithmetic — sixteen rows of sixteen cells and a lookup. That evening's second revision cut the states to two, so a pre-rendered set would now be eight small files and the decision is no longer obvious; it stands because the theme hexes then live in one place instead of two, and because the shell asks for a size rather than picking one from a list. `crates/nazar-tray/src/icon.rs`.
@@ -925,7 +954,6 @@ for the maintainer to run. Nothing in this repository runs them.
   It came from a build made before this, on the maintainer's own machine, where the string
   is the maintainer's own — nothing to fix and nobody to tell. It stops being true the next
   time the installer is run.
-
 - 2026-09-13 — **T-WP12: the footer's theme button is gone; the theme is the settings page's
   and nowhere else** (`ui/src/index.html`, `main.ts`, `format.ts`, `ui/test/format.test.mjs`,
   `ui/locales/*.json`, `crates/nazar-tray/src/state.rs`). Two places to change one setting is
@@ -951,3 +979,56 @@ for the maintainer to run. Nothing in this repository runs them.
   --all-targets -D warnings` clean. **Still to do:** the panel screenshots now lag by two
   things rather than one — the round bead noted above, and a footer button that no longer
   exists. Both are the same re-shoot with `scripts/screenshot.ps1`.
+- 2026-09-13 — **T-WP18: a written decision is reversed in writing, and the file that comes
+  out of it is specified before it exists.** No code in this package; the maintainer asked
+  for usage history (tokens per week, per month, per model, per provider) and the honest
+  answer turned out to cost a reversal.
+
+  **What was measured first.** The plan in `docs/FUTURE.md` had the panel differencing the
+  status line's own token counters. The payload on this machine says
+  `context_window.total_input_tokens` = 562 431, and its own
+  `current_usage.{input + cache_creation + cache_read}` adds up to 562 431 — the same number,
+  and the same identity in both committed fixtures. It is the **current size of the context
+  window**, not a session total: it goes *down* on a `/compact`, where the plan's rule
+  "backwards means a new session" would have discarded everything counted so far. The one
+  cumulative counter in that document is `cost.total_cost_usd`. The plan is therefore recorded
+  as **disproven**, not as replaced by something nicer, and the transcripts are the only source
+  that can answer the question at all.
+
+  **What was reversed.** `~/.claude/projects/**` was on the "not read, on purpose" list in
+  `docs/pinned-internal-formats.md` and in §5 above, because the retired prototype read up to
+  400 transcripts to *estimate* a quota percentage. Usage history reads nine fields —
+  `type`, `timestamp`, `message.model`, `message.id`, `requestId` and four `message.usage`
+  counters — which are the **server's own reported numbers**, and derives no percentage from
+  them. The line moves into the inventory with its fields, its observed versions (Claude Code
+  2.1.268 – 2.1.269, Codex 0.153.4) and its fixtures; §5's bullet keeps the half that is still
+  true. The Codex rows move the same way: `payload.info.last_token_usage` and
+  `turn_context.model` become read, `total_token_usage` and `model_context_window` stay unread,
+  and the reason is measured — the cumulative counter **falls back down mid-session** in 3 of
+  21 logs here, disagreeing with the per-turn sum in 8 of 30 files, once by 43×.
+
+  **What protects it** is what already protects the Codex reader: a record **constructed** from
+  named fields rather than a parsed line filtered, an identifier shape check on the one new kind
+  of string (a model id), and a sentinel leak test extended to the accumulated state and to the
+  file the scan writes. Two ids are read and never kept — `(message.id, requestId)` is the
+  deduplication key, and it has to be one: 44.4 % of lines here are repeats and they inflate
+  the totals 1.70×, a factor that is not constant (1.04× in one subagent file) and therefore
+  cannot be divided out afterwards.
+
+  **The new file is specified before the code.** `docs/usage-contract.md`:
+  `%APPDATA%\nazar\usage\YYYY-MM.json`, one file per UTC month, written whole through the same
+  temp-and-rename as `limits.json`, `version: 1`, hourly UTC buckets keyed `YYYY-MM-DDTHH`,
+  five counters per model per bucket, `since` and `scanned_at`. **No local time anywhere in the
+  store** — the hygiene gate forbids it in Rust, and hours rather than days are what let the
+  panel derive local Monday-start weeks exactly. The headline number is
+  `input + output + cache_create`, with `cache_read` reported beside it and never folded in,
+  because the raw total on this machine is 98.5 % cache reads and a chart of it is a chart of
+  nothing. No currency in v1. A merge takes the larger of two values per counter, so a pruned
+  transcript cannot erase history. **`limits.json` does not change and stays frozen at v1;
+  Nazar reads nothing new.**
+
+  **And the README says so.** The privacy paragraph now names the files that are read and the
+  fields that are taken from them, states that no prompt or response text is ever read, and
+  points at the test that fails if it is. "Never reads your tokens, never talks to the network"
+  stays, because it is about sign-in tokens and is still true — but it stops being the whole
+  sentence.

@@ -17,14 +17,27 @@ a fixture on purpose — a real response is a real account's usage, and a real s
 a sign-in. Nothing on this page is copied from documentation without a matching observation
 on a real machine.
 
+**The two usage rows were observed on 2026-09-13**, on the same machine: **118 Claude Code
+transcripts**, 230.6 MB, written by Claude Code **2.1.268 and 2.1.269**, and **30 Codex
+rollout logs**, 69.9 MB, `cli_version` 0.153.4, carrying **850 `token_count` events**. They
+are the rows that appeared when `~/.claude/projects/**` moved off the "not read, on purpose"
+list below — a reversal of a written decision rather than a new feature quietly finding a new
+file. The argument for it is in [`PROJECT.md`](PROJECT.md) §8, dated 2026-09-13; where the
+numbers end up is [`usage-contract.md`](usage-contract.md).
+
 Rules that follow from this table, and that the tests enforce:
 
 1. A parser reads **only** the fields in its "fields used" column. It builds a new value
    out of them rather than filtering a parsed line, so a field that is not on the list is
    gone with the parse result.
 2. No prompt text, no reasoning, no command output, no identifier is ever carried out of a
-   log. Two strings leave the Codex parser — a plan name and a timestamp — and both have
-   to pass a shape check first.
+   log. Two strings leave the Codex quota parser — a plan name and a timestamp — and both
+   have to pass a shape check first. The usage readers add exactly one more kind of string,
+   a **model id**, through the same check: a short identifier, bounded, no control
+   characters, no path separators. A field repurposed to hold prose is dropped, not
+   forwarded. Two identifiers — `message.id` and `requestId` — are **read and not kept**:
+   they are the deduplication key, they live in memory for the length of one scan, and
+   nothing written to disk contains either of them.
 3. A missing field means **unknown**, and unknown is rendered as unknown. `percent` is
    omitted entirely rather than written as `0`; see rule 2 of
    [`limits-contract.md`](limits-contract.md).
@@ -35,7 +48,9 @@ Rules that follow from this table, and that the tests enforce:
 
 | Path | Fields used | Version observed | Fixture | Notes |
 |---|---|---|---|---|
-| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
+| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
+| the same files — **usage history** | `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and the session's most recent `turn_context.model` — **seven values, and nothing else** | Codex 0.153.4, 2026-09-13 | `fixtures/codex/rollout-token-count*.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it. See "Usage history in a rollout log" below. |
+| `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` — recursively, so the subagent transcripts under `subagents/` are **included** | `type`; `timestamp`; `message.model`; `message.id`; `requestId`; `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — **nine values, and nothing else**; two of them (the ids) are never written anywhere | Claude Code 2.1.268 – 2.1.269, 2026-09-13 | `fixtures/claude/transcript-*.jsonl` (T-WP13) | **Usage history only; no quota number is derived from these files.** See "The Claude Code transcript" below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
 | `GET https://api.anthropic.com/api/oauth/usage` | `limits[]`, and inside each entry `{kind, percent, resets_at, scope.model.display_name}`; or the older top-level `five_hour`/`seven_day` `{utilization, resets_at}` | observed live 2026-09-07 | none — no fixture may hold a real response | **Opt-in, off by default.** See "The usage endpoint" below. |
@@ -125,15 +140,19 @@ it would break the day it is renamed. This is pinned by `rollout-premium-null.js
 The parser names seven values and constructs a new object out of them. Everything below
 appears in real logs on this machine and **none of it ever leaves the parser**:
 
-- `payload.info` in full: `last_token_usage`, `total_token_usage`, `model_context_window`.
+- `payload.info.total_token_usage` and `payload.info.model_context_window`. **Four counters
+  inside `payload.info.last_token_usage` are read by the usage pass** — and by nothing else;
+  see the next section for which four and why not the cumulative one.
 - `payload.thread_token_usage`, `turn_token_usage`, `usage`, and the ids beside them:
   `response_id`, `turn_id`, `root_turn_id`, `session_id`, `thread_id`.
 - `session_meta` in full: `session_id`, `id`, `cwd`, `cli_version`, `originator`,
   `model_provider`, `source`, `thread_source`, `context_window.window_id`,
   `history_base.*`.
-- `turn_context` and `thread_settings_applied`: `model`, `effort`, `cwd`,
-  `approval_policy`, `sandbox_policy`, `personality`, `workspace_roots`,
-  `collaboration_mode`, `service_tier`.
+- `turn_context` and `thread_settings_applied`: `effort`, `cwd`, `approval_policy`,
+  `sandbox_policy`, `personality`, `workspace_roots`, `collaboration_mode`, `service_tier`,
+  `timezone`, `current_date`, `turn_id`. **`turn_context.model` is read by the usage pass**,
+  because a `token_count` event does not name the model that produced it; nothing else in
+  either object is.
 - Every content and tool field: `response_item/message`, `response_item/reasoning`,
   `custom_tool_call.input`, `custom_tool_call_output`, and `item_completed.item.*`
   (`command`, `cwd`, `stdout`, `stderr`, `aggregated_output`, `parsed_cmd`, `changes`).
@@ -146,6 +165,51 @@ shape of RFC 3339 — so a field repurposed to hold prose is dropped rather than
 And a leak test builds a line whose every text field carries a sentinel and fails if the
 sentinel appears anywhere in the parser's output or in the serialised provider block.
 
+### Usage history in a rollout log
+
+The quota reader and the usage reader open the same files and share nothing else. The quota
+reader wants **the newest** `rate_limits` line and opens a 256 KiB window at the end of the
+file to find it. Usage history wants **every** `token_count` event in the file, which means
+the whole file, from the first line.
+
+Observed on 2026-09-13: **850 `token_count` events across 30 logs** (21 in `sessions/`,
+9 in `archived_sessions/`, 69.9 MB), and three models on this machine — `gpt-5.6-sol`,
+`gpt-6-astra`, `codex-auto-review`.
+
+```json
+{"type":"event_msg","timestamp":"2026-09-12T18:04:11.221Z","payload":{"type":"token_count",
+ "info":{"total_token_usage":{"input_tokens":…,"cached_input_tokens":…,
+                              "cache_write_input_tokens":…,"output_tokens":…,
+                              "reasoning_output_tokens":…,"total_tokens":…},
+         "last_token_usage":{ … the same six, for this turn … },
+         "model_context_window":258400}, "rate_limits":{ … }}}
+```
+
+| Field | Read? | Why |
+|---|---|---|
+| `info.last_token_usage.input_tokens` | yes | Includes the cached part. `input − cached` is the honest "new input"; that subtraction happens in the reader, and the store keeps the two apart. |
+| `info.last_token_usage.cached_input_tokens` | yes | Becomes `cache_read`. **A subset of `input_tokens`**, verified on every event here — adding the two double-counts. |
+| `info.last_token_usage.cache_write_input_tokens` | yes | Becomes `cache_create`. Absent on older events; absent means `0` here, which is the one place a missing field is not "unknown" — a turn that wrote no cache wrote none. |
+| `info.last_token_usage.output_tokens` | yes | `reasoning_output_tokens` is **inside** it. Never added on top. |
+| `info.last_token_usage.total_tokens`, `reasoning_output_tokens` | **no** | Both derivable from what is read, and both a way to double-count by accident. |
+| `info.total_token_usage` (all of it) | **no** | See below. |
+| `info.model_context_window` | **no** | Context size, not usage. |
+| `turn_context.payload.model` | yes | The only place the model is named. Through the identifier shape check, stored exactly as reported. |
+
+**The cumulative counter is not a session total, and this was measured rather than assumed.**
+`info.total_token_usage` **falls back down mid-session** — in **3 of the 21 `sessions/` logs**
+on this machine — when the context is compacted or cleared. Summing `last_token_usage` instead
+and comparing against the final `total_token_usage` disagreed in **8 of 30 files**, once by a
+factor of 43 (9 070 054 against 209 714). So usage history sums the **per-turn** counter, and a
+reader that ever wants the cumulative one has to carry a "did it go backwards" guard. This is
+the single most expensive thing to get wrong on the Codex side: nothing about a wrong total
+looks wrong.
+
+**A model that never appeared is not invented.** A `token_count` event before the first
+`turn_context` in a file has no model to belong to; those tokens are attributed to the model id
+`unknown` rather than to the session's later model, because guessing here is guessing about
+which model burned what, and that is the one question the view exists to answer.
+
 ### Not read, on purpose
 
 | Path | Why not |
@@ -154,8 +218,9 @@ sentinel appears anywhere in the parser's output or in the serialised provider b
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` **on the default path** | Sign-in material. The opt-in detailed-windows mode is the single sanctioned exception and it is a switch the user turns; with it off this file is not opened, and a test poisons it to prove that. `refreshToken`, `refreshTokenExpiresAt` and `scopes` are never read even with the mode on. |
 | `$CODEX_HOME/*.sqlite`, `*.sqlite-wal`, `*.sqlite-shm` | Conversation history, memories, queues, logs. Not quota, and not ours to open. |
 | `$CODEX_HOME/session_index.jsonl` | Thread names and ids. Useful to Nazar's canvas; identity to a quota tray, so it stays unread here. |
-| `$CODEX_HOME/{archived_sessions,attachments,dictation-history,transcription-history.jsonl,generated_images,…}` | The user's content. None of it is quota. |
-| `~/.claude/projects/**` | The retired prototype read up to 400 transcript files to *estimate* usage when a fetch failed. Dropped: no estimates, only reported numbers (plan section 5). |
+| `$CODEX_HOME/{attachments,dictation-history,transcription-history.jsonl,generated_images,…}` | The user's content. None of it is quota, and none of it is usage. |
+| `$CODEX_HOME/archived_sessions/` | Rollout logs of the same shape as `sessions/`, and therefore the one entry on this list that is a *scope* decision rather than a kind one: usage history does not read them today, so a conversation Codex archived leaves the totals unchanged. Reading them is T-WP14's to decide, in the open, with this row as the thing it has to change. |
+| `~/.claude/projects/**` | **Moved into the inventory above on 2026-09-13** — see the row, and see [`PROJECT.md`](PROJECT.md) §8 for why. What was dropped stays dropped: no quota percentage is *estimated* from these files, which is what the retired prototype did with up to 400 of them when a fetch failed. Usage history reads nine fields, reports what the server already reported, and touches no window. |
 
 **The gate:** `crates/nazar-core/tests/hygiene.rs` greps every `.rs` file in the workspace
 for the name of a credential file and for token-shaped identifiers, and fails the build on
@@ -170,6 +235,103 @@ honest. Three more tests hold that place down: the directory must exist and must
 a needle (otherwise the allow-list is guarding nothing and should be deleted), nothing in
 it may contain a printing macro, and `Secret::expose_for_one_request` must have exactly one
 call site in shipping code.
+
+## The Claude Code transcript
+
+`CLAUDE_CONFIG_DIR` moves the directory; the default is `~/.claude`. Every session Claude
+Code runs leaves a JSONL transcript under `projects/`, and **a subagent leaves its own**:
+
+```
+projects/<slug>/<session-uuid>.jsonl
+projects/<slug>/<session-uuid>/subagents/agent-<id>.jsonl
+```
+
+**The second line is not a detail.** Measured on 2026-09-13: `projects/*/*.jsonl` matched
+**35 files and 51.7 MB**, while the tree underneath held **83 files and 179.6 MB** — a glob
+that stops at the top level misses **78 % of the bytes**, and on this machine most of the
+heavy model's tokens are in exactly the part it misses. The walk is recursive, `**/*.jsonl`,
+and a subagent's tokens are real tokens: they were spent.
+
+### The line
+
+One JSON object per line. The nine values the reader names, out of an object with roughly
+twenty keys:
+
+```
+.type                                       = 'assistant'
+.timestamp                                  = '2026-09-11T15:16:45.816Z'
+.message.model                              = 'claude-fable-5-1'
+.message.id                                 = 'msg_…'
+.requestId                                  = 'req_…'
+.message.usage.input_tokens                 = 2
+.message.usage.output_tokens                = 328
+.message.usage.cache_creation_input_tokens  = 24843
+.message.usage.cache_read_input_tokens      = 35613
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | Only `assistant` lines are considered. Everything else — `user`, `system`, `summary`, and any type a later version adds — is skipped without being parsed further. |
+| `timestamp` | string | RFC 3339 in **UTC** with milliseconds, on every line observed. This is what puts a record in an hour bucket, and it is the only thing about the line that becomes a key. |
+| `message.model` | string | Through the identifier shape check, stored exactly as reported. **`<synthetic>` is skipped entirely** — those lines are Claude Code's own, not billed usage, and they carry no `requestId`. |
+| `message.id`, `requestId` | string | **The deduplication key, and nothing else.** Neither is written to disk; both are gone with the scan that read them. `requestId` is absent on a handful of lines (11 of 14 239 here), and absent is a valid half of a key rather than a reason to drop the record. |
+| `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | integer | The four counters. Reported by the server, not computed by Claude Code and not computed here. |
+| `message.usage.iterations[]` | — | **Not read.** It repeats the same turn's counters in a nested form; adding it is a second, quieter way to double every number. |
+| `message.usage.output_tokens_details.thinking_tokens`, `cache_creation.ephemeral_5m/1h_input_tokens` | — | **Not read.** Both are already inside a counter above. |
+| `isApiErrorMessage: true` | — | Lines so marked are skipped: an error is not billed usage. |
+| everything else | — | Read by nobody. See below. |
+
+### Deduplication is not an optimisation
+
+**The same message appears on several lines.** Claude Code writes a record per API block, so a
+turn that spans blocks is written again with the same `message.id` — measured here: **44.4 % of
+lines are repeats**, and the totals they inflate come out **1.70×** too high.
+
+The rule, the same one `ccusage` settled on: the key is **`(message.id, requestId)`**, and when
+the key repeats the record with the **largest usage total wins** — a partial write of the same
+message is a prefix of the final one, so the largest is the complete one.
+
+**It cannot be corrected afterwards by dividing.** The inflation factor is not a constant: the
+top-level transcripts came out at 1.70× and one subagent file at 1.04×, so there is no coefficient
+to apply to a number that was summed carelessly. Either the scan deduplicates, or the feature
+reports a number that is wrong by an amount nobody can name.
+
+Duplicates were measured to be **within a single file** — the same message repeated in one
+transcript, never the same message in two — which is why a scan can be resumed by byte offset
+per file rather than by carrying a global set of ids.
+
+### Never taken out of a transcript
+
+Everything below is in these files, on this machine, and **none of it leaves the reader**:
+
+- `message.content` in full: prompt text, response text, thinking blocks, tool inputs, tool
+  results, file contents, command output, images.
+- `cwd`, `gitBranch`, `version`, `userType`, `sessionId`, `parentUuid`, `uuid`, `isSidechain`,
+  `apiBlockIndex`, `toolUseResult`, and the transcript's own **path**, which names a project
+  directory in its slug.
+- Every counter in `message.usage` that is not one of the four, listed above.
+
+The mechanism is the one rule 1 describes and the one the Codex parser has used since WP1: the
+reader **constructs** a record out of nine values rather than filtering a parsed line, so a
+field nobody named is dropped with the parse result rather than travelling one function further
+than intended. The model id passes the same identifier check the Codex plan name passes.
+
+**The gate:** a leak test builds a transcript whose every string field — content, path, branch,
+ids, tool output — carries a sentinel, runs a full scan over it, and fails if the sentinel
+appears in the parsed records, in the aggregated state, or in the serialised
+`usage/YYYY-MM.json` the scan writes. It is the Codex test's sibling
+(`nothing_but_the_allow_listed_values_leaves_the_reader`) and it checks the **accumulated
+state** as well as the emitted record, which is the stricter form Nazar's reader already uses.
+The transcript fixtures go through `tests/hygiene.rs` like every other fixture: no home
+directory, no e-mail address, no run of 32 hexadecimal characters, no user name.
+
+### Cost of a full pass
+
+230.6 MB, 118 files, on the maintainer's machine: **0.251 s** for a prefilter pass that only
+looks for the needle, **0.635 s** for a full parse, deduplication and aggregation in Python.
+That is the measurement that makes a scan-on-open design reasonable; the Rust implementation
+has the same prefilter the Codex tail already uses. It is still not on the refresh path — see
+[`usage-contract.md`](usage-contract.md).
 
 ## The advisory lock
 
@@ -552,7 +714,9 @@ design rests on.
 
 ## Times are written in UTC
 
-`resetsAt`, `sourceAt` and `updatedAt` are RFC 3339 with a `Z`. The standard library has
+`resetsAt`, `sourceAt` and `updatedAt` are RFC 3339 with a `Z` — and so are `since` and
+`scanned_at` in the usage store, whose bucket keys are **UTC hours** for the same reason.
+The standard library has
 no time-zone database and no way to ask the operating system for the current offset, so a
 local offset would cost either a runtime dependency or hand-written daylight-saving code
 in the one crate that is supposed to be boring. A UTC timestamp names the same instant, a

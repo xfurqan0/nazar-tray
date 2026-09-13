@@ -63,14 +63,24 @@ uninstall never asks. Both are one `Remove-Item` away.
 
 There are many. This one is built on one rule:
 
-**By default, nazar-tray never reads your tokens and never talks to the network.**
+**By default, nazar-tray never reads your sign-in tokens and never talks to the network.**
 
 Every other quota tool reads your OAuth token, or even your browser cookies, from inside an unsigned binary, then calls an undocumented endpoint that rate-limits them. nazar-tray does neither by default, because the numbers are already on your disk:
 
 - **Codex** writes its server-reported usage into every session log (`~/.codex/sessions/…/rollout-*.jsonl`).
 - **Claude Code** hands the same numbers to your status line on every refresh. A tiny wrapper (`nazar-statusline`) records them and then runs whatever status line you already had, unchanged. It ships beside the tray and **installs itself into nothing**: you press a button in the settings page, it shows you the diff first, it takes a copy of `settings.json` before it writes, and removing it puts your own status line back exactly — [the section below](#the-status-line-wrapper).
 
-That is the whole default data path: two local files in, one local `limits.json` out. The same file feeds the quota strip on the Nazar canvas.
+That is the whole default quota path: two local files in, one local `limits.json` out. The same file feeds the quota strip on the Nazar canvas.
+
+### What it reads, and what it never reads
+
+**Quota comes from two files, and the fields are countable.** From a Codex session log: the `rate_limits` block Codex writes into it — two percentages, two window lengths, two reset times and the plan name. From Claude Code: the same kind of numbers, handed to your status line on every redraw and recorded by the wrapper — two percentages and two reset times. Eleven values in total reach `limits.json`, and nothing else does.
+
+**Usage history — arriving in 0.2.0 — reads your session transcripts, and takes nine fields out of them.** To answer *how many tokens did I spend, and on which model*, nazar-tray reads `~/.claude/projects/**/*.jsonl` (subagent transcripts included) and the `token_count` events in the Codex logs it already opens. From a Claude record it takes the record type, the timestamp, the model id, the four token counters **the server itself reported**, and two ids that exist only to drop duplicate records and are never written anywhere. From a Codex event: the timestamp, four counters, and the model name from the turn. That is the whole of it, and none of it is an estimate — these are the numbers the provider reported, added up.
+
+**Your prompts and the replies to them are never read.** Not the message content, not the reasoning, not tool input or tool output, not file contents or command output — and not the paths, project names, branch names or session ids that sit beside them in the same file. The reader does not filter a line and hope: it builds a new record out of the fields named above, so everything else is gone with the parse.
+
+**A test is what makes that a fact rather than a promise.** A transcript whose every text field carries a sentinel string is run through the whole scan, and the build fails if that string appears in the result, in the totals, or in the file they are written to. It is the gate the Codex reader has been through since the first release, and the usage readers ship with it or they do not ship. The complete inventory, field by field, including everything deliberately not read, is [docs/pinned-internal-formats.md](docs/pinned-internal-formats.md); what comes out the other end is [docs/usage-contract.md](docs/usage-contract.md) — hourly totals per model in `%APPDATA%\nazar\usage\`, which no other program reads, and which goes nowhere, because by default nothing here talks to the network at all.
 
 **Detailed windows (opt-in).** Claude's status line only reports the 5-hour and the global weekly window. If you are on a Max plan, your real constraint may be a model-specific weekly window that only the official usage endpoint reports. Turn on *Detailed windows* in settings and nazar-tray will read the token Claude Code already stores, keep it in memory for a single request, and never write or log it. Off by default, and **asked once**: the passive path carries no plan name at all, so nazar-tray cannot tell whether you are on Max — which is why the banner is a question rather than an announcement, and why answering it either way settles it for good.
 
@@ -90,6 +100,9 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)
 - `nazar-tray --print` for scripts and for Linux, and `--print --write` to refresh
   `~/.nazar/limits.json` once without a tray running
+- **Usage history — in 0.2.0, not in this release:** tokens this week, this month and all
+  time, one row per model, for both providers, from the numbers the providers already
+  reported ([what it reads](#what-it-reads-and-what-it-never-reads))
 - A **per-user installer** — no administrator rights, no service, no scheduled task — and an
   uninstaller that removes the startup entry, the record Windows keeps beside it, and the
   status-line wrapper's edit to Claude Code's settings
@@ -266,8 +279,11 @@ left in English.
   already be released — [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md)
 - v2: macOS build, multiple accounts, more providers
 - Linux: CLI output and the Nazar canvas; a tray popup is not reliably possible on Linux today
-- Wanted, not scheduled: usage history — tokens per day for the week, per week for all time.
-  The list of such things is [docs/FUTURE.md](docs/FUTURE.md)
+- 0.2.0: **usage history** — tokens per week, per month and for all time, one row per model,
+  both providers. Planned as work packages in [docs/PROJECT.md](docs/PROJECT.md) §7, with what
+  it reads [above](#what-it-reads-and-what-it-never-reads) and the file it writes in
+  [docs/usage-contract.md](docs/usage-contract.md)
+- Anything else that is wanted but not scheduled is [docs/FUTURE.md](docs/FUTURE.md)
 
 ## Development
 
