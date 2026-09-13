@@ -6,6 +6,106 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
+## [Unreleased]
+
+**Usage history.** 0.1.0 answered *how much of my window is gone?* The tray now also answers
+*how many tokens did I actually spend, and on which model?* — from numbers that were already
+on the disk, for both providers, without a network call and without an estimate anywhere in
+it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
+`schemaVersion: 1`, and Nazar reads nothing new.
+
+### Added
+
+- **A Usage view, on a button in the panel footer.** Three ranges — **Week**, **Month**,
+  **All** — one row per model, both providers in the same list, a strip of days underneath,
+  and a *since {date}* line saying how far back the history actually goes. The headline is
+  **`input + output + cache_create`**, with **`cache_read` printed beside it and never folded
+  in**: cache reads were 98.5 % of the raw total over six days of real work, so a headline
+  that swallowed them would be a number about caching with the work lost in the rounding. An
+  absent counter prints an em dash and a reported zero prints `0` — the same distinction the
+  quota view draws between *nobody read this* and *you have used none of it*. Model ids are
+  printed exactly as the provider spelled them, never merged and never translated. **No
+  charting library** (decision K2): the day strip and the per-model bars are the same CSS
+  meter the quota rows use, so the view themes itself and weighs nothing. Twenty new keys in
+  all six languages, and **no magnitude mark among them** — `22.3M` in English, `22,3 млн` in
+  Russian and `2230만` in Korean are `Intl.NumberFormat`'s, floored to the precision they are
+  shown at, because 22.39 M is not 22.4 M.
+- **The numbers come off files that were already there.** Claude Code's transcripts —
+  `~/.claude/projects/**/*.jsonl`, **sub-agent transcripts included**, which are 78 % of the
+  bytes — and the `token_count` events in the Codex session logs the quota reader already
+  opens. Nine fields are read from a record and a **new record is built out of them**, so
+  everything else is gone with the parse. Nothing is derived, inferred or estimated: these are
+  the counters the provider itself reported, added up.
+- **Duplicates are dropped exactly, because they cannot be divided out afterwards.** Claude
+  Code writes one line per content block and every copy carries the whole `usage` object —
+  **44.4 % of lines on this machine are repeats, inflating the totals 1.70×**, and the factor
+  is not a constant that could be corrected for later (2.49×, 2.38× and 1.04× over three
+  slices of the same machine's logs). A Claude record is keyed `(message.id, requestId)` and
+  the **largest** reading of each key wins; Codex writes no event id, so the same guarantee is
+  built out of file identity, the byte offset and a fingerprint of every event already
+  credited. A transcript that is truncated, rotated or pruned is re-read from the top and adds
+  **nothing**.
+- **Hourly UTC totals, one file per month, in `%APPDATA%\nazar\usage\`.** Written whole
+  through the same temp-file-and-rename that writes `limits.json`, by the one process holding
+  the writer's lock, and kept there so the history survives the transcripts being pruned — a
+  merge takes the larger of two values per counter, so a vanished transcript cannot erase what
+  it once contributed. The file is specified in [docs/usage-contract.md](docs/usage-contract.md)
+  and every field either reader may touch, including everything deliberately not read, is in
+  [docs/pinned-internal-formats.md](docs/pinned-internal-formats.md).
+- **A second line on the tray tooltip**: `This week 22.3M · claude-sonnet-5` under the quota
+  line — the week's tokens and the model that spent most of them. Windows shows 127 characters
+  of a tooltip and silently drops the rest, so the tooltip is built in three steps that give
+  up the least valuable thing left, and the week line is given up before any part of the quota
+  line is. **The icon still says nothing about usage**: it is the mark at every reading, and
+  grey only for unknown.
+- **The scan is never on the quota path.** Quota is why this application exists, it reads two
+  small files in milliseconds, and it must not queue behind a walk of hundreds of megabytes —
+  so nothing scans on the refresh loop. It runs when the Usage view is opened, **at most once
+  every five minutes**, and *Refresh* is the only thing that overrides that. Measured on the
+  maintainer's machine: **126 transcripts, 259 MB, 234 ms** for a first full pass and **15 ms**
+  for the next one; 23 Codex logs, 52.5 MB, **88 ms** and then 3.7 ms.
+
+### Changed
+
+- **The theme toggle left the panel footer**, and the settings page's picker is the only way
+  to change a theme now. The footer button's visible label was the name of the theme it was
+  *already* painting while its `aria-label` said *Switch theme* — a statement to the eye and
+  an action to a screen reader — and the settings page has named both themes in a dropdown
+  since 0.1.0. It is a **deletion rather than a move**: nothing was added anywhere, and the
+  slot it frees is where the Usage button went. `panel.action.theme` is gone from all six
+  locale files, the first key this product has ever removed.
+- **The README's privacy statement says which files are read and which fields are taken.**
+  *"Never reads your tokens and never talks to the network"* is still true and stays — "token"
+  there is a sign-in token — but it is no longer the whole sentence, because reading
+  transcripts at all reverses a line this repository had written down. So the reversal is
+  written down too: what is read, and what is **never** read — not message content, not
+  replies, not reasoning, not tool input or output, not the paths, project names, branch names
+  or session ids sitting beside them in the same file. **A test is what makes that a fact
+  rather than a promise**: a transcript whose every text field carries a sentinel goes through
+  the whole scan, and the build fails if that string appears in the result, in the totals, or
+  in the file they are written to. A promise that has to be read carefully to stay true has
+  already broken.
+
+### Notes
+
+- **The counters are the provider's own reported numbers, and there is no cost anywhere.** No
+  currency, no price table, no guess at what a model charges — a number this product cannot
+  source is a number it does not print.
+- **A week starts on Monday where you are.** Nothing on the Rust side ever asks the machine
+  which zone that is; the panel does the local arithmetic and sends instants, so the store
+  holds hourly UTC buckets and every local view is cut out of them. A bucket lands in the
+  local day its hour **starts** in, which is what keeps an offset like `+05:30` from splitting
+  an hour by a ratio it would have to invent.
+- **A Codex event before its session's first turn context is counted under the model id
+  `unknown`**, rather than dropped or attributed to whichever model was named next. Those
+  tokens were spent; which model spent them is a thing nobody knows.
+- **The usage store lives with your settings, not in `~/.nazar`.** `limits.json` is safe to
+  paste into a bug report — two percentages and two reset times say nothing about what anybody
+  was doing — and a month of hourly token counts is a usage profile. It breaks no rule about
+  credentials and it is still not a thing to hand over by reflex, so it sits with the user's
+  own files rather than in the directory this project tells other programs to read. No other
+  program reads it, this one included, until that is its own work package on both sides.
+
 ## [0.1.0] — 2026-09-13
 
 The first release, and everything in it: the WP0 skeleton, the WP1 Codex reader, the WP2

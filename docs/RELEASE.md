@@ -382,7 +382,11 @@ manual approval `docs/CODE_SIGNING.md` promises.
 
 - Leave `main` on the released version until the next change lands, then bump it
   with a `## [Unreleased]` section in `CHANGELOG.md`. A `main` that is already on
-  the registry's version with no note is how a mystery starts.
+  the registry's version with no note is how a mystery starts. **The section goes
+  in as soon as something lands and the six version numbers do not move with it:
+  step 1 sets them in the release commit, in the same change that renames the
+  heading to `## [X.Y.Z] — YYYY-MM-DD`, so a tree is never carrying a version no
+  build was ever made from.**
 - Watch the first issues. A tool that reads another program's internal files gets
   "it shows nothing" reports; `nazar-tray --print` and `nazar-statusline status`
   are the first two things to ask for.
