@@ -150,7 +150,14 @@ test("T-WP15's command is there, and the panel's half of it matches the Rust hal
     assert.ok(types.includes(counter), `ui/src/snapshot.ts does not name ${counter}`);
     assert.ok(store.includes(`pub ${counter}:`), `the store no longer has a ${counter}`);
   }
-  for (const key of ["scanned_at", "files_seen", "took_ms"]) {
+  for (const key of [
+    "scanned_at",
+    "files_seen",
+    "took_ms",
+    // T-WP17: a pass is both readers, so the diagnostic says which ones ran.
+    "providers_scanned",
+    "skipped_api_errors",
+  ]) {
     assert.ok(types.includes(key), `ui/src/snapshot.ts does not name ${key}`);
     assert.ok(rustUsage.includes(key), `usage.rs does not name ${key}`);
   }
@@ -284,8 +291,13 @@ test("the refresh loop announces every pass, not only the ones that moved", () =
     refresh,
     /self\.emit\(Event::Refreshed\);\s*if changed \{\s*self\.emit\(Event::SnapshotChanged\)/s,
   );
+  // Two things hang off every pass, and neither may quietly stop happening. The toast is
+  // WP5's; the tooltip's second line is T-WP17's, and it is here rather than on
+  // `SnapshotChanged` because a store another process has just scanned moves while the quota
+  // numbers stand still.
   const main = read("crates/nazar-tray/src/main.rs");
-  assert.match(main, /Event::Refreshed => alerts::on_refresh\(app\)/);
+  assert.match(main, /Event::Refreshed => \{\s*alerts::on_refresh\(app\);/);
+  assert.match(main, /Event::Refreshed => \{[^}]*tray::refresh_tooltip\(app\);/s);
 });
 
 test("the panel asks for the fields the derived view actually carries", () => {

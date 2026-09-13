@@ -2,7 +2,7 @@
 
 **Your Claude Code and Codex quota, in the system tray. Zero credentials, zero network.** The tray face of [Nazar](https://github.com/xfurqan0/nazar).
 
-A pixel bead sits in your tray. Hover it for your most-constrained window; click it for the full picture: every window, its percentage, and when it resets. Orange at 60 %, red at 85 %, a notification before you hit the wall.
+A pixel bead sits in your tray. Hover it for your most-constrained window and what this week has cost; click it for the full picture: every window, its percentage, when it resets, and where your tokens went. Orange at 60 %, red at 85 %, a notification before you hit the wall.
 
 > Status: **0.1.0, released.** Everything is here: both readers, the refresh loop inside the
 > tray process, `~/.nazar/limits.json` written atomically by one process and only when the
@@ -93,8 +93,9 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 
 ## What you get
 
-- Tray bead icon with your most-constrained window in its tooltip; the bead turns grey when
-  nothing could be read, never a false zero
+- Tray bead icon whose tooltip carries two lines: your most-constrained window with its
+  reset, and this week's tokens with the model that spent most of them. The bead turns grey
+  when nothing could be read, never a false zero, and it says nothing about usage
 - Popup panel with both providers, all windows, reset countdowns
 - Notifications at 60 / 85 / 100 %, once per window per reset
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)

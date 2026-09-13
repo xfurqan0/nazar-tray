@@ -127,12 +127,23 @@ export interface UsageBucket {
   readonly requests: number;
 }
 
-/** What one scan of the transcripts did, for a diagnostic line. */
+/**
+ * What one scan did, for a diagnostic line.
+ *
+ * The counters are **both readers added together** — a pass runs Claude's and Codex's under
+ * one throttle — which is why `providers_scanned` is here: 412 files with no Codex on the
+ * machine and 412 files with a Codex nobody could resolve are the same number, and only one
+ * of them is complete.
+ */
 export interface UsageScan {
   readonly files_seen: number;
   readonly lines: number;
   readonly duplicates: number;
   readonly took_ms: number;
+  /** Lines the server answered with an error and billed for none of. */
+  readonly skipped_api_errors?: number;
+  /** The readers that ran, in the order they ran: `claude`, then `codex`. */
+  readonly providers_scanned?: readonly string[];
 }
 
 /** The answer: provider → UTC hour `YYYY-MM-DDTHH` → model → counters. */

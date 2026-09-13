@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "No se encontró la carpeta de ajustes en esta máquina.",
   "usage.error.scan_failed": "No se pudieron leer los registros de sesión.",
   "usage.error.store_unreadable": "No se pudo leer el historial de uso.",
-  "usage.error.unknown": "No se pudo mostrar el historial de uso."
+  "usage.error.unknown": "No se pudo mostrar el historial de uso.",
+  "tray.tooltip.week": "Esta sem. {tokens} · {model}"
 }

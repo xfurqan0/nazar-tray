@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "Не удалось найти папку настроек на этой машине.",
   "usage.error.scan_failed": "Не удалось прочитать журналы сессий.",
   "usage.error.store_unreadable": "Не удалось прочитать историю расхода.",
-  "usage.error.unknown": "Не удалось показать историю расхода."
+  "usage.error.unknown": "Не удалось показать историю расхода.",
+  "tray.tooltip.week": "За неделю {tokens} · {model}"
 }

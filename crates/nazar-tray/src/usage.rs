@@ -41,20 +41,32 @@
 //!
 //! # What this module does not do
 //!
-//! No user interface: T-WP16 draws the view. No Codex scan: `nazar_core::usage` has no
-//! `scan_codex` yet — T-WP14 is writing it — and the one line that will call it is marked
-//! below rather than guessed at.
+//! No user interface: T-WP16 draws the view.
+//!
+//! # T-WP17 adds two things
+//!
+//! **The Codex half of a scan.** T-WP14 landed [`nazar_core::usage::scan_codex_home`], and
+//! [`scan_if_due`] now runs it beside the Claude one, under the same throttle and the same
+//! writer rule. The counters the panel sees are the two summed, with
+//! [`UsageScan::providers_scanned`] saying which readers were behind them — a machine with
+//! no Codex on it reports `["claude"]` rather than half a number nobody can account for.
+//!
+//! **The tray tooltip's second line.** [`week_usage`] folds the store into one headline and
+//! one model name for *this week*; [`crate::tray::tooltip`] writes them. The week it means
+//! is the one described on [`week_window`], which is the only interesting problem in this
+//! file: this crate may not ask the machine which time zone it is in, and a week starts on
+//! a Monday somewhere.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
-use nazar_core::clock::{Clock, SystemClock};
+use nazar_core::clock::{self, Clock, SystemClock};
 use nazar_core::error::Error;
 use nazar_core::paths;
-use nazar_core::usage::{Hours, UsageSummary};
+use nazar_core::timefmt;
+use nazar_core::usage::{Bucket, Hours, PROVIDER, PROVIDER_CODEX, UsageSummary};
 use serde::{Deserialize, Serialize};
 
 /// The range names the panel may ask for.
@@ -91,32 +103,52 @@ pub struct UsageRequest {
     pub force: bool,
 }
 
-/// What one scan of the transcripts did, for a diagnostic line.
+/// What one scan did, for a diagnostic line.
 ///
-/// Four of [`UsageSummary`]'s twenty fields: enough to say *"412 files, 90 210 lines, 51 344
+/// Five of [`UsageSummary`]'s twenty fields: enough to say *"412 files, 90 210 lines, 51 344
 /// duplicates, 1.8 s"* and not enough to be a second contract. The rest stays in the core
 /// crate, where the tests that prove it live.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **The counters are the readers' sums, and [`providers_scanned`] is why that is honest.**
+/// A pass runs Claude's reader and Codex's, and adding their file counts without saying so
+/// would make *"412 files"* a number nobody could take apart again. The list names exactly
+/// the readers that ran, so a machine with no Codex on it says `["claude"]` and a pass where
+/// one reader's tree could not be resolved says which one was left out.
+///
+/// [`providers_scanned`]: UsageScan::providers_scanned
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageScan {
-    /// Transcript files found.
+    /// Transcript and rollout files found, both readers together.
     pub files_seen: u64,
-    /// Lines that carried a usage object.
+    /// Lines that carried a usage object, both readers together.
     pub lines: u64,
     /// Copies of a message that had already been counted.
+    ///
+    /// Claude's only: a rollout event carries no identifier, so the Codex reader's whole
+    /// dedupe is its byte cursor and it has nothing to count here.
     pub duplicates: u64,
-    /// How long the scan took, in milliseconds.
+    /// How long the whole pass took, in milliseconds.
     pub took_ms: u64,
+    /// Lines the server answered with an error and billed for none of, skipped by name.
+    ///
+    /// T-WP13b's finding: an `isApiErrorMessage` line carries a full set of counters. All
+    /// eleven on the machine this was measured on were also `<synthetic>`, so no total moved
+    /// — which is exactly why the number is reported rather than assumed to stay zero.
+    pub skipped_api_errors: u64,
+    /// The readers that ran, in the order they ran: `claude`, then `codex`.
+    pub providers_scanned: Vec<String>,
 }
 
 impl UsageScan {
-    /// The four numbers the panel shows, taken out of the summary.
-    fn of(summary: &UsageSummary, took_ms: u64) -> Self {
-        UsageScan {
-            files_seen: summary.files_seen,
-            lines: summary.lines,
-            duplicates: summary.duplicates,
-            took_ms,
-        }
+    /// Add one reader's summary to the pass.
+    fn absorb(&mut self, provider: &str, summary: &UsageSummary) {
+        self.files_seen = self.files_seen.saturating_add(summary.files_seen);
+        self.lines = self.lines.saturating_add(summary.lines);
+        self.duplicates = self.duplicates.saturating_add(summary.duplicates);
+        self.skipped_api_errors = self
+            .skipped_api_errors
+            .saturating_add(summary.skipped_api_errors);
+        self.providers_scanned.push(provider.to_owned());
     }
 }
 
@@ -238,9 +270,9 @@ impl Throttle {
     /// Remember that a scan started at `now_ms`.
     ///
     /// Called **whether or not the scan succeeded**. A store this build cannot read is a
-    /// state the user has to fix — `cursors.json` that is no longer JSON is an error rather
-    /// than a fresh start, on purpose — and retrying it on every panel open would turn one
-    /// broken file into a scan on every click.
+    /// state the user has to fix — a `cursors-claude.json` that is no longer JSON is an error
+    /// rather than a fresh start, on purpose — and retrying it on every panel open would turn
+    /// one broken file into a scan on every click.
     pub fn ran(&mut self, now_ms: u64) {
         self.last = Some(now_ms);
     }
@@ -262,6 +294,11 @@ pub struct UsageState {
     /// both found the store due would otherwise read the same transcripts twice and race for
     /// the same cursor document.
     throttle: Mutex<Throttle>,
+    /// Where the reader's own week begins, as seconds into a week from the epoch.
+    ///
+    /// [`UTC_MONDAY_PHASE`] until the panel says otherwise, and then whatever the panel's
+    /// last *week* request implied. See [`week_window`] for the whole argument.
+    phase: Mutex<i64>,
 }
 
 impl UsageState {
@@ -271,6 +308,7 @@ impl UsageState {
         UsageState {
             writer,
             throttle: Mutex::new(Throttle::default()),
+            phase: Mutex::new(UTC_MONDAY_PHASE),
         }
     }
 
@@ -278,6 +316,21 @@ impl UsageState {
     #[must_use]
     pub fn writes(&self) -> bool {
         self.writer
+    }
+
+    /// Where the tooltip's week begins, as seconds into a week from the epoch.
+    #[must_use]
+    pub fn phase(&self) -> i64 {
+        *self.phase.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Remember the week the panel just asked about.
+    ///
+    /// Advisory, like everything else behind this lock: a poisoned mutex means a thread
+    /// panicked while holding it, and the worst that costs here is a tooltip whose week
+    /// starts at the wrong hour.
+    fn remember_week(&self, phase: i64) {
+        *self.phase.lock().unwrap_or_else(PoisonError::into_inner) = phase;
     }
 }
 
@@ -290,12 +343,21 @@ impl UsageState {
 /// arrive.
 #[tauri::command(async)]
 pub fn get_usage(
+    app: tauri::AppHandle,
     state: tauri::State<'_, UsageState>,
     request: UsageRequest,
 ) -> Result<UsageResponse, UsageError> {
     let (from, to) = window(&request)?;
     let state_dir =
         paths::settings_dir().map_err(|error| UsageError::from_core("no_state_dir", &error))?;
+
+    // The panel has just told this process where its week begins, in the only way that is
+    // allowed to: by naming the instant. See [`week_window`].
+    if request.range == "week"
+        && let Some(start) = timefmt::unix_seconds_from_rfc3339(&from)
+    {
+        state.remember_week(week_phase(start));
+    }
 
     let scanned = if state.writes() {
         scan_if_due(&state.throttle, &state_dir, request.force)?
@@ -315,6 +377,11 @@ pub fn get_usage(
     }
     damaged.sort();
     damaged.dedup();
+
+    // The scan that just ran is the only thing that moves the store, so this is where the
+    // tooltip's second line is newest. The refresh tick redraws it again every pass, from
+    // the store and never from a scan; `main.rs` is where that is wired.
+    crate::tray::refresh_tooltip(&app);
 
     Ok(UsageResponse {
         range: request.range,
@@ -340,6 +407,21 @@ struct Scanned {
 ///
 /// `None` when no scan ran. The lock is held for the whole call on purpose; see
 /// [`UsageState::throttle`].
+///
+/// **Both readers, one throttle.** Claude's transcripts and Codex's rollout logs are scanned
+/// in the same pass and written into the same month documents, because they answer one
+/// question — *what has this machine spent this week* — and a panel that could see one half
+/// updated and the other five minutes behind would be showing a week that never happened.
+///
+/// **Either reader may be absent, and that is not a failure.** A machine with no Codex on it
+/// resolves no Codex home, and a pass that resolves neither does not count as a pass: the
+/// throttle is left alone so that installing one of them takes effect on the next panel open
+/// rather than in five minutes.
+///
+/// **A reader that fails does not stop the other.** Each commits its own totals before it
+/// returns, so a Codex tree that cannot be walked must not throw away a Claude scan that
+/// would have worked. The first error is kept and reported after both have been tried, which
+/// is the same "every reader answers for itself" the quota side has always had.
 fn scan_if_due(
     throttle: &Mutex<Throttle>,
     state_dir: &Path,
@@ -350,30 +432,52 @@ fn scan_if_due(
     if !throttle.due(now_ms, force) {
         return Ok(None);
     }
-    let Some(home) = claude_home() else {
-        // The transcripts cannot be pointed at from here; see [`home_for`]. The store still
-        // answers from whatever it already holds, and the throttle is left alone so that
-        // fixing the environment takes effect on the next panel open rather than in five
-        // minutes.
+
+    // Each reader's tree, named rather than derived: `CLAUDE_CONFIG_DIR` through
+    // [`claude_projects`] and `CODEX_HOME` through the core crate's own resolver, which the
+    // quota reader already uses. Neither variable is read here a second time — one spelling
+    // of an environment variable per program.
+    let claude = claude_projects();
+    let codex = nazar_core::codex::codex_home().ok();
+    if claude.is_none() && codex.is_none() {
         return Ok(None);
-    };
+    }
 
     // Marked before the scan rather than after it: a scan that fails is a scan that ran, and
     // retrying a broken store on every panel open would be worse than the failure.
     throttle.ran(now_ms);
 
     let started = Instant::now();
-    let summary = nazar_core::usage::scan_claude(&home, state_dir)
-        .map_err(|error| UsageError::from_core("scan_failed", &error))?;
-    // T-WP14 hook: `nazar_core::usage::scan_codex(codex_home, state_dir)` goes here, and its
-    // summary is added to the one below. It does not exist yet — this is the only line that
-    // changes when it does.
-    let took_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut scan = UsageScan::default();
+    let mut damaged = Vec::new();
+    let mut failure = None;
 
-    Ok(Some(Scanned {
-        scan: UsageScan::of(&summary, took_ms),
-        damaged: summary.damaged,
-    }))
+    if let Some(projects) = claude {
+        match nazar_core::usage::scan_claude_in(&projects, state_dir) {
+            Ok(summary) => {
+                scan.absorb(PROVIDER, &summary);
+                damaged.extend(summary.damaged);
+            }
+            Err(error) => failure = Some(UsageError::from_core("scan_failed", &error)),
+        }
+    }
+    if let Some(home) = codex {
+        match nazar_core::usage::scan_codex_home(&home, state_dir) {
+            Ok(summary) => {
+                scan.absorb(PROVIDER_CODEX, &summary);
+                damaged.extend(summary.damaged);
+            }
+            Err(error) => {
+                failure.get_or_insert_with(|| UsageError::from_core("scan_failed", &error));
+            }
+        }
+    }
+    if let Some(failure) = failure {
+        return Err(failure);
+    }
+
+    scan.took_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(Some(Scanned { scan, damaged }))
 }
 
 /// The window to read, once the request has been checked.
@@ -417,37 +521,219 @@ fn window(request: &UsageRequest) -> Result<(String, String), UsageError> {
     ))
 }
 
-/// The home directory to hand [`nazar_core::usage::scan_claude`].
+/// The `projects` directory to hand [`nazar_core::usage::scan_claude_in`].
 ///
-/// `CLAUDE_CONFIG_DIR` is honoured **here** rather than in the core crate, which takes a home
-/// and derives `<home>/.claude/projects` from it. See [`home_for`] for the one shape it
-/// cannot express.
-fn claude_home() -> Option<PathBuf> {
-    home_for(&paths::claude_config_dir().ok()?)
+/// `CLAUDE_CONFIG_DIR` is honoured **here** rather than in the core crate, which takes the
+/// directory it is told to walk and asks no questions about where it came from.
+/// [`paths::claude_config_dir`] is the one answer this product has about that variable, and
+/// the quota reader uses the same one; `projects` under it is the shape Claude Code writes,
+/// whatever the configuration directory is called.
+///
+/// **This used to be a gap and now is not.** T-WP15 could only name a *home* and derive
+/// `<home>/.claude/projects` from it, so a `CLAUDE_CONFIG_DIR` pointing at a directory not
+/// called `.claude` — a second checkout, a throwaway profile — meant no scan at all, because
+/// scanning `~/.claude` behind the user's back would have been worse. T-WP13b added the entry
+/// point that takes the directory, and this is it being used.
+fn claude_projects() -> Option<PathBuf> {
+    Some(paths::claude_config_dir().ok()?.join("projects"))
 }
 
-/// Which home yields `configured` as its Claude directory, if any.
+// ----------------------------------------------------------------- this week, for a tooltip
+
+/// Seconds in a week.
+const WEEK_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+/// Where a Monday-start week begins in UTC, as seconds into a week from the epoch.
 ///
-/// [`nazar_core::usage::projects_dir`] builds `<home>/.claude/projects`, so pointing a scan
-/// at a configured directory means handing over the home that would produce it:
+/// 1970-01-01 was a Thursday, so the first Monday 00:00 UTC is unix second 345 600 and every
+/// Monday since is that plus a whole number of weeks.
+const UTC_MONDAY_PHASE: i64 = 4 * 24 * 60 * 60;
+
+/// What the tooltip says about this week.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeekUsage {
+    /// `input + output + cache_create`, summed over the week and over both providers.
+    ///
+    /// Never `cache_read`: it was 98.5 % of the raw total over six days of real work, and a
+    /// headline that folded it in would be a number about cache behaviour. The same rule the
+    /// panel's headline follows, for the same reason.
+    pub headline: u64,
+    /// The model with the largest headline, as the source spelled it.
+    ///
+    /// Raw and never translated: a model id is data, and this build cannot know next
+    /// quarter's names. Summed across providers, because the question is *which model*, not
+    /// *which model on which side*.
+    pub model: String,
+}
+
+/// Where the reader's week begins, from an instant that is one of its Mondays.
 ///
-/// * unset — `configured` is already `<home>/.claude`, and its parent is the home;
-/// * set to a directory **named `.claude`** — its parent is the home that yields it, which
-///   is the shape a second checkout or a throwaway profile actually takes;
-/// * set to a directory named anything else — **no home yields it**, and rather than scan
-///   `~/.claude` behind the user's back this answers `None` and no scan runs. The store
-///   still reads back whatever it holds.
+/// A week is 604 800 seconds long and every Monday 00:00 in a given zone is the same number
+/// of seconds into one, so the remainder is the whole of what has to be remembered.
+#[must_use]
+pub fn week_phase(monday: i64) -> i64 {
+    monday.rem_euclid(WEEK_SECONDS)
+}
+
+/// The week `now` falls in, as a half-open range of UTC instants.
 ///
-/// That last case is a real gap and it is the core crate's to close: a `scan_claude_in(
-/// projects_dir, state_dir)` beside the existing entry point would take the directory
-/// directly and this function would collapse to one line. It is written down in
-/// `docs/PROJECT.md` §9 rather than worked around, because a scan of the wrong tree reports
-/// numbers that are wrong without looking wrong.
-fn home_for(configured: &Path) -> Option<PathBuf> {
-    if configured.file_name() == Some(OsStr::new(".claude")) {
-        return configured.parent().map(Path::to_path_buf);
+/// # Why this is not simply Monday in UTC
+///
+/// A week starts on Monday **where the reader is**, and `crates/nazar-core/tests/hygiene.rs`
+/// fails the build on anything in this workspace that asks the machine what time zone it is
+/// in. The panel is allowed to ask — it is JavaScript, and it is one call — and T-WP15 built
+/// the command around exactly that: the panel computes its local Monday and sends the
+/// instant. So the instant is already arriving here, once per look at the usage view, and
+/// nothing new has to be invented to find out where the reader's week begins.
+///
+/// `phase` is that instant with the weeks divided out of it: *how far into a week a Monday
+/// falls*, which for a reader at `+03:00` is Sunday 21:00 UTC and for one at `-05:00` is
+/// Monday 05:00 UTC. Given the phase, every week boundary before and after it is arithmetic
+/// on UTC seconds, and this crate never learns which zone produced it.
+///
+/// # What it costs
+///
+/// * **Before the panel has ever opened the usage view**, the phase is [`UTC_MONDAY_PHASE`]
+///   and the tooltip means a UTC week. A reader at `+03:00` who hovers the icon between
+///   Monday 00:00 and 03:00 local sees last week's number for those three hours, once a
+///   week, until the first time they open the panel. Nothing is wrong afterwards, and
+///   nothing is ever wrong by more than one zone offset.
+/// * **A daylight-saving change moves the phase by an hour**, and this crate does not know
+///   it happened. The panel reports the new one the next time it asks, so the window is
+///   right again at the first look; between the change and that look it is an hour out at
+///   the boundary. Both are written down in `docs/PROJECT.md` §9 rather than hidden.
+///
+/// The alternative — a second Tauri command, or the offset persisted in the config file —
+/// would buy those hours at the price of a wider bridge and a fourth thing that can disagree
+/// with the panel. The tooltip is a glance surface; the panel is where the exact week lives.
+#[must_use]
+pub fn week_window(now: i64, phase: i64) -> (i64, i64) {
+    let start = now - (now - phase).rem_euclid(WEEK_SECONDS);
+    (start, start + WEEK_SECONDS)
+}
+
+/// A token count short enough for a tooltip: `843`, `22.3K`, `22.3M`, `1.5B`.
+///
+/// **Latin magnitude marks, unlike the panel.** `ui/src/usage.ts` hands the number to
+/// `Intl.NumberFormat`, which writes `22.3M` in English and `2230만` in Korean, and T-WP16
+/// put no magnitude mark in a locale file on purpose. There is no `Intl` in Rust and the
+/// tooltip has 127 characters for everything, so this writes the mark itself. It is the one
+/// place in this application where a number is not spelled the way the language spells it,
+/// and the trade is deliberate: four locale keys per language for `K`, `M`, `B` and `T`
+/// would be twenty-four strings to get wrong for a line the shell draws on hover.
+///
+/// **Floored to the precision it is shown at**, the same rule as a quota percentage and as
+/// the panel's own `formatTokens`: 22.39 M is not 22.4 M, because the store did not measure
+/// the difference. A trailing `.0` is dropped, which is what `Intl` does with
+/// `maximumFractionDigits: 1`, so `1000` is `1K` on both sides.
+#[must_use]
+pub fn compact(value: u64) -> String {
+    const MARKS: [(u64, char); 4] = [
+        (1_000_000_000_000, 'T'),
+        (1_000_000_000, 'B'),
+        (1_000_000, 'M'),
+        (1_000, 'K'),
+    ];
+
+    let Some(&(unit, mark)) = MARKS.iter().find(|(unit, _)| value >= *unit) else {
+        // Anything under a thousand is printed as itself: 843 is not 0.8K.
+        return value.to_string();
+    };
+    let whole = value / unit;
+    // One decimal below a hundred, none above it — three significant figures either way, and
+    // five characters or fewer for anything a week could actually reach.
+    let tenths = if whole < 100 {
+        (value % unit) * 10 / unit
+    } else {
+        0
+    };
+    if tenths == 0 {
+        format!("{whole}{mark}")
+    } else {
+        format!("{whole}.{tenths}{mark}")
     }
-    None
+}
+
+/// `input + output + cache_create`.
+///
+/// Never `cache_read`, which is the whole point of the number. All five counters are present
+/// on every stored bucket since T-WP13b — absent against zero is a distinction about one
+/// record, not about a sum over many — so this is an addition rather than a decision, and
+/// what "nothing here" means is decided once, in [`fold`], where it is a total of zero.
+fn headline(bucket: &Bucket) -> u64 {
+    bucket
+        .input
+        .saturating_add(bucket.output)
+        .saturating_add(bucket.cache_create)
+}
+
+/// The headline and the busiest model across a set of hourly buckets.
+///
+/// `None` when the headline comes to zero, which covers both ways there is nothing to say: a
+/// week nothing was stored for, and a week whose buckets hold only cache reads. Either way
+/// the second line has nothing to add and the first is a whole sentence on its own.
+///
+/// A tie goes to the model that sorts first, so the same store always produces the same
+/// tooltip. There is no honest tie-break between two models that spent the same amount, and
+/// a tooltip that flickered between them on every pass would be worse than an arbitrary
+/// rule written down.
+#[must_use]
+pub fn fold(providers: &BTreeMap<String, Hours>) -> Option<WeekUsage> {
+    let mut total = 0u64;
+    let mut per_model: BTreeMap<&str, u64> = BTreeMap::new();
+
+    for hours in providers.values() {
+        for models in hours.values() {
+            for (model, bucket) in models {
+                let headline = headline(bucket);
+                if headline == 0 {
+                    continue;
+                }
+                total = total.saturating_add(headline);
+                let entry = per_model.entry(model.as_str()).or_default();
+                *entry = entry.saturating_add(headline);
+            }
+        }
+    }
+    if total == 0 {
+        return None;
+    }
+
+    let mut best: Option<(&str, u64)> = None;
+    for (model, spent) in per_model {
+        if best.is_none_or(|(_, highest)| spent > highest) {
+            best = Some((model, spent));
+        }
+    }
+    best.map(|(model, _)| WeekUsage {
+        headline: total,
+        model: model.to_owned(),
+    })
+}
+
+/// This week, read back from the store.
+///
+/// **Reads, never scans.** The tray redraws its tooltip on every refresh pass, and the pass
+/// exists to read two small files in milliseconds; a scan reads hundreds of megabytes and
+/// stays where T-WP15 put it, behind the panel and behind a five-minute throttle. What this
+/// opens is the one or two month documents the week touches, which is the same work the
+/// panel already does every time it is shown.
+///
+/// `None` for every way this can come to nothing — no settings directory, a clock that is
+/// not a timestamp, a store that will not read, a week with nothing in it — because a
+/// tooltip has no room to explain itself and the panel says all four properly.
+#[must_use]
+pub fn week_usage(state: &UsageState) -> Option<WeekUsage> {
+    let state_dir = paths::settings_dir().ok()?;
+    let now = clock::wall_seconds(&SystemClock)?;
+    let (from, to) = week_window(now, state.phase());
+    let view = nazar_core::usage::query(
+        &state_dir,
+        &timefmt::rfc3339_from_unix_seconds(from),
+        &timefmt::rfc3339_from_unix_seconds(to),
+    )
+    .ok()?;
+    fold(&view.providers)
 }
 
 /// An error message with the home directory collapsed to `~`.
@@ -622,22 +908,22 @@ mod tests {
     }
 
     #[test]
-    fn the_home_handed_to_the_scanner_is_the_one_that_yields_the_configured_directory() {
-        let home = Path::new("/home/someone");
+    fn the_directory_handed_to_the_scanner_is_projects_under_the_configured_one() {
+        // `CLAUDE_CONFIG_DIR` is read by the process and cannot be moved from a test without
+        // making the suite unsound, so what is checked is the shape this builds around
+        // whatever that answer is: `projects` under the configuration directory, never a
+        // guess derived from a home. Every override that used to be inexpressible — a
+        // directory not called `.claude` — is expressible now, which is T-WP13b's half of
+        // this and the reason `home_for` is gone.
+        let configured = paths::claude_config_dir().expect("a machine with a home directory");
+        let scanned = claude_projects().expect("the same answer, one segment longer");
+
+        assert_eq!(scanned, configured.join("projects"));
+        assert_eq!(scanned.parent(), Some(configured.as_path()));
         assert_eq!(
-            home_for(&home.join(".claude")),
-            Some(home.to_path_buf()),
-            "the default shape: <home>/.claude"
-        );
-        assert_eq!(
-            home_for(Path::new("/tmp/profile/.claude")),
-            Some(PathBuf::from("/tmp/profile")),
-            "an override that names a .claude directory is expressible"
-        );
-        assert_eq!(
-            home_for(Path::new("/opt/claude-config")),
-            None,
-            "an override no home yields must not quietly scan the real one"
+            scanned.file_name(),
+            Some(std::ffi::OsStr::new("projects")),
+            "the directory Claude Code writes under, whatever its parent is called"
         );
     }
 
@@ -673,10 +959,12 @@ mod tests {
                 lines: 90_210,
                 duplicates: 51_344,
                 took_ms: 1_840,
+                skipped_api_errors: 11,
+                providers_scanned: vec![PROVIDER.to_owned(), PROVIDER_CODEX.to_owned()],
             }),
         };
         let json = serde_json::to_string(&response).expect("a response serialises");
-        for key in ["scanned_at", "files_seen", "took_ms"] {
+        for key in ["scanned_at", "files_seen", "took_ms", "providers_scanned"] {
             assert!(json.contains(key), "{key} is not in {json}");
         }
         assert!(
@@ -747,5 +1035,385 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&state_dir).ok();
+    }
+
+    // ------------------------------------------------------- T-WP17: the scan, and the week
+
+    /// A summary with the three counters a pass reports, and nothing else.
+    fn summary(files_seen: u64, lines: u64, duplicates: u64) -> UsageSummary {
+        UsageSummary {
+            files_seen,
+            lines,
+            duplicates,
+            ..UsageSummary::default()
+        }
+    }
+
+    #[test]
+    fn a_pass_reports_the_two_readers_added_up_and_says_which_ran() {
+        let mut scan = UsageScan::default();
+        scan.absorb(PROVIDER, &summary(412, 90_210, 51_344));
+        scan.absorb(PROVIDER_CODEX, &summary(21, 3_180, 0));
+
+        assert_eq!(scan.files_seen, 433);
+        assert_eq!(scan.lines, 93_390);
+        assert_eq!(
+            scan.duplicates, 51_344,
+            "only Claude has duplicates to count"
+        );
+        assert_eq!(scan.providers_scanned, ["claude", "codex"]);
+    }
+
+    #[test]
+    fn a_machine_with_only_one_of_the_two_says_so_rather_than_reporting_half_a_sum() {
+        // Why the list is in the answer at all: 412 files with no Codex on the machine and
+        // 412 files with a Codex nobody could resolve are the same number, and only one of
+        // them is a complete one.
+        let mut scan = UsageScan::default();
+        scan.absorb(PROVIDER, &summary(412, 90_210, 51_344));
+
+        assert_eq!(scan.providers_scanned, ["claude"]);
+        assert_eq!(scan.files_seen, 412);
+    }
+
+    #[test]
+    fn a_reader_that_ran_and_found_nothing_still_ran() {
+        let mut scan = UsageScan::default();
+        scan.absorb(PROVIDER, &summary(0, 0, 0));
+        scan.absorb(PROVIDER_CODEX, &summary(21, 3_180, 0));
+
+        assert_eq!(scan.files_seen, 21);
+        assert_eq!(scan.providers_scanned, ["claude", "codex"]);
+    }
+
+    #[test]
+    fn a_compact_number_is_the_one_the_panel_would_have_written() {
+        // The right-hand column is what `Intl.NumberFormat`'s compact notation produces in
+        // English for the same value, which is what `ui/src/usage.ts` draws. Anything under
+        // a thousand is itself, the value is floored to the digit it is shown at, and a
+        // trailing `.0` is dropped because `maximumFractionDigits: 1` drops it too.
+        for (value, expected) in [
+            (0u64, "0"),
+            (1, "1"),
+            (843, "843"),
+            (999, "999"),
+            (1_000, "1K"),
+            (1_100, "1.1K"),
+            (1_199, "1.1K"),
+            (22_345_678, "22.3M"),
+            (22_399_999, "22.3M"),
+            (99_999_999, "99.9M"),
+            (100_000_000, "100M"),
+            (999_999_999, "999M"),
+            (1_500_000_000, "1.5B"),
+            (1_500_000_000_000, "1.5T"),
+            (u64::MAX, "18446744T"),
+        ] {
+            assert_eq!(compact(value), expected, "compact({value})");
+        }
+    }
+
+    #[test]
+    fn a_compact_number_never_rounds_a_week_up() {
+        // The same rule as a quota percentage: 22.39 M is not 22.4 M, because the store did
+        // not measure the difference and a reader would take the larger number for a fact.
+        assert_eq!(compact(22_390_000), "22.3M");
+        assert_eq!(compact(999_999), "999K");
+        assert_eq!(compact(1_999_999_999), "1.9B");
+    }
+
+    #[test]
+    fn a_compact_number_stays_short_enough_for_a_tooltip() {
+        // Five characters for anything below a thousand of the largest mark, which is every
+        // week a machine could produce. `tray.rs` covers `u64::MAX` against the real limit.
+        for value in [
+            0,
+            1,
+            999,
+            1_000,
+            22_345_678,
+            99_999_999_999_999,
+            999_999_999_999_999,
+        ] {
+            let text = compact(value);
+            assert!(text.chars().count() <= 5, "compact({value}) is {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_utc_monday_is_where_a_week_begins_before_the_panel_has_said_otherwise() {
+        // 1970-01-01 was a Thursday, so the first Monday is the fourth day after it.
+        assert_eq!(UTC_MONDAY_PHASE, 345_600);
+        let monday = timefmt::unix_seconds_from_rfc3339("1970-01-05T00:00:00Z").unwrap();
+        assert_eq!(monday, UTC_MONDAY_PHASE);
+        assert_eq!(week_phase(monday), UTC_MONDAY_PHASE);
+    }
+
+    #[test]
+    fn the_phase_is_the_same_whichever_monday_the_panel_names() {
+        // What is remembered is *how far into a week* a Monday falls, so any Monday of any
+        // year gives the same number and the tooltip does not drift across a year end.
+        let at = |text: &str| timefmt::unix_seconds_from_rfc3339(text).unwrap();
+        for monday in [
+            "2026-09-07T00:00:00Z",
+            "2026-12-28T00:00:00Z",
+            "2027-01-04T00:00:00Z",
+            "1970-01-05T00:00:00Z",
+        ] {
+            assert_eq!(week_phase(at(monday)), UTC_MONDAY_PHASE, "{monday}");
+        }
+    }
+
+    #[test]
+    fn a_readers_own_monday_is_a_phase_this_crate_never_names_a_zone_for() {
+        // The instants the panel actually sends. At +03:00 a local Monday starts on Sunday
+        // at 21:00 UTC; at -05:00 it starts on Monday at 05:00. Neither is a time zone as
+        // far as this file is concerned — both are a number of seconds into a week.
+        let at = |text: &str| timefmt::unix_seconds_from_rfc3339(text).unwrap();
+        let now = at("2026-09-09T12:00:00Z");
+
+        let istanbul = week_phase(at("2026-09-07T00:00:00+03:00"));
+        assert_eq!(istanbul, UTC_MONDAY_PHASE - 3 * 3_600);
+        let (from, _) = week_window(now, istanbul);
+        assert_eq!(
+            timefmt::rfc3339_from_unix_seconds(from),
+            "2026-09-06T21:00:00Z"
+        );
+
+        let chicago = week_phase(at("2026-09-07T00:00:00-05:00"));
+        assert_eq!(chicago, UTC_MONDAY_PHASE + 5 * 3_600);
+        let (from, _) = week_window(now, chicago);
+        assert_eq!(
+            timefmt::rfc3339_from_unix_seconds(from),
+            "2026-09-07T05:00:00Z"
+        );
+
+        // Half an hour is a zone too, and a store of whole hours still answers for it: the
+        // hours that *start* inside the window are the week, which is the same rule the
+        // panel applies to the same buckets.
+        let kolkata = week_phase(at("2026-09-07T00:00:00+05:30"));
+        let (from, _) = week_window(now, kolkata);
+        assert_eq!(
+            timefmt::rfc3339_from_unix_seconds(from),
+            "2026-09-06T18:30:00Z"
+        );
+    }
+
+    #[test]
+    fn the_week_window_is_seven_days_long_and_holds_the_instant_it_was_asked_about() {
+        let at = |text: &str| timefmt::unix_seconds_from_rfc3339(text).unwrap();
+
+        for now in [
+            "2026-09-07T00:00:00Z",
+            "2026-09-07T00:00:01Z",
+            "2026-09-09T12:00:00Z",
+            "2026-09-13T23:59:59Z",
+        ] {
+            let (from, to) = week_window(at(now), UTC_MONDAY_PHASE);
+            assert_eq!(to - from, WEEK_SECONDS, "{now}");
+            assert!(from <= at(now) && at(now) < to, "{now}");
+            assert_eq!(
+                timefmt::rfc3339_from_unix_seconds(from),
+                "2026-09-07T00:00:00Z",
+                "{now}"
+            );
+        }
+
+        // Half-open at the far end: the first instant of the next Monday is next week.
+        let (from, _) = week_window(at("2026-09-14T00:00:00Z"), UTC_MONDAY_PHASE);
+        assert_eq!(
+            timefmt::rfc3339_from_unix_seconds(from),
+            "2026-09-14T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn a_week_before_the_epoch_does_not_wrap_the_arithmetic() {
+        // `rem_euclid` rather than `%`: a negative instant with a plain remainder would put
+        // the start of the week *after* the instant it is supposed to contain.
+        let (from, to) = week_window(-1, UTC_MONDAY_PHASE);
+        assert!(from <= -1 && -1 < to);
+        assert_eq!(to - from, WEEK_SECONDS);
+    }
+
+    /// One hour of one model's buckets, for the folding tests.
+    fn hours(hour: &str, model: &str, bucket: Bucket) -> Hours {
+        let mut models = nazar_core::usage::Models::new();
+        models.insert(model.to_owned(), bucket);
+        let mut hours = Hours::new();
+        hours.insert(hour.to_owned(), models);
+        hours
+    }
+
+    /// A bucket with all five counters, which since T-WP13b is every stored bucket.
+    fn spent(input: u64, output: u64, cache_create: u64, cache_read: u64) -> Bucket {
+        Bucket {
+            input,
+            output,
+            cache_create,
+            cache_read,
+            requests: 1,
+            ..Bucket::default()
+        }
+    }
+
+    #[test]
+    fn the_headline_is_the_three_counters_that_are_not_the_cache() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER.to_owned(),
+            hours(
+                "2026-09-09T12",
+                "claude-opus-5",
+                spent(2, 328, 24_843, 35_613),
+            ),
+        );
+
+        let week = fold(&providers).expect("a week with work in it");
+        assert_eq!(
+            week.headline,
+            2 + 328 + 24_843,
+            "cache_read is beside the headline and never inside it"
+        );
+        assert_eq!(week.model, "claude-opus-5");
+    }
+
+    #[test]
+    fn both_providers_are_added_together_and_so_is_a_model_seen_in_both() {
+        // The question the tooltip answers is "what has this machine spent", not "what has
+        // it spent on each side", so the providers are summed. A model id that turned up
+        // under both is one model: it is the same name, and naming it twice would split a
+        // total the panel shows whole.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER.to_owned(),
+            hours("2026-09-09T12", "shared", spent(10, 10, 10, 9_999)),
+        );
+        providers.insert(
+            PROVIDER_CODEX.to_owned(),
+            hours("2026-09-09T13", "shared", spent(5, 5, 5, 9_999)),
+        );
+
+        let week = fold(&providers).expect("two providers, one week");
+        assert_eq!(week.headline, 45);
+        assert_eq!(week.model, "shared");
+    }
+
+    #[test]
+    fn the_model_named_is_the_one_that_spent_most_across_the_whole_week() {
+        // Two hours and two providers, so the winner is decided by the sum rather than by
+        // whichever bucket the walk happened to reach last.
+        let mut claude = hours("2026-09-09T12", "claude-fable-5-1", spent(0, 0, 40, 0));
+        claude
+            .entry("2026-09-10T09".to_owned())
+            .or_default()
+            .insert("claude-opus-5".to_owned(), spent(0, 0, 30, 0));
+        let mut providers = BTreeMap::new();
+        providers.insert(PROVIDER.to_owned(), claude);
+        providers.insert(
+            PROVIDER_CODEX.to_owned(),
+            hours("2026-09-11T08", "claude-opus-5", spent(0, 0, 25, 0)),
+        );
+
+        let week = fold(&providers).expect("a week with two models in it");
+        assert_eq!(week.headline, 95);
+        assert_eq!(
+            week.model, "claude-opus-5",
+            "30 + 25 beats 40, and the sum is what decides"
+        );
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_model_that_sorts_first_so_the_tooltip_does_not_flicker() {
+        let mut claude = hours("2026-09-09T12", "bbb", spent(0, 0, 50, 0));
+        claude
+            .entry("2026-09-09T13".to_owned())
+            .or_default()
+            .insert("aaa".to_owned(), spent(0, 0, 50, 0));
+        let mut providers = BTreeMap::new();
+        providers.insert(PROVIDER.to_owned(), claude);
+
+        assert_eq!(
+            fold(&providers).expect("a tie is still a week").model,
+            "aaa"
+        );
+    }
+
+    #[test]
+    fn a_week_with_nothing_in_it_has_nothing_to_say() {
+        assert_eq!(fold(&BTreeMap::new()), None, "an empty store");
+
+        // Buckets that hold nothing but cache reads. 1.5 billion of them is a fact about
+        // the machine and the panel shows it one line down; it is not what the week cost.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER.to_owned(),
+            hours(
+                "2026-09-09T12",
+                "claude-opus-5",
+                Bucket {
+                    cache_read: 1_500_000_000,
+                    requests: 3,
+                    ..Bucket::default()
+                },
+            ),
+        );
+        assert_eq!(fold(&providers), None, "cache reads are not a headline");
+
+        // A week that was genuinely idle. `0` is honest, but it is not worth a line the
+        // quota sentence above it has to make room for.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER.to_owned(),
+            hours("2026-09-09T12", "claude-opus-5", spent(0, 0, 0, 0)),
+        );
+        assert_eq!(fold(&providers), None, "an idle week");
+    }
+
+    #[test]
+    fn a_model_nobody_named_is_still_a_model() {
+        // `UNKNOWN_MODEL` is what the store files a record under when its source named no
+        // model. It is data like any other id, printed as it is spelled rather than
+        // translated or hidden — the same rule the panel's rows follow.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER_CODEX.to_owned(),
+            hours(
+                "2026-09-09T12",
+                nazar_core::usage::UNKNOWN_MODEL,
+                spent(1, 1, 1, 0),
+            ),
+        );
+        let week = fold(&providers).expect("an unnamed model still spent tokens");
+        assert_eq!(week.model, "unknown");
+    }
+
+    #[test]
+    fn the_week_the_panel_asked_about_is_the_week_the_tooltip_means() {
+        // The whole design, in the only place it is observable without a panel: a `week`
+        // request teaches this process where the reader's Monday is, and nothing else does.
+        let state = UsageState::new(true);
+        assert_eq!(
+            state.phase(),
+            UTC_MONDAY_PHASE,
+            "before the panel has asked"
+        );
+
+        let monday = timefmt::unix_seconds_from_rfc3339("2026-09-07T00:00:00+03:00").unwrap();
+        state.remember_week(week_phase(monday));
+        assert_eq!(state.phase(), UTC_MONDAY_PHASE - 3 * 3_600);
+
+        let now = timefmt::unix_seconds_from_rfc3339("2026-09-09T12:00:00Z").unwrap();
+        let (from, to) = week_window(now, state.phase());
+        assert_eq!(
+            (
+                timefmt::rfc3339_from_unix_seconds(from),
+                timefmt::rfc3339_from_unix_seconds(to)
+            ),
+            (
+                "2026-09-06T21:00:00Z".to_owned(),
+                "2026-09-13T21:00:00Z".to_owned()
+            )
+        );
     }
 }

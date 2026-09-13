@@ -375,7 +375,15 @@ fn on_loop_event(app: &tauri::AppHandle, strings: &Arc<Strings>, event: Event) {
         // Every pass, changed or not. The notifications have to see a reading that has not
         // moved: a tray started when the weekly window is already at 91 % changes nothing,
         // and that is exactly the case where the user most needs to be told.
-        Event::Refreshed => alerts::on_refresh(app),
+        //
+        // The tooltip's second line comes from the usage store, which nothing in this pass
+        // wrote and another process may have. Reading it back is one or two small
+        // documents; **scanning** the transcripts is not, and does not happen here or
+        // anywhere else on this thread — `usage` holds that rule and the reason for it.
+        Event::Refreshed => {
+            alerts::on_refresh(app);
+            tray::refresh_tooltip(app);
+        }
         // The panel re-reads the snapshot; the payload would be stale by the time it drew.
         // The icon and the tooltip are redrawn here rather than in the panel, because they
         // have to be right whether or not anybody has opened it.

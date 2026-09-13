@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "이 컴퓨터에서 설정 폴더를 찾을 수 없습니다.",
   "usage.error.scan_failed": "세션 기록을 읽을 수 없습니다.",
   "usage.error.store_unreadable": "사용량 기록을 읽을 수 없습니다.",
-  "usage.error.unknown": "사용량 기록을 표시할 수 없습니다."
+  "usage.error.unknown": "사용량 기록을 표시할 수 없습니다.",
+  "tray.tooltip.week": "이번 주 {tokens} · {model}"
 }

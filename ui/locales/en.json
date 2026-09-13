@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "The settings folder could not be found on this machine.",
   "usage.error.scan_failed": "The session logs could not be read.",
   "usage.error.store_unreadable": "The usage history could not be read.",
-  "usage.error.unknown": "The usage history could not be shown."
+  "usage.error.unknown": "The usage history could not be shown.",
+  "tray.tooltip.week": "This week {tokens} · {model}"
 }

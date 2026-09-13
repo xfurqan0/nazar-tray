@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "未能在此机器上找到设置文件夹。",
   "usage.error.scan_failed": "无法读取会话记录。",
   "usage.error.store_unreadable": "无法读取用量历史。",
-  "usage.error.unknown": "无法显示用量历史。"
+  "usage.error.unknown": "无法显示用量历史。",
+  "tray.tooltip.week": "本周 {tokens} · {model}"
 }

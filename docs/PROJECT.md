@@ -1247,3 +1247,72 @@ its first two items belong in the same commit as the readers they describe, beca
   passing across the workspace; `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -D warnings`, the hygiene gate and
   `--no-default-features` all clean.
+- 2026-09-13 — **T-WP17 landed: the tooltip's second line, and the Codex half of a scan.**
+  Hovering the bead now says `Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)`
+  and, under it, `This week 22.3M · claude-sonnet-5`. **The icon is untouched** — decision K25
+  stands, the bead is the mark at every reading and grey only for unknown, and a week's tokens
+  are not a state it has an opinion about.
+  **(1) Where the week begins, without this crate learning a time zone.** `hygiene.rs` fails
+  the build on anything in the workspace that asks the machine which zone it is in, and a week
+  starts on a Monday *somewhere*. The answer was already arriving: T-WP15's `get_usage` takes
+  the panel's local Monday as an RFC 3339 instant, so the tray keeps that instant **with the
+  weeks divided out of it** — `phase`, the number of seconds into a week a Monday falls, which
+  is 345 600 in UTC, 334 800 at `+03:00` and 363 600 at `-05:00`. Given a phase, every boundary
+  before and after it is arithmetic on UTC seconds, and nothing in Rust ever names a zone. The
+  four other designs and why they lost: a **second command** or an offset in `config.json`
+  widens the bridge for a glance surface; **`GetLocalTime`**, which `system.rs` already
+  declares for quiet hours, would be the "dependency in front of a decision"
+  `pinned-internal-formats.md` warns about; a **plain UTC Monday** is wrong by one offset every
+  week; and **no second line at all** was the thing being asked for. What the chosen design
+  costs is written down rather than hidden: before the panel has ever opened the usage view
+  the phase *is* the UTC Monday, so a reader at `+03:00` who hovers between Monday 00:00 and
+  03:00 local sees last week for those three hours, once, until the first time they look at
+  the panel; and a daylight-saving change moves the phase by an hour until the panel reports
+  the new one. Both are bounded by one zone offset and both are fixed by opening the panel.
+  **(2) 127 characters, fitted rather than assumed.** Windows shows 127 and silently drops the
+  rest, and the Turkish quota line is already 69. So the tooltip is built in three steps, each
+  giving up the least valuable thing left: both lines as written; then the **reset clause**
+  goes, because the percentage is the alarm and the countdown is detail the panel shows
+  anyway (risk R2's own mitigation); then the **week line** goes, because quota is why this
+  application exists and half a number is worse than none — and what is left is byte for byte
+  the tooltip 0.1.0 shipped. Measured rather than argued: the widest of the six languages is
+  Spanish, and with the fullest quota line, a dated model id and a `u64::MAX` of tokens it
+  comes to **119**. One new key in six languages, `tray.tooltip.week`; the frozen counted-key
+  list is untouched because `{tokens}` interpolates a finished string, exactly as
+  `usage.cacheRead` does.
+  **(3) The one number this product does not spell the way the language spells it.** There is
+  no `Intl` in Rust, so `compact` writes `22.3M` and `1.5B` itself, with the same flooring rule
+  as the panel — 22.39 M is not 22.4 M — and the same "under a thousand is itself". T-WP16 kept
+  every magnitude mark out of the locale files on purpose, and adding four per language for a
+  line the shell draws on hover would be twenty-four more strings to get wrong; the panel
+  remains the place a Korean reader sees `2230만`. The divergence is deliberate and it is here.
+  **(4) The Codex scan, and what a summed counter has to admit.** `scan_codex_home` runs beside
+  `scan_claude` in the same pass, under the same throttle and the same one-writer rule, because
+  a panel that saw one half updated and the other five minutes behind would be showing a week
+  that never happened. The `scan` object reports the two **summed** — and carries
+  `providers_scanned`, because 412 files with no Codex on the machine and 412 files with a
+  Codex nobody could resolve are the same number and only one of them is complete. A reader
+  that fails does not stop the other: each commits its own totals before it returns, so the
+  first error is kept and reported after both have been tried. `CODEX_HOME` is honoured through
+  the core crate's own resolver, the one the quota reader already uses.
+  **(5) Reading, never scanning, on the refresh tick.** The tooltip is rewritten after every
+  `get_usage` — the only thing that moves this process's store — and on every refresh pass,
+  where it opens the one or two month documents the current week touches and nothing else.
+  `tray::refresh_tooltip` exists so that pass does not rasterise a bead it has no reason to
+  redraw.
+  **(6) The gap T-WP15 wrote down is closed, because T-WP13b landed first.** `scan_claude_in`
+  takes the directory instead of a home, so `claude_home` and `home_for` are gone and the scan
+  is pointed at `<CLAUDE_CONFIG_DIR>/projects` whatever that directory is called — the case
+  that used to mean *no scan at all* rather than a scan of the wrong tree. Three more things
+  came with that rebase: `skipped_api_errors` rides along into the `scan` object beside the
+  other counters; `Bucket`'s five counters are plain `u64` now, so the headline is an addition
+  and "nothing to say" is decided once, as a total of zero; and `cursors.json` is
+  `cursors-claude.json` in the one comment that named it. **`ui/src/snapshot.ts`'s
+  `UsageBucket` keeps its optional counters on purpose** — a store written by 0.1.0 is still on
+  disk and may still omit them, and the panel's em-dash path is what reads that honestly.
+  **115 tray tests where there were 91**, workspace green at 613, `hygiene.rs` green, 97 panel
+  tests and typecheck green. **Not verified on screen:** nothing in this repository can
+  screenshot a tooltip — the shell draws it — so the two-line break is `\r\n` on the strength
+  of the Win32 convention for `szTip` and one constant to change if a Windows build disagrees.
+  Whether Windows renders the second line, and how the tooltip looks at 119 characters in
+  Spanish, are owed a look on a real desktop.

@@ -137,5 +137,6 @@
   "usage.error.no_state_dir": "Ayar klasörü bu makinede bulunamadı.",
   "usage.error.scan_failed": "Oturum kayıtları okunamadı.",
   "usage.error.store_unreadable": "Kullanım geçmişi okunamadı.",
-  "usage.error.unknown": "Kullanım geçmişi gösterilemedi."
+  "usage.error.unknown": "Kullanım geçmişi gösterilemedi.",
+  "tray.tooltip.week": "Bu hafta {tokens} · {model}"
 }
