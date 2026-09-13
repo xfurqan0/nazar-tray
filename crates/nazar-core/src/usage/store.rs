@@ -31,12 +31,13 @@
 //! }
 //! ```
 //!
-//! Beside them, `<state dir>/usage/cursors.json`: where each transcript had been read up
-//! to. It is this module's own bookkeeping rather than part of the contract, and it names
-//! nothing — a transcript is filed under a hash of its path, not the path, because
-//! `~/.claude/projects/` is named after every working directory somebody has opened a
-//! session in; and a credited message is filed under a hash of its identifiers, not the
-//! identifiers.
+//! Beside them, `<state dir>/usage/cursors.json` — and `cursors-codex.json` beside it, one
+//! document per reader: where each log had been read up to. It is this module's own
+//! bookkeeping rather than part of the contract, and it names nothing — a log is filed
+//! under a hash of its path, not the path, because `~/.claude/projects/` is named after
+//! every working directory somebody has opened a session in; a credited message is filed
+//! under a hash of its identifiers, not the identifiers; and a rollout's opening events
+//! are filed under a hash of their timestamps and counters, not either.
 //!
 //! # The invariant
 //!
@@ -89,8 +90,16 @@ use crate::error::{Error, Result};
 /// Schema version written by this build. Its own number, unrelated to `limits.json`'s.
 pub const VERSION: u32 = 1;
 
-/// The provider this module's scanner reads.
+/// The provider the transcript scanner reads.
 pub const PROVIDER: &str = "claude";
+
+/// The provider the rollout scanner reads.
+///
+/// The two spellings `limits.json` already uses, and the two keys of `providers` in the
+/// contract. Each reader keeps **its own cursor document** — see [`cursors_path`] — because
+/// a pass replaces the set of files it knows about, and a reader sharing that set with
+/// another would forget every offset the other had just written.
+pub const PROVIDER_CODEX: &str = "codex";
 
 /// One model's totals for one UTC hour.
 ///
@@ -283,7 +292,12 @@ impl Pending {
     }
 }
 
-/// Where one transcript had been read up to.
+/// Where one log had been read up to.
+///
+/// Three of the five fields are one reader's and are absent in the other's document: a
+/// transcript carries dedupe keys because Claude Code writes a message several times, and
+/// a rollout carries an opening fingerprint and a model because Codex writes neither an id
+/// nor a model on the event that spends the tokens.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileCursor {
     /// The file's identity when it was last read. A different one means a different file.
@@ -294,6 +308,17 @@ pub struct FileCursor {
     /// landed either side of the offset is still counted once. See [`super::dedupe`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<Credit>,
+    /// Fingerprints of this log's opening events, in order, bounded at
+    /// [`super::codex::PREFIX_EVENTS`]. A rollout that opens with a copy of another's
+    /// opening run is a fork of it; see [`super::codex`]. Hashes rather than the values
+    /// they stand for, so the document still names nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix: Vec<u64>,
+    /// The model in force at the offset — the last one this log named before it. Carried
+    /// because a `token_count` event does not name the model that produced it and the next
+    /// pass starts after the `turn_context` that did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// The cursor document.
@@ -317,11 +342,13 @@ pub struct Cursors {
     pub extra: Map<String, Value>,
 }
 
-impl Default for Cursors {
-    fn default() -> Self {
+impl Cursors {
+    /// The empty cursor document of a provider that has never been scanned.
+    #[must_use]
+    pub fn new(provider: &str) -> Self {
         Cursors {
             version: VERSION,
-            provider: PROVIDER.to_owned(),
+            provider: provider.to_owned(),
             generation: 0,
             pending: None,
             files: BTreeMap::new(),
@@ -353,23 +380,44 @@ pub fn month_path(state_dir: &Path, month: &str) -> PathBuf {
     usage_dir(state_dir).join(format!("{month}.json"))
 }
 
-/// `<state dir>/usage/cursors.json`.
+/// `<state dir>/usage/cursors.json`, and `cursors-<provider>.json` for every reader
+/// after the first.
+///
+/// One document per provider rather than one shared one. A pass writes the whole set of
+/// files it walked, so two readers sharing a document would take turns forgetting each
+/// other's offsets and counting the same bytes again; and the `generation` stamp each pass
+/// takes is compared against a stamp kept **per provider** inside a month document, so two
+/// sequences never meet. The provider name is a constant of this crate, never a value read
+/// off a disk, which is what makes it safe in a file name.
 #[must_use]
-pub fn cursors_path(state_dir: &Path) -> PathBuf {
-    usage_dir(state_dir).join("cursors.json")
+pub fn cursors_path(state_dir: &Path, provider: &str) -> PathBuf {
+    let name = if provider == PROVIDER {
+        "cursors.json".to_owned()
+    } else {
+        format!("cursors-{provider}.json")
+    };
+    usage_dir(state_dir).join(name)
 }
 
-/// Read the cursor document.
+/// Every cursor document in the store, whichever reader wrote it.
+fn cursor_documents(state_dir: &Path) -> Vec<PathBuf> {
+    [PROVIDER, PROVIDER_CODEX]
+        .iter()
+        .map(|provider| cursors_path(state_dir, provider))
+        .collect()
+}
+
+/// Read one provider's cursor document.
 ///
-/// A document that is not there is a machine that has never scanned, and yields the empty
-/// one. A document that is there and is not readable is an error, deliberately: see the
-/// invariant in the module documentation.
-pub fn read_cursors(state_dir: &Path) -> Result<Cursors> {
-    let path = cursors_path(state_dir);
+/// A document that is not there is a provider that has never been scanned, and yields the
+/// empty one. A document that is there and is not readable is an error, deliberately: see
+/// the invariant in the module documentation.
+pub fn read_cursors(state_dir: &Path, provider: &str) -> Result<Cursors> {
+    let path = cursors_path(state_dir, provider);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Cursors::default());
+            return Ok(Cursors::new(provider));
         }
         Err(source) => return Err(Error::io(&path, source)),
     };
@@ -385,7 +433,7 @@ pub fn read_cursors(state_dir: &Path) -> Result<Cursors> {
 pub fn write_cursors(state_dir: &Path, cursors: &Cursors) -> Result<()> {
     let mut text = serde_json::to_string(cursors)?;
     text.push('\n');
-    atomic::write_bytes(&cursors_path(state_dir), text.as_bytes())
+    atomic::write_bytes(&cursors_path(state_dir, &cursors.provider), text.as_bytes())
 }
 
 /// What reading a month document produced.
@@ -542,23 +590,26 @@ pub fn apply(state_dir: &Path, pending: &Pending) -> Result<Applied> {
     Ok(outcome)
 }
 
-/// Remove the cursor and every month document, so the next scan starts from the top.
+/// Remove every cursor document and every month document, so the next scan starts from the top.
 ///
 /// The escape hatch for a damaged store, and the only safe way to ask for one: removing
-/// the month documents without the cursor leaves a store that will never see those months
-/// again, and removing the cursor without the month documents counts every surviving
-/// transcript into months that already hold it. Whatever the transcripts no longer hold is
+/// the month documents without the cursors leaves a store that will never see those months
+/// again, and removing the cursors without the month documents counts every surviving log
+/// into months that already hold it. Whatever the transcripts no longer hold is
 /// gone — which is the thing the store exists to avoid, so this is a decision somebody
 /// makes rather than something a reader does to recover.
 ///
 /// Returns the number of documents removed.
 pub fn rebuild(state_dir: &Path) -> Result<usize> {
     let mut removed = 0;
-    let cursors = cursors_path(state_dir);
-    match std::fs::remove_file(&cursors) {
-        Ok(()) => removed += 1,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-        Err(source) => return Err(Error::io(&cursors, source)),
+    // Every provider's cursor, not one of them: a rebuild that cleared the months and left
+    // a reader's offsets behind would lose that reader's history and never read it again.
+    for cursors in cursor_documents(state_dir) {
+        match std::fs::remove_file(&cursors) {
+            Ok(()) => removed += 1,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::io(&cursors, source)),
+        }
     }
     for month in months(state_dir)? {
         let path = month_path(state_dir, &month);
@@ -638,7 +689,7 @@ mod tests {
     #[test]
     fn a_missing_cursor_document_is_an_empty_one() {
         let dir = TempDir::new("usage-store-missing");
-        let cursors = read_cursors(&dir.path).unwrap();
+        let cursors = read_cursors(&dir.path, PROVIDER).unwrap();
         assert_eq!(cursors.generation, 0);
         assert!(cursors.files.is_empty());
     }
@@ -647,9 +698,9 @@ mod tests {
     fn a_broken_cursor_document_is_an_error_not_a_fresh_start() {
         let dir = TempDir::new("usage-store-broken");
         std::fs::create_dir_all(usage_dir(&dir.path)).unwrap();
-        std::fs::write(cursors_path(&dir.path), b"{not json").unwrap();
+        std::fs::write(cursors_path(&dir.path, PROVIDER), b"{not json").unwrap();
 
-        let outcome = read_cursors(&dir.path);
+        let outcome = read_cursors(&dir.path, PROVIDER);
         assert!(
             outcome.is_err(),
             "defaulting would re-count every transcript into months that already hold it"
@@ -877,7 +928,7 @@ mod tests {
             &pending(2, "2026-09", "2026-09-01T00", &usage(1, 1)),
         )
         .unwrap();
-        write_cursors(&dir.path, &Cursors::default()).unwrap();
+        write_cursors(&dir.path, &Cursors::new(PROVIDER)).unwrap();
         std::fs::write(usage_dir(&dir.path).join("notes.json"), b"{}").unwrap();
 
         assert_eq!(months(&dir.path).unwrap(), vec!["2026-08", "2026-09"]);
@@ -894,11 +945,11 @@ mod tests {
             &pending(1, "2026-09", "2026-09-01T00", &usage(1, 1)),
         )
         .unwrap();
-        write_cursors(&dir.path, &Cursors::default()).unwrap();
+        write_cursors(&dir.path, &Cursors::new(PROVIDER)).unwrap();
 
         assert_eq!(rebuild(&dir.path).unwrap(), 2);
         assert!(months(&dir.path).unwrap().is_empty());
-        assert_eq!(read_cursors(&dir.path).unwrap().generation, 0);
+        assert_eq!(read_cursors(&dir.path, PROVIDER).unwrap().generation, 0);
         assert_eq!(rebuild(&dir.path).unwrap(), 0, "and is safe to repeat");
     }
 

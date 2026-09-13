@@ -372,8 +372,8 @@ fn the_usage_fixtures_carry_nothing_that_identifies_a_machine() {
         .join("usage");
     let fixtures = files_under(&root, &["jsonl"]);
     assert!(
-        fixtures.len() >= 4,
-        "expected the usage fixtures, found {}",
+        fixtures.len() >= 8,
+        "expected the usage fixtures — four transcripts and four rollouts — found {}",
         fixtures.len()
     );
 

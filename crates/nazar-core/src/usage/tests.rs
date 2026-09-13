@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{
-    Bucket, PROVIDER, UNKNOWN_MODEL, UsageSummary, projects_dir, query, scan, scan_claude,
+    Bucket, PROVIDER, PROVIDER_CODEX, UNKNOWN_MODEL, UsageSummary, codex, projects_dir, query,
+    scan, scan_claude, scan_codex,
     store::{self, Month, Read},
 };
 use crate::testutil::TempDir;
@@ -58,8 +59,30 @@ impl Machine {
         path
     }
 
+    /// Put text at `relative` under `.codex/sessions/`, the tree the rollout reader walks.
+    fn put_rollout(&self, relative: &str, text: &str) -> PathBuf {
+        let path = codex::sessions_dir(&codex::codex_dir(&self.home())).join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// Put text at `relative` under `.codex/archived_sessions/`, the tree it does not.
+    fn put_archived(&self, relative: &str, text: &str) -> PathBuf {
+        let path = codex::codex_dir(&self.home())
+            .join("archived_sessions")
+            .join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
     fn scan(&self) -> UsageSummary {
         scan_claude(&self.home(), &self.state()).unwrap()
+    }
+
+    fn scan_codex(&self) -> UsageSummary {
+        scan_codex(&self.home(), &self.state()).unwrap()
     }
 
     fn month(&self, month: &str) -> Month {
@@ -70,12 +93,20 @@ impl Machine {
     }
 
     fn bucket(&self, month: &str, hour: &str, model: &str) -> Bucket {
+        self.bucket_of(PROVIDER, month, hour, model)
+    }
+
+    fn codex_bucket(&self, month: &str, hour: &str, model: &str) -> Bucket {
+        self.bucket_of(PROVIDER_CODEX, month, hour, model)
+    }
+
+    fn bucket_of(&self, provider: &str, month: &str, hour: &str, model: &str) -> Bucket {
         self.month(month)
-            .buckets(PROVIDER)
+            .buckets(provider)
             .and_then(|hours| hours.get(hour))
             .and_then(|models| models.get(model))
             .cloned()
-            .unwrap_or_else(|| panic!("no bucket for {hour} / {model}"))
+            .unwrap_or_else(|| panic!("no {provider} bucket for {hour} / {model}"))
     }
 
     /// Every byte this machine has written under `usage/`.
@@ -382,7 +413,7 @@ fn a_commit_that_was_never_filed_is_filed_once_when_the_next_scan_finds_it() {
     // cursor still carries the block, and the month already carries its generation.
     let september = machine.month("2026-09");
     let totals = &september.providers[PROVIDER];
-    let mut cursors = store::read_cursors(&machine.state()).unwrap();
+    let mut cursors = store::read_cursors(&machine.state(), PROVIDER).unwrap();
     let mut months = super::Months::new();
     months.insert("2026-09".to_owned(), totals.buckets.clone());
     cursors.pending = Some(store::Pending {
@@ -585,6 +616,319 @@ fn rebuilding_and_rescanning_reproduces_the_same_totals() {
         before, after,
         "a rebuild recounts the transcripts to exactly the same numbers"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (h) the Codex reader
+// ---------------------------------------------------------------------------
+
+/// A rollout the way Codex lays one out: `sessions/YYYY/MM/DD/rollout-<ISO>-<id>.jsonl`.
+fn rollout(day: &str, name: &str) -> String {
+    format!("2026/09/{day}/rollout-{name}.jsonl")
+}
+
+#[test]
+fn a_rollout_with_known_totals_adds_up_to_them() {
+    let machine = Machine::new("usage-codex-known");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+
+    let summary = machine.scan_codex();
+    assert_eq!(summary.files_seen, 1);
+    assert_eq!(summary.credited, 4, "four token_count events");
+    assert_eq!(summary.malformed, 0);
+    assert_eq!(summary.credited_total, 10_650);
+
+    // The event before the first turn_context belongs to a model nobody here knows.
+    assert_eq!(summary.unnamed_model, 1);
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", UNKNOWN_MODEL),
+        // 1000 input of which 600 were cached, so 400 of it was new.
+        bucket(400, 50, 0, 600, 1)
+    );
+
+    // Two events under the model the session named, in one hour.
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", "gpt-5.6-sol"),
+        bucket(1000, 300, 0, 4000, 2)
+    );
+
+    // And the model it switched to, in the next hour.
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T11", "gpt-6-astra"),
+        bucket(1000, 300, 0, 3000, 1)
+    );
+
+    // The line that carries a `token_count` key inside somebody else's payload matched
+    // the needle, was parsed, and was not an event.
+    assert_eq!(summary.lines, 7, "four events, two contexts, one impostor");
+}
+
+#[test]
+fn the_cumulative_counter_resets_mid_session_and_the_per_turn_sum_does_not() {
+    let machine = Machine::new("usage-codex-reset");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T14-00-00-session-b"),
+        &fixture("rollout-reset.jsonl"),
+    );
+
+    let summary = machine.scan_codex();
+    assert_eq!(summary.credited, 4);
+
+    // `total_token_usage` in that fixture goes 1100 → 3300 → **550** → 1430: the context
+    // was compacted and the cumulative counter started again. A reader that took the last
+    // one would report 1430 for a session that spent 4730.
+    let counted = machine.codex_bucket("2026-09", "2026-09-12T14", "gpt-5.6-sol");
+    assert_eq!(counted, bucket(2900, 430, 0, 1400, 4));
+    let total = counted.input.unwrap()
+        + counted.output.unwrap()
+        + counted.cache_create.unwrap()
+        + counted.cache_read.unwrap();
+    assert_eq!(total, 4730, "the sum of every turn");
+    assert_ne!(total, 1430, "not the cumulative counter's last word");
+}
+
+#[test]
+fn the_model_in_force_survives_the_gap_between_two_passes() {
+    let machine = Machine::new("usage-codex-carry");
+    let text = fixture("rollout-reset.jsonl");
+    let lines: Vec<&str> = text.lines().collect();
+    let path = machine.put_rollout(
+        &rollout("12", "2026-09-12T14-00-00-session-b"),
+        &format!("{}\n{}\n{}\n", lines[0], lines[1], lines[2]),
+    );
+
+    let first = machine.scan_codex();
+    assert_eq!(first.credited, 1);
+    assert_eq!(first.unnamed_model, 0);
+
+    // The `turn_context` that named the model is behind the cursor now; the events that
+    // arrive next still belong to it.
+    std::fs::write(&path, &text).unwrap();
+    let second = machine.scan_codex();
+    assert_eq!(second.credited, 3);
+    assert_eq!(second.unnamed_model, 0, "not one of them is unknown");
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T14", "gpt-5.6-sol"),
+        bucket(2900, 430, 0, 1400, 4)
+    );
+}
+
+#[test]
+fn a_fork_that_copied_an_opening_run_does_not_count_it_twice() {
+    let machine = Machine::new("usage-codex-fork");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T12-00-00-session-a-fork"),
+        &fixture("rollout-fork.jsonl"),
+    );
+
+    let summary = machine.scan_codex();
+    assert_eq!(summary.files_seen, 2);
+    assert_eq!(
+        summary.duplicates, 2,
+        "the two events the fork copied from its parent"
+    );
+    assert_eq!(summary.credited, 5, "four of the parent's and one new one");
+
+    // The hour both files claim is exactly the parent's.
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", UNKNOWN_MODEL),
+        bucket(400, 50, 0, 600, 1)
+    );
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", "gpt-5.6-sol"),
+        bucket(1000, 300, 0, 4000, 2)
+    );
+
+    // And what the fork actually spent is counted, under the model it was using.
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T12", "gpt-5.6-sol"),
+        bucket(1000, 400, 0, 4000, 1)
+    );
+
+    // A second pass over both adds nothing, and does not decide the fork is a fork twice.
+    let again = machine.scan_codex();
+    assert_eq!(again.credited, 0);
+    assert_eq!(again.duplicates, 0);
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", "gpt-5.6-sol"),
+        bucket(1000, 300, 0, 4000, 2)
+    );
+}
+
+#[test]
+fn an_archived_session_is_not_read() {
+    let machine = Machine::new("usage-codex-archived");
+    machine.put_archived(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+
+    let summary = machine.scan_codex();
+    assert_eq!(summary.files_seen, 0, "the walk starts at sessions/");
+    assert_eq!(summary.credited, 0);
+    assert!(
+        store::months(&machine.state()).unwrap().is_empty(),
+        "and nothing was written at all"
+    );
+}
+
+#[test]
+fn a_machine_with_no_rollout_logs_is_a_state_not_a_fault() {
+    let machine = Machine::new("usage-codex-empty");
+    let summary = machine.scan_codex();
+    assert_eq!(summary.files_seen, 0);
+    assert_eq!(summary.credited, 0);
+    assert_eq!(summary.since, None);
+    assert!(
+        store::months(&machine.state()).unwrap().is_empty(),
+        "no month document, on a machine that spent nothing"
+    );
+}
+
+#[test]
+fn scanning_the_same_rollouts_again_adds_nothing() {
+    let machine = Machine::new("usage-codex-idempotent");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+
+    let first = machine.scan_codex();
+    assert_eq!(first.credited, 4);
+    let after_first = machine.documents();
+
+    let second = machine.scan_codex();
+    assert_eq!(second.files_seen, 1);
+    assert_eq!(second.bytes_read, 0, "every byte was behind the cursor");
+    assert_eq!(second.credited, 0);
+    assert_eq!(
+        machine.documents(),
+        after_first,
+        "and the store is byte for byte what it was"
+    );
+}
+
+#[test]
+fn the_two_readers_share_a_month_and_never_a_cursor() {
+    let machine = Machine::new("usage-both-providers");
+    machine.put("m-project/session-m.jsonl", &fixture("known-totals.jsonl"));
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+
+    let claude = machine.scan();
+    assert_eq!(claude.credited, 6);
+    let codex = machine.scan_codex();
+    assert_eq!(codex.credited, 4);
+
+    // One month document, two provider blocks, each with its own generation stamp.
+    let month = machine.month("2026-09");
+    assert!(month.buckets(PROVIDER).is_some());
+    assert!(month.buckets(PROVIDER_CODEX).is_some());
+    assert_eq!(month.providers[PROVIDER].applied_through, 1);
+    assert_eq!(month.providers[PROVIDER_CODEX].applied_through, 1);
+
+    // Two cursor documents, and a pass by one reader does not touch the other's.
+    let codex_cursors = store::read_cursors(&machine.state(), PROVIDER_CODEX).unwrap();
+    assert_eq!(codex_cursors.files.len(), 1);
+    let claude_again = machine.scan();
+    assert_eq!(claude_again.credited, 0);
+    assert_eq!(
+        store::read_cursors(&machine.state(), PROVIDER_CODEX).unwrap(),
+        codex_cursors,
+        "the transcript scan left the rollout offsets exactly as they were"
+    );
+
+    // And both readers' totals are still there, side by side.
+    assert_eq!(
+        machine.bucket("2026-09", "2026-09-01T04", "claude-opus-5"),
+        bucket(60, 600, 6000, 60_000, 1)
+    );
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T11", "gpt-6-astra"),
+        bucket(1000, 300, 0, 3000, 1)
+    );
+}
+
+#[test]
+fn nothing_but_the_allow_listed_values_leaves_the_rollout_reader() {
+    const CONTENT: &str = "SENTINEL-content-do-not-leak-7c41";
+    const FIELD: &str = "SENTINEL field do not leak 9b2e";
+
+    let text = fixture("rollout-sentinel.jsonl");
+    assert!(
+        text.contains(CONTENT) && text.contains(FIELD),
+        "the fixture lost its sentinels"
+    );
+
+    // The event line itself: a payload whose every neighbouring string is a sentinel.
+    let event_line = text.trim_end().lines().next_back().unwrap();
+    let outcome = codex::parse_line(event_line);
+    let parsed = format!("{outcome:?}");
+    assert!(
+        !parsed.contains(CONTENT) && !parsed.contains(FIELD),
+        "the parsed event carries a sentinel"
+    );
+    match outcome {
+        codex::Outcome::Usage(event) => {
+            assert_eq!(event.hour, "2026-09-04T09");
+            assert_eq!(event.usage.output, Some(33));
+        }
+        other => panic!("expected an event, got {other:?}"),
+    }
+
+    // The `turn_context` whose model is prose: refused on its shape, and the model the
+    // session actually named stays in force for the event after it.
+    let prose_context = text
+        .lines()
+        .find(|line| line.contains(&format!("\"model\":\"{FIELD}\"")))
+        .unwrap();
+    assert_eq!(codex::parse_line(prose_context), codex::Outcome::Other);
+
+    let machine = Machine::new("usage-codex-sentinel");
+    machine.put_rollout(&rollout("04", "2026-09-04T09-00-00-session-s"), &text);
+    let summary = machine.scan_codex();
+
+    let printed = format!("{summary:?}");
+    assert!(!printed.contains(CONTENT) && !printed.contains(FIELD));
+    let serialised = serde_json::to_string(&summary).unwrap();
+    assert!(!serialised.contains(CONTENT) && !serialised.contains(FIELD));
+
+    let documents = machine.documents();
+    assert!(
+        documents.len() >= 2,
+        "a month document and a cursor document"
+    );
+    for (name, body) in &documents {
+        assert!(
+            !body.contains(CONTENT),
+            "{name} carries the content sentinel"
+        );
+        assert!(!body.contains(FIELD), "{name} carries the field sentinel");
+    }
+
+    // And the numbers still arrived, under the model the session named.
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-04T09", "gpt-5.6-sol"),
+        bucket(3, 33, 0, 3333, 1)
+    );
+
+    let view = query(
+        &machine.state(),
+        "2026-09-01T00:00:00Z",
+        "2026-10-01T00:00:00Z",
+    )
+    .unwrap();
+    let drawn = serde_json::to_string(&view).unwrap();
+    assert!(!drawn.contains(CONTENT) && !drawn.contains(FIELD));
 }
 
 // ---------------------------------------------------------------------------

@@ -332,7 +332,7 @@ fn assistant_flag<'de, D: Deserializer<'de>>(source: D) -> std::result::Result<b
 }
 
 /// Read a field that should hold an RFC 3339 instant, or nothing.
-fn timestamp_field<'de, D: Deserializer<'de>>(
+pub(super) fn timestamp_field<'de, D: Deserializer<'de>>(
     source: D,
 ) -> std::result::Result<Option<String>, D::Error> {
     Ok(text_field(source)?.and_then(|text| crate::timefmt::sanitize_timestamp(&text)))
@@ -344,7 +344,7 @@ fn timestamp_field<'de, D: Deserializer<'de>>(
 /// names that use them — so a field repurposed to hold prose is dropped instead of copied
 /// into a document or a tooltip. `<synthetic>` has to survive this check to be recognised
 /// and thrown away by name.
-fn identifier_field<'de, D: Deserializer<'de>>(
+pub(super) fn identifier_field<'de, D: Deserializer<'de>>(
     source: D,
 ) -> std::result::Result<Option<String>, D::Error> {
     Ok(text_field(source)?.filter(|text| {
@@ -361,7 +361,7 @@ fn identifier_field<'de, D: Deserializer<'de>>(
 /// Anything that is not text, and any text longer than [`MAX_FIELD`], yields `None`
 /// instead of failing the line: a transcript is somebody else's format and a field that
 /// changed shape is not a reason to stop counting the rest of the file.
-fn text_field<'de, D: Deserializer<'de>>(
+pub(super) fn text_field<'de, D: Deserializer<'de>>(
     source: D,
 ) -> std::result::Result<Option<String>, D::Error> {
     struct Text;
@@ -550,7 +550,7 @@ fn usage_field<'de, D: Deserializer<'de>>(
 }
 
 /// A count that refuses to become a number when it is not one.
-struct Count(Option<u64>);
+pub(super) struct Count(pub(super) Option<u64>);
 
 impl<'de> Deserialize<'de> for Count {
     fn deserialize<D: Deserializer<'de>>(source: D) -> std::result::Result<Self, D::Error> {
@@ -717,6 +717,68 @@ impl FileScan {
 /// are the next pass's work, so a live transcript can be polled without ever reading a
 /// line that is still being written.
 pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan> {
+    let mut scan = FileScan::default();
+    let pass = read_new_lines(
+        path,
+        previous,
+        &[NEEDLE],
+        &mut |text| match parse_line(text) {
+            Outcome::Usage(record) => scan.records.push(record),
+            Outcome::Skipped(reason) => scan.note(reason),
+            Outcome::Malformed => scan.malformed += 1,
+            Outcome::Other => {}
+        },
+    )?;
+    scan.identity = pass.identity;
+    scan.offset = pass.offset;
+    scan.restarted = pass.restarted;
+    scan.bytes = pass.bytes;
+    scan.lines = pass.lines;
+    scan.malformed += pass.malformed;
+    Ok(scan)
+}
+
+/// What one incremental pass over a file's bytes did, before anything was interpreted.
+///
+/// The half of a scan that is about files rather than about formats: where the reader got
+/// to, whether it had to start again, and how much it walked past. Two readers share it —
+/// Claude Code's transcripts and Codex's rollout logs are both JSON Lines appended to by a
+/// live process — and the invariants below are the reason it is one piece of code and not
+/// two.
+#[derive(Debug, Default)]
+pub struct Pass {
+    /// The file's identity as it stands now.
+    pub identity: String,
+    /// Absolute offset of the byte after the last complete line read.
+    pub offset: u64,
+    /// `true` when the file was replaced or truncated and the pass started from the top.
+    pub restarted: bool,
+    /// Bytes read in this pass.
+    pub bytes: u64,
+    /// Lines that matched a needle and were handed to the caller.
+    pub lines: u64,
+    /// Lines that matched a needle and were not text this crate could read, plus fragments
+    /// too long to be a line. What the caller makes of a line it *could* read is its own
+    /// count to keep.
+    pub malformed: u64,
+}
+
+/// Read every complete new line of `path` that contains one of `needles`, in file order.
+///
+/// The same contract as [`scan_file`], which is one caller of it: `previous` is
+/// `(identity, offset)` as the last pass left them, a mismatch starts again from byte zero
+/// and says so, and the length is pinned at the `metadata` call so that bytes arriving
+/// during the read are the next pass's work.
+///
+/// `needles` is a prefilter and nothing more: a line has to contain one of them to be worth
+/// turning into text, and a line that contains one still has to survive the caller's parser.
+/// It is what keeps a pass over a few hundred megabytes of prompts and tool output cheap.
+pub fn read_new_lines(
+    path: &Path,
+    previous: Option<(&str, u64)>,
+    needles: &[&[u8]],
+    on_line: &mut dyn FnMut(&str),
+) -> Result<Pass> {
     let metadata = std::fs::metadata(path).map_err(|source| Error::io(path, source))?;
     let length = metadata.len();
 
@@ -750,11 +812,11 @@ pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan>
         ),
     };
 
-    let mut scan = FileScan {
+    let mut scan = Pass {
         identity,
         offset: start,
         restarted,
-        ..FileScan::default()
+        ..Pass::default()
     };
     if start >= length {
         return Ok(scan);
@@ -763,7 +825,7 @@ pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan>
     file.seek(SeekFrom::Start(start))
         .map_err(|source| Error::io(path, source))?;
 
-    let table = skip_table(NEEDLE);
+    let tables: Vec<[usize; 256]> = needles.iter().map(|needle| skip_table(needle)).collect();
     let mut buffer = vec![0u8; CHUNK];
     let mut carry: Vec<u8> = Vec::new();
     let mut discarding = false;
@@ -792,11 +854,11 @@ pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan>
                 continue;
             }
             if carry.is_empty() {
-                absorb(line, &table, &mut scan);
+                absorb(line, needles, &tables, &mut scan, on_line);
             } else {
                 carry.extend_from_slice(line);
                 let joined = std::mem::take(&mut carry);
-                absorb(&joined, &table, &mut scan);
+                absorb(&joined, needles, &tables, &mut scan, on_line);
             }
         }
 
@@ -820,26 +882,34 @@ pub fn scan_file(path: &Path, previous: Option<(&str, u64)>) -> Result<FileScan>
     Ok(scan)
 }
 
-/// Parse one complete line, if it is worth parsing.
-fn absorb(line: &[u8], table: &[usize; 256], scan: &mut FileScan) {
+/// Hand one complete line to the caller, if it is worth parsing.
+fn absorb(
+    line: &[u8],
+    needles: &[&[u8]],
+    tables: &[[usize; 256]],
+    scan: &mut Pass,
+    on_line: &mut dyn FnMut(&str),
+) {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
-    if line.is_empty() || !contains(line, NEEDLE, table) {
+    if line.is_empty() {
+        return;
+    }
+    let wanted = needles
+        .iter()
+        .zip(tables)
+        .any(|(needle, table)| contains(line, needle, table));
+    if !wanted {
         return;
     }
     scan.lines += 1;
     let Ok(text) = std::str::from_utf8(line) else {
-        // A transcript with bytes that are not UTF-8 is a transcript we do not understand.
-        // Counted, never guessed at: a lossy conversion would hand the parser invented
-        // characters and the parser would hand us invented numbers.
+        // A log with bytes that are not UTF-8 is a log we do not understand. Counted,
+        // never guessed at: a lossy conversion would hand the parser invented characters
+        // and the parser would hand us invented numbers.
         scan.malformed += 1;
         return;
     };
-    match parse_line(text) {
-        Outcome::Usage(record) => scan.records.push(record),
-        Outcome::Skipped(reason) => scan.note(reason),
-        Outcome::Malformed => scan.malformed += 1,
-        Outcome::Other => {}
-    }
+    on_line(text);
 }
 
 /// Read up to `head.len()` bytes from the start of a file.
