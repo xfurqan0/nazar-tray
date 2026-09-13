@@ -1316,3 +1316,84 @@ its first two items belong in the same commit as the readers they describe, beca
   of the Win32 convention for `szTip` and one constant to change if a Windows build disagrees.
   Whether Windows renders the second line, and how the tooltip looks at 119 characters in
   Spanish, are owed a look on a real desktop.
+- 2026-09-13 — **T-WP20 landed: the usage view, after the maintainer installed it.** Four
+  things were reported off one screen, and three of them were the view arguing with its reader
+  rather than with its data.
+  **(1) The headline is all four counters now, because a number has to be the number it is
+  being compared with.** T-WP16 made it `input + output + cache_create` and wrote down a good
+  reason: cache reads were 98.5 % of the raw total over six days of real work, so a headline
+  with them folded in is a number about the cache. The reasoning was right about the arithmetic
+  and wrong about the reader. Claude Code's own `/usage` calls the four-way sum **total
+  tokens**, and the maintainer put the two windows side by side: 1.4 M against 1.0 B. A tray
+  answering the same question with 0.1 % of the answer does not read as careful, it reads as
+  broken. So the headline is `/usage`'s definition, and what T-WP16 was protecting is now
+  **in the view instead of in a footnote**: a four-way breakdown under the headline and under
+  every model row — `In 802K · Out 354K · Cache read 1B · Cache write 253K` — where the reader
+  can see for themselves that the billion is the cache. Absent counters print an em dash in
+  the breakdown rather than dropping out of it, because a breakdown that does not add up to
+  the number above it is worse than one with a hole named in it. Rows sort by the new total,
+  which reorders them: cache reads dominate, so the busiest model is the one that read the
+  most, and that is the honest answer to *what did the tokens go on*.
+  **(2) Month and All are calendar heat-maps, and a day outside the range is a hole.** Weeks
+  as columns, Monday to Sunday down each one, one cell a local day, shaded from the theme's
+  accent — the same `accentText` the meter fill uses, at four opacities over `nodeHeader`, so
+  there is still no second palette in this product and still **no charting library**
+  (decision K2): seven grid rows, `grid-auto-flow: column`, and one custom property for the
+  cell size. Month draws the whole calendar shape of the month — five columns for July 2026,
+  six for August — and All draws up to twelve months with the month names over the columns
+  their first drawn day falls in, scrolling sideways because fifty-three columns do not fit in
+  330 px. The cells the range does not contain — Monday and Tuesday before a Wednesday 1st,
+  every day after today, the weeks before the store began — are **nothing at all**: no track,
+  no shade, nothing the keyboard can land on. An empty track there would say a day nobody
+  could have worked on was a day nobody worked on. Week keeps its seven-column strip.
+  **(3) The shading is max-relative in quarters, and that is a decision with a loser.** A day
+  with nothing is level 0; the rest take one of four shades by their share of the busiest day
+  in the grid, so the busiest day is always the darkest. The **quantile** scale a contribution
+  graph normally uses was written first and thrown away: quartiles over three active days —
+  an ordinary first week with this product — cannot fill four buckets, so the top shade in the
+  legend would never be drawn, and a legend with an unreachable end reads as a bug.
+  Max-relative fails the other way, flattening an ordinary month beside one enormous day, and
+  that failure is *true*. Either way the exact number is one hover away, which is what keeps
+  the colour a hint rather than a measurement.
+  **(4) The hover line is the panel's own, and the grid answers the keyboard.** Date, total
+  and the model that led the day, on a line inside the view — not an OS tooltip, which inside
+  an `alwaysOnTop` tray popup is a second floating window over a first one, arrives after a
+  delay nobody controls, and cannot be read by anybody navigating with the keyboard. The
+  calendar is one tab stop with a roving `tabindex`; the arrow keys walk it one day up and
+  down a column and seven along, which is exactly what the shape on screen means. The
+  arithmetic survives the holes because a grid only has them at its two ends. Each cell is a
+  `role="img"` with the same sentence as its label; nothing is a button, because a button that
+  does nothing when activated is a promise the panel does not keep.
+  **(5) The Usage button, and what was actually wrong with it.** Nothing about that button:
+  the three in that footer are the same markup and were matched by the same rules. `.button`'s
+  whole hover state was a shade of text and a border in the **raw** accent, which is 2.25:1 on
+  a white panel — a hairline nobody sees. It is a **ground** now, `nodeHeader` with the border
+  in the derived accent tone, and `:focus-visible` is in the same rule, so the keyboard gets
+  more than an outline drawn outside the border. Both pairs were already measured by
+  `test/contrast.test.mjs` in both themes and both modes; nothing new was invented to fix it.
+  **(6) The footer line is a line.** *Since* and *scanned* were two paragraphs at 10 px under
+  the model rows and the maintainer could not read them on a real desktop. They are one line at
+  the size of the rest of the view, in the headline block, joined by the same middle dot the
+  breakdown uses: `Since Sep 8 · scanned 1 h 0 m ago`. *Since* still appears on the **All** tab
+  alone — over a tab headed *Week* the store's own floor would read as a claim about which week
+  is being shown.
+  **Eight new keys in six languages and two retired.** `usage.part.*` for the breakdown,
+  `usage.cell` and `usage.cell.none` for the hover line, `usage.less` and `usage.more` for the
+  legend; `usage.cacheRead` and `usage.bar` are gone, and the two entries above that name them
+  are left as they were written. The frozen counted-key list is untouched for the same reason
+  as before: every `{tokens}` holds a string `Intl` has already finished. **106 panel tests
+  where there were 97** — the calendar arithmetic is five of them, including a month that opens
+  on a Wednesday, a month that needs six columns and a year boundary inside one column — and
+  typecheck green. **Not verified on screen:** nothing in this repository can render the panel,
+  so the cell sizes (18 px under ten columns, 11 px above), whether the All grid's sideways
+  scroll feels right at 360 px, and whether four opacities of one accent are actually
+  distinguishable in light mode are owed a look on the real desktop. No Rust changed.
+  **Two things the next package owes, and they are one thing.** `nazar-tray::usage::headline`
+  is still `input + output + cache_create`, and it is what the tray tooltip's *This week* line
+  carries — so the tooltip and the panel now answer the same question with two definitions, and
+  the panel's is the one a reader can check against `/usage`. And `docs/usage-contract.md`
+  §*The headline number* still states the old rule as the contract, with the six-day
+  measurement that argued for it. T-WP20 was scoped to `ui/**` and deliberately reached into
+  neither; whoever closes this should move the Rust headline and rewrite that section together,
+  and keep the table — the measurement is still true, and it is now the argument for the
+  **breakdown** rather than for the headline.

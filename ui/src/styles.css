@@ -417,9 +417,29 @@ body {
   cursor: pointer;
 }
 
-.button:hover {
+/*
+ * Hover and focus, and why they are one rule with a fill in it.
+ *
+ * What was here changed two things a mouse cannot see: `textMuted` to `text`, which at
+ * 11.5 px is a shade, and the border from `panelBorder` to the **raw** accent, which is
+ * 2.25:1 on a white panel — a pale hairline that reads as nothing having happened. The
+ * maintainer reported the footer's *Usage* button as dead on hover; every `.button` in the
+ * product was, equally, and the three in that footer are the same markup with the same
+ * rules. So the change is a **ground**: `nodeHeader`, the surface a settings control already
+ * sits on and the one `test/contrast.test.mjs` already measures `text` against in both
+ * themes and both modes, with the border in the derived accent tone that survives a light
+ * ground.
+ *
+ * `:focus-visible` is in the same rule rather than left to the outline alone. The outline is
+ * drawn outside the border and says *the keyboard is here*; the fill says *this is a
+ * control*, and a button that only answers the mouse is a button half the readers of this
+ * panel cannot find.
+ */
+.button:hover,
+.button:focus-visible {
   color: var(--color-text, #eaf2ff);
-  border-color: var(--color-accent, #3fa9f5);
+  border-color: var(--color-accent-text, #3fa9f5);
+  background: var(--color-node-header, #14355f);
 }
 
 .button:active {
@@ -447,7 +467,8 @@ body {
   font-weight: var(--type-weight-strong, 680);
 }
 
-.button.primary:hover {
+.button.primary:hover,
+.button.primary:focus-visible {
   color: var(--color-text, #eaf2ff);
   border-color: var(--color-accent-text, #3fa9f5);
   background: var(--color-node-header, #14355f);
@@ -758,8 +779,9 @@ input[type="checkbox"] {
   margin: 0;
 }
 
-/* The one number the view exists to show: `input + output + cache_create` over the window.
-   Selectable, like the quota percentages, because it is the thing worth copying. */
+/* The one number the view exists to show: all four counters over the window, which is the
+   same definition Claude Code's own `/usage` prints as *total tokens*. Selectable, like the
+   quota percentages, because it is the thing worth copying. */
 .usage-total {
   color: var(--color-text, #eaf2ff);
   font-size: var(--type-size-xl, 19px);
@@ -776,18 +798,30 @@ input[type="checkbox"] {
   text-transform: uppercase;
 }
 
-/* Beside the headline and never inside it: cache reads are two orders of magnitude larger
-   than the work, so a total with them folded in is a chart of cache behaviour. */
-.usage-cache {
+/* The four counters the headline is a sum of. It wraps rather than shrinking: at 360 px the
+   four of them are two lines in English and three in Russian, and a font size chosen to fit
+   the worst language is a font size nobody can read in any of them. */
+.usage-parts {
   margin: 0;
   color: var(--color-text-muted, #a8bfdc);
   font-size: var(--type-size-sm, 11.5px);
   font-variant-numeric: tabular-nums;
+  line-height: 1.45;
 }
 
-/* One column per local day, or per local week on the *all* tab. The columns are drawn even
-   when they are empty — a Wednesday with no work is a fact, and a strip that closed the gap
-   would say the opposite. */
+/* Where the history begins and when it was last counted. **The same size as everything else
+   on the page**, which is the whole of T-WP20's fix: this was two lines at 10 px under the
+   model rows, and the maintainer could not read them on a real desktop. */
+.usage-info {
+  margin: 2px 0 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-sm, 11.5px);
+  line-height: 1.45;
+}
+
+/* One column per local day, Monday to today. The columns are drawn even when they are empty
+   — a Wednesday with no work is a fact, and a strip that closed the gap would say the
+   opposite. */
 .usage-strip {
   display: flex;
   align-items: flex-end;
@@ -814,18 +848,154 @@ input[type="checkbox"] {
 }
 
 /*
+ * The calendar heat-map, and the four rules it is built on.
+ *
+ * **Still no charting library** (decision K2). A grid with seven rows, `grid-auto-flow:
+ * column` so that appending cells in the order `usage.ts` produces them fills Monday to
+ * Sunday down each week, and one custom property for the cell size. Thirty lines of CSS.
+ *
+ * **The scale is the theme's accent, not a palette of its own.** Four shades of
+ * `accentText` by opacity over the panel, plus `nodeHeader` for a day with nothing on it —
+ * the same two tokens the meter and the strip already use. There is no second palette in
+ * this product, and a heat-map is exactly where one gets invented.
+ *
+ * **Colour is never the only channel.** The four shades say *roughly how much*; the hover
+ * line underneath says the date, the number and the model, and the legend says which end is
+ * which. The same rule the quota bars keep, for the same reader.
+ *
+ * **The width is the grid's, not the panel's.** A year is fifty-three columns and cannot be
+ * squeezed into 330 px without cells two pixels wide, so the box scrolls sideways and the
+ * month names scroll with it, inside `.usage-plot`.
+ */
+.usage-grid {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.usage-plot {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 100%;
+}
+
+.usage-months,
+.usage-weeks {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--usage-cell, 11px);
+  gap: 3px;
+}
+
+.usage-weeks {
+  grid-template-rows: repeat(7, var(--usage-cell, 11px));
+}
+
+.usage-month {
+  overflow: hidden;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.usage-cell {
+  border-radius: 2px;
+  background: var(--color-node-header, #14355f);
+}
+
+/* A day outside the range: before the first of the month, or after today. Nothing is drawn
+   at all, because an empty track would say it was a day with no work on it. */
+.usage-cell.blank {
+  background: transparent;
+}
+
+.usage-level-0 {
+  background: var(--color-node-header, #14355f);
+}
+
+.usage-level-1,
+.usage-level-2,
+.usage-level-3,
+.usage-level-4 {
+  background: var(--color-accent-text, #3fa9f5);
+}
+
+.usage-level-1 {
+  opacity: 0.3;
+}
+
+.usage-level-2 {
+  opacity: 0.55;
+}
+
+.usage-level-3 {
+  opacity: 0.78;
+}
+
+.usage-level-4 {
+  opacity: 1;
+}
+
+/* The hover line and the legend, on one row: what the pointer is over, and which end of the
+   scale is which. The line keeps its height when it is empty so that moving the pointer
+   across the grid does not make the panel resize under it. */
+.usage-scale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-hover {
+  flex: 1 1 auto;
+  min-height: 1.5em;
+  margin: 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-sm, 11.5px);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-legend {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+}
+
+.usage-legend-keys {
+  display: flex;
+  gap: 2px;
+}
+
+.usage-legend-keys .usage-cell {
+  width: 9px;
+  height: 9px;
+}
+
+/*
  * The rows scroll rather than growing the window past its clamp.
  *
  * The panel is 140–720 px tall (`crates/nazar-tray/src/panel.rs`), and a month of real work
  * can name a dozen models. Without a ceiling here the view would ask for a window taller
  * than it can have and the last rows would be drawn where nobody can see them — which is
  * worse than a list that is visibly scrollable.
+ *
+ * 236 px rather than the 272 it was: T-WP20 put a calendar and a breakdown line above this
+ * list, and a ceiling that ignored them would spend the clamp on rows that already scroll
+ * and push the thing they are a breakdown of off the bottom of the window.
  */
 .usage-rows {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 272px;
+  max-height: 236px;
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -865,11 +1035,21 @@ input[type="checkbox"] {
   user-select: text;
 }
 
+/* The row's own four counters, under its total and its bar. Smaller than the total and
+   larger than the record count, which is the order the three of them are read in. */
+.usage-row-parts {
+  margin-top: 3px;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
 .usage-row-foot {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--color-text-faint, #7d96b5);
   font-size: var(--type-size-xs, 10px);
   font-variant-numeric: tabular-nums;
@@ -896,12 +1076,6 @@ input[type="checkbox"] {
   text-transform: none;
 }
 
-/* The two diagnostic lines under the numbers: where the store begins, and when it was last
-   added to. Both are answers to "should I believe this", which is why they are on the page
-   rather than in a log. */
-.usage-line {
-  margin: 0;
-  color: var(--color-text-faint, #7d96b5);
-  font-size: var(--type-size-xs, 10px);
-  line-height: 1.45;
-}
+/* The two footnotes that used to sit here — *since* and *scanned*, at 10 px, under the model
+   rows — are one `.usage-info` line now, at the size of the rest of the view and up in the
+   headline block. T-WP20, on the maintainer's report that nobody could read them. */

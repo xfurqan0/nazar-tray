@@ -33,7 +33,20 @@ all under `usage.*`: the third view's tabs, its two numbers, its three footer li
 six sentences an error can be. Two of them are the same idea said twice on purpose —
 `usage.row.requests` and `usage.row.events` — because a record that carried usage is a reply
 on the Claude side and a `token_count` event on the Codex side, and one word over both would
-be a label that lies about one of them.
+be a label that lies about one of them. T-WP17 added `tray.tooltip.week` and forgot to move
+the number in this paragraph, which is why it said 139 for a while and says 146 now.
+
+**T-WP20 added eight and took two away**, on the maintainer's reading of the built panel
+beside Claude Code's own `/usage`. The four `usage.part.*` keys are the breakdown under the
+headline — *In*, *Out*, *Cache read*, *Cache write* — which is where the cache is now told
+from the work, since the headline itself became the four-way sum `/usage` calls a total. That
+retired `usage.cacheRead`, whose whole job was to keep the cache reads outside it.
+`usage.cell` and `usage.cell.none` are what a day of the calendar says when it is hovered or
+focused — a date, a number and the model that led it, or the words for a day with nothing on
+it — and they replace `usage.bar`, which said only the first two and had no way to say the
+third. `usage.less` and `usage.more` label the two ends of the heat-map's legend and are the
+shortest strings in the product; keep them that way, because they sit either side of five
+small squares on a 360 px panel.
 
 The status lives in this table rather than in a `_meta` key inside the files, and that is a
 finding rather than a preference. `crates/nazar-tray/src/i18n.rs` parses each file as
@@ -89,8 +102,8 @@ Chinese and Korean write `88%` with no space, English, Russian and Spanish write
 `22.3M` in English is `22,3 Mn` in Turkish, `22,3 млн` in Russian, `2230万` in Chinese and
 `2230만` in Korean — and every one of those marks comes from `Intl.NumberFormat`'s compact
 notation in `ui/src/usage.ts`, not from a string here. So there is no `K`, `M` or `B` to
-translate, no decimal separator to get wrong, and the placeholder in `usage.cacheRead` or
-`usage.bar` holds a number that has **already been formatted for the language** — the same
+translate, no decimal separator to get wrong, and the `{tokens}` in `usage.part.input` or
+`usage.cell` holds a number that has **already been formatted for the language** — the same
 thing `{time}` and `{age}` have always held. That is why those keys are not on the frozen
 counted-key list: what they interpolate is a finished string, not a bare count.
 

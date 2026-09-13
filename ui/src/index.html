@@ -111,20 +111,46 @@
         <pre class="console" data-usage-detail hidden></pre>
         <p class="empty" data-usage-state hidden></p>
 
+        <!--
+          The headline, the four counters it is made of, and the line that says how far the
+          history goes and how old it is. All three are one block on purpose: the number is
+          only worth reading next to what it is a sum of and when it was last counted.
+        -->
         <section class="usage-summary" data-usage-summary hidden>
           <p class="usage-headline">
             <span class="usage-total" data-usage-total></span>
             <span class="usage-caption" data-i18n="usage.tokens"></span>
           </p>
-          <p class="usage-cache" data-usage-cache></p>
+          <p class="usage-parts" data-usage-parts></p>
+          <p class="usage-info" data-usage-info hidden></p>
         </section>
 
-        <div class="usage-strip" data-usage-strip aria-hidden="true" hidden></div>
+        <!--
+          Two drawings of the same days, one per range. *Week* keeps the strip of seven
+          columns; *Month* and *All* draw the calendar, weeks as columns and Monday at the
+          top. Both are built at run time and both feed the one hover line underneath, which
+          is the panel's own and not the operating system's tooltip.
+        -->
+        <div class="usage-strip" data-usage-strip hidden></div>
+
+        <div class="usage-grid" data-usage-grid hidden>
+          <div class="usage-plot">
+            <div class="usage-months" data-usage-months></div>
+            <div class="usage-weeks" data-usage-weeks></div>
+          </div>
+        </div>
+
+        <div class="usage-scale" data-usage-scale hidden>
+          <p class="usage-hover" data-usage-hover></p>
+          <span class="usage-legend">
+            <span data-i18n="usage.less"></span>
+            <span class="usage-legend-keys" data-usage-legend aria-hidden="true"></span>
+            <span data-i18n="usage.more"></span>
+          </span>
+        </div>
 
         <ul class="usage-rows" data-usage-rows></ul>
 
-        <p class="usage-line" data-usage-since hidden></p>
-        <p class="usage-line" data-usage-scanned hidden></p>
         <p class="note" data-usage-damaged hidden></p>
 
         <footer class="foot">

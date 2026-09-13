@@ -63,16 +63,21 @@ import {
 } from "./settings";
 import { THEMES, applyTheme } from "./theme";
 import {
+  HEAT_LEVELS,
   buildUsageView,
-  formatColumn,
-  formatDay,
+  cellLine,
+  footerLine,
+  formatMonth,
   formatNumber,
   formatTokens,
   isUsageError,
+  partsLine,
   requestsKey,
   usageErrorKey,
   usageWindow,
   type UsageBar,
+  type UsageCell,
+  type UsageGrid,
   type UsageRow,
 } from "./usage";
 
@@ -153,14 +158,19 @@ const statuslineOutput = document.querySelector<HTMLElement>("[data-statusline-o
 const usageTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-range]")];
 const usageSummary = document.querySelector<HTMLElement>("[data-usage-summary]");
 const usageTotal = document.querySelector<HTMLElement>("[data-usage-total]");
-const usageCache = document.querySelector<HTMLElement>("[data-usage-cache]");
+const usagePartsLine = document.querySelector<HTMLElement>("[data-usage-parts]");
+const usageInfoLine = document.querySelector<HTMLElement>("[data-usage-info]");
 const usageStrip = document.querySelector<HTMLElement>("[data-usage-strip]");
+const usageGrid = document.querySelector<HTMLElement>("[data-usage-grid]");
+const usageMonths = document.querySelector<HTMLElement>("[data-usage-months]");
+const usageWeeks = document.querySelector<HTMLElement>("[data-usage-weeks]");
+const usageScale = document.querySelector<HTMLElement>("[data-usage-scale]");
+const usageHoverLine = document.querySelector<HTMLElement>("[data-usage-hover]");
+const usageLegend = document.querySelector<HTMLElement>("[data-usage-legend]");
 const usageRows = document.querySelector<HTMLElement>("[data-usage-rows]");
 const usageStateLine = document.querySelector<HTMLElement>("[data-usage-state]");
 const usageErrorLine = document.querySelector<HTMLElement>("[data-usage-error]");
 const usageDetailLine = document.querySelector<HTMLElement>("[data-usage-detail]");
-const usageSinceLine = document.querySelector<HTMLElement>("[data-usage-since]");
-const usageScannedLine = document.querySelector<HTMLElement>("[data-usage-scanned]");
 const usageDamagedLine = document.querySelector<HTMLElement>("[data-usage-damaged]");
 const usageRefresh = document.querySelector<HTMLButtonElement>("[data-usage-refresh]");
 
@@ -711,6 +721,14 @@ function usageRowItem(row: UsageRow): HTMLElement {
   }
   item.append(meter);
 
+  // The four counters the total above is a sum of, on their own smaller line. Without it the
+  // headline is a number about the cache with the work lost in the rounding — cache reads
+  // were 98.5 % of it over six days of real work — and the reader has no way to see that.
+  const parts = document.createElement("div");
+  parts.className = "usage-row-parts";
+  parts.textContent = partsLine(row.parts, locale, t);
+  item.append(parts);
+
   const foot = document.createElement("div");
   foot.className = "usage-row-foot";
   const records = document.createElement("span");
@@ -725,14 +743,54 @@ function usageRowItem(row: UsageRow): HTMLElement {
   return item;
 }
 
-/** One column of the strip: a local day, or a local week on the *all* tab. */
+// --------------------------------------------------------------- the calendar
+
+/**
+ * Every cell and bar that can be inspected, in the order they are drawn.
+ *
+ * A grid of a year is 366 cells, and 366 tab stops between the tabs and the model rows would
+ * make the keyboard useless. So the list holds one tab stop — {@link roving} keeps it on the
+ * cell that has been looked at last — and the arrow keys walk this array: up and down a week,
+ * left and right a column, which is what the shape on screen makes them mean.
+ */
+let usageStops: HTMLElement[] = [];
+
+/** Move the single tab stop onto one cell, and optionally put the focus there too. */
+function roving(next: HTMLElement | undefined, focus: boolean): void {
+  if (!next) return;
+  for (const stop of usageStops) stop.tabIndex = -1;
+  next.tabIndex = 0;
+  if (focus) next.focus();
+}
+
+/** Say what a cell holds, on the panel's own line rather than in a tooltip of the shell's. */
+function sayCell(element: HTMLElement | null): void {
+  if (!usageHoverLine) return;
+  const line = element?.dataset["usageLine"];
+  usageHoverLine.textContent = line ?? "";
+}
+
+/**
+ * Make one cell or bar answer to the pointer and to the keyboard.
+ *
+ * `role="img"` with a label rather than a button: nothing happens when it is activated, and a
+ * button that does nothing is a promise the panel does not keep. The label is the same
+ * sentence the hover line shows, so a screen reader and a pair of eyes are told the same
+ * thing.
+ */
+function inspectable(element: HTMLElement, line: string): void {
+  element.dataset["usageLine"] = line;
+  element.setAttribute("role", "img");
+  element.setAttribute("aria-label", line);
+  element.tabIndex = -1;
+  usageStops.push(element);
+}
+
+/** One column of the week strip: a local day, from this Monday to today. */
 function usageColumn(bar: UsageBar): HTMLElement {
   const column = document.createElement("span");
   column.className = "usage-bar";
-  column.title = t("usage.bar", {
-    date: formatColumn(bar.at, locale),
-    tokens: formatTokens(bar.total, locale),
-  });
+  inspectable(column, cellLine(bar, locale, t));
   if (bar.height > 0) {
     const fill = document.createElement("span");
     fill.className = "usage-bar-fill";
@@ -740,6 +798,78 @@ function usageColumn(bar: UsageBar): HTMLElement {
     column.append(fill);
   }
   return column;
+}
+
+/**
+ * One day of the calendar.
+ *
+ * A cell outside the range — before the first of the month, after today — is a hole: no
+ * track, no shade, no label, and nothing the keyboard can land on. February has no 30th and
+ * next Friday has not happened, and an empty track would say both were days with no work on
+ * them.
+ */
+function usageDay(cell: UsageCell): HTMLElement {
+  const box = document.createElement("span");
+  box.className = "usage-cell";
+  if (!cell.present) {
+    box.classList.add("blank");
+    box.setAttribute("aria-hidden", "true");
+    return box;
+  }
+  box.classList.add(`usage-level-${cell.level}`);
+  inspectable(box, cellLine(cell, locale, t));
+  return box;
+}
+
+/**
+ * Draw the calendar: weeks as columns, Monday at the top, month names over the top of it.
+ *
+ * The two rows share one column template so the names line up with the weeks under them, and
+ * a label is stretched to where the next one begins — the same trick a contribution graph
+ * uses, and the reason a month three weeks wide does not push the one after it sideways.
+ *
+ * The cell size is the one thing decided here rather than in the stylesheet: a month is five
+ * or six columns and would be a postage stamp at the size a year has to be drawn at, and a
+ * year is fifty-three columns and cannot be drawn at the size a month can afford. Above ten
+ * columns the grid goes small and scrolls sideways inside its own box. 18 px rather than
+ * something more comfortable because seven rows of it are 144 px of a window that is clamped
+ * at 720 and already has a summary, a strip of tabs, a list of models and two footers in it.
+ */
+function paintGrid(grid: UsageGrid): void {
+  if (!usageWeeks || !usageMonths) return;
+  const wide = grid.columns.length > 10;
+  const size = wide ? "11px" : "18px";
+  for (const row of [usageWeeks, usageMonths]) {
+    row.style.setProperty("--usage-cell", size);
+  }
+
+  const cells: HTMLElement[] = [];
+  for (const column of grid.columns) for (const day of column.days) cells.push(usageDay(day));
+  usageWeeks.replaceChildren(...cells);
+
+  const labels: HTMLElement[] = [];
+  grid.months.forEach((month, index) => {
+    const label = document.createElement("span");
+    label.className = "usage-month";
+    label.textContent = formatMonth(month.at, locale);
+    const ends = grid.months[index + 1]?.column ?? grid.columns.length;
+    label.style.gridColumn = `${month.column + 1} / ${ends + 1}`;
+    labels.push(label);
+  });
+  usageMonths.replaceChildren(...labels);
+}
+
+/** The four shades and the empty one, so the scale is a legend and not a guess. */
+function paintLegend(): void {
+  if (!usageLegend) return;
+  const keys: HTMLElement[] = [];
+  for (let level = 0; level <= HEAT_LEVELS; level++) {
+    const key = document.createElement("span");
+    key.className = "usage-cell";
+    key.classList.add(`usage-level-${level}`);
+    keys.push(key);
+  }
+  usageLegend.replaceChildren(...keys);
 }
 
 /** Draw the usage view from the last answer, the last failure, or neither. */
@@ -778,19 +908,33 @@ function paintUsage(): void {
   }
 
   const numbers = view !== undefined && !view.empty && !usageLoading && !failed;
+  // The strip is the week's; the calendar is the other two tabs'. Exactly one of them is on
+  // screen, which is what keeps the hover line underneath unambiguous.
+  const strip = numbers && view?.range === "week";
   if (usageSummary) usageSummary.hidden = !numbers;
-  if (usageStrip) usageStrip.hidden = !numbers;
+  if (usageStrip) usageStrip.hidden = !strip;
+  if (usageGrid) usageGrid.hidden = !numbers || strip;
+  if (usageScale) usageScale.hidden = !numbers;
+
+  usageStops = [];
+  sayCell(null);
 
   if (numbers && view) {
     if (usageTotal) usageTotal.textContent = formatTokens(view.total, locale);
-    if (usageCache) {
-      // Never inside the headline: cache reads were 98.5 % of the raw total over six days of
-      // real work, so a number with them folded in is a number about the cache.
-      usageCache.textContent = t("usage.cacheRead", {
-        tokens: formatTokens(view.cacheRead, locale),
-      });
-    }
+    // All four counters, every time. The headline is their sum — the same definition
+    // `/usage` calls *total tokens* — and this is where the cache is told from the work.
+    if (usagePartsLine) usagePartsLine.textContent = partsLine(view.parts, locale, t);
     if (usageStrip) usageStrip.replaceChildren(...view.bars.map(usageColumn));
+    if (strip) {
+      if (usageWeeks) usageWeeks.replaceChildren();
+      if (usageMonths) usageMonths.replaceChildren();
+    } else {
+      paintGrid(view.grid);
+    }
+    paintLegend();
+    // The tab stop lands on the most recent day, which is the one somebody opening this view
+    // wanted to know about.
+    roving(usageStops[usageStops.length - 1], false);
 
     const items: HTMLElement[] = [];
     for (const group of view.groups) {
@@ -814,24 +958,17 @@ function paintUsage(): void {
   } else {
     usageRows.replaceChildren();
     if (usageStrip) usageStrip.replaceChildren();
+    if (usageWeeks) usageWeeks.replaceChildren();
+    if (usageMonths) usageMonths.replaceChildren();
+    if (usageLegend) usageLegend.replaceChildren();
   }
 
-  if (usageSinceLine) {
-    // Only on the *all* tab, where it is the honest boundary of the word: the store holds
-    // what the first scan could still see, not everything that ever happened.
-    const show = view !== undefined && view.range === "all" && view.since !== undefined;
-    usageSinceLine.hidden = !show;
-    usageSinceLine.textContent = show
-      ? t("usage.since", { date: formatDay(view?.since, locale) })
-      : "";
-  }
-  if (usageScannedLine) {
-    const at = view?.scannedAt === undefined ? Number.NaN : Date.parse(view.scannedAt);
-    const show = Number.isFinite(at);
-    usageScannedLine.hidden = !show;
-    usageScannedLine.textContent = show
-      ? t("usage.scanned", { age: formatDuration(Date.now() - at, t) })
-      : "";
+  if (usageInfoLine) {
+    // Where the history begins and when it was last counted, on one line at the size of the
+    // rest of the view. Two footnotes at 10 px was T-WP16's answer and nobody could read it.
+    const line = view ? footerLine(view, locale, t, Date.now()) : "";
+    usageInfoLine.hidden = line === "";
+    usageInfoLine.textContent = line;
   }
   if (usageDamagedLine) {
     // A damaged month is not an error: the months beside it loaded, and this says which one
@@ -963,6 +1100,54 @@ for (const tab of usageTabs) {
 usageRefresh?.addEventListener("click", () => {
   void loadUsage(usageRange, true);
 });
+
+// The hover line, for both drawings of the days. Delegated rather than bound per cell: a year
+// is 366 cells and 366 pairs of listeners is 732 things to remove on the next redraw.
+for (const surface of [usageStrip, usageGrid]) {
+  surface?.addEventListener("pointerover", (event) => {
+    sayCell((event.target as HTMLElement | null)?.closest("[data-usage-line]") ?? null);
+  });
+  surface?.addEventListener("pointerleave", () => sayCell(null));
+  surface?.addEventListener("focusin", (event) => {
+    const cell = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-usage-line]");
+    sayCell(cell ?? null);
+    roving(cell ?? undefined, false);
+  });
+  surface?.addEventListener("focusout", () => sayCell(null));
+}
+
+/**
+ * Walking the days with the arrow keys.
+ *
+ * The calendar's cells are drawn column by column, Monday first, so one step along the array
+ * is one day down a column and seven is one week across — exactly what the shape on screen
+ * makes up, down, left and right mean. The arithmetic survives the holes because a grid only
+ * ever has them at its two ends: a month that starts on a Wednesday is missing the Monday and
+ * the Tuesday of its first column and nothing in between, so every step after that first
+ * column is a constant. The strip is one row, so left and right are one day.
+ *
+ * A step that lands outside is ignored rather than wrapped. Wrapping from the bottom of one
+ * week to the top of the next moves the focus somewhere the eye is not looking.
+ */
+function walkDays(event: KeyboardEvent, across: number): void {
+  const steps: Readonly<Record<string, number>> = {
+    ArrowUp: -1,
+    ArrowDown: 1,
+    ArrowLeft: -across,
+    ArrowRight: across,
+  };
+  const step = steps[event.key];
+  if (step === undefined || step === 0) return;
+  const here = usageStops.indexOf(event.target as HTMLElement);
+  if (here < 0) return;
+  const next = usageStops[here + step];
+  if (!next) return;
+  event.preventDefault();
+  roving(next, true);
+}
+
+usageGrid?.addEventListener("keydown", (event) => walkDays(event, 7));
+usageStrip?.addEventListener("keydown", (event) => walkDays(event, 1));
 
 // ------------------------------------------------------------- settings actions
 

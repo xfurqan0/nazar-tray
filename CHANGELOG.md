@@ -17,19 +17,33 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
 ### Added
 
 - **A Usage view, on a button in the panel footer.** Three ranges — **Week**, **Month**,
-  **All** — one row per model, both providers in the same list, a strip of days underneath,
-  and a *since {date}* line saying how far back the history actually goes. The headline is
-  **`input + output + cache_create`**, with **`cache_read` printed beside it and never folded
-  in**: cache reads were 98.5 % of the raw total over six days of real work, so a headline
-  that swallowed them would be a number about caching with the work lost in the rounding. An
-  absent counter prints an em dash and a reported zero prints `0` — the same distinction the
-  quota view draws between *nobody read this* and *you have used none of it*. Model ids are
-  printed exactly as the provider spelled them, never merged and never translated. **No
-  charting library** (decision K2): the day strip and the per-model bars are the same CSS
-  meter the quota rows use, so the view themes itself and weighs nothing. Twenty new keys in
-  all six languages, and **no magnitude mark among them** — `22.3M` in English, `22,3 млн` in
-  Russian and `2230만` in Korean are `Intl.NumberFormat`'s, floored to the precision they are
-  shown at, because 22.39 M is not 22.4 M.
+  **All** — one row per model, both providers in the same list, and a `Since 27 Aug · scanned
+  2 m ago` line saying how far back the history goes and how old it is. The headline is
+  **`input + output + cache_read + cache_create`**, which is the same definition Claude Code's
+  own `/usage` prints as *total tokens*, so the two can be read side by side. Underneath it,
+  and underneath every model row, the **same total taken apart in four** — `In 802K · Out
+  354K · Cache read 1B · Cache write 253K` — because cache reads were 98.5 % of the raw total
+  over six days of real work and that is a fact the reader should be able to see rather than
+  one the headline quietly decides for them. An absent counter prints an em dash and a
+  reported zero prints `0`, in the breakdown as well as in the total — the same distinction
+  the quota view draws between *nobody read this* and *you have used none of it*. Model ids
+  are printed exactly as the provider spelled them, never merged and never translated.
+  Twenty-six new keys in all six languages, and **no magnitude mark among them** — `22.3M`
+  in English, `22,3 млн` in Russian and `2230만` in Korean are `Intl.NumberFormat`'s, floored
+  to the precision they are shown at, because 22.39 M is not 22.4 M.
+- **Month and All are calendar heat-maps.** Weeks as columns, Monday to Sunday down each one,
+  one cell per local day, shaded in five steps from the theme's own accent; All draws up to
+  twelve months with the month names above them and scrolls sideways when it is wider than the
+  panel. Hovering or focusing a day says its date, its tokens and the model that spent most of
+  them, on a line inside the panel rather than in an operating-system tooltip — and the grid is
+  **one tab stop**, walked with the arrow keys, a day up and down and a week across. The
+  shading is quarters of the busiest day in the grid, so the busiest day is always the darkest
+  and a legend marks which end is which. Days the range does not contain — before the 1st of a
+  month, after today, before the store began — are drawn as nothing at all, because an empty
+  track would say a day nobody could have worked on was a day nobody worked on. Week keeps its
+  strip of seven columns. **Still no charting library** (decision K2): seven CSS grid rows and
+  one custom property, in the same tokens as the rest of the panel, so the view themes itself
+  and weighs nothing.
 - **The numbers come off files that were already there.** Claude Code's transcripts —
   `~/.claude/projects/**/*.jsonl`, **sub-agent transcripts included**, which are 78 % of the
   bytes — and the `token_count` events in the Codex session logs the quota reader already
@@ -74,6 +88,12 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
   since 0.1.0. It is a **deletion rather than a move**: nothing was added anywhere, and the
   slot it frees is where the Usage button went. `panel.action.theme` is gone from all six
   locale files, the first key this product has ever removed.
+- **Every button in the panel looks like a button under the pointer now, and under the
+  keyboard.** Hover used to change a shade of text and put a hairline in the raw accent, which
+  is 2.25:1 against a white panel — the *Usage* button was reported as dead on hover, and it
+  was, along with every other one in the product. Hover and `:focus-visible` share one rule
+  now and fill the control with the same ground a settings field sits on, a pair
+  `ui/test/contrast.test.mjs` already measures in both themes and both modes.
 - **The README's privacy statement says which files are read and which fields are taken.**
   *"Never reads your tokens and never talks to the network"* is still true and stays — "token"
   there is a sign-in token — but it is no longer the whole sentence, because reading
