@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "知道了",
   "panel.hint.close": "按 Esc 关闭此面板",
   "panel.action.refresh": "立即刷新",
-  "panel.action.theme": "切换主题",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "打开",

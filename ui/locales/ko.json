@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "확인",
   "panel.hint.close": "Esc를 누르면 이 패널이 닫힙니다",
   "panel.action.refresh": "지금 새로 고침",
-  "panel.action.theme": "테마 바꾸기",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "열기",

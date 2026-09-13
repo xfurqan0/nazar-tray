@@ -925,3 +925,29 @@ for the maintainer to run. Nothing in this repository runs them.
   It came from a build made before this, on the maintainer's own machine, where the string
   is the maintainer's own — nothing to fix and nobody to tell. It stops being true the next
   time the installer is run.
+
+- 2026-09-13 — **T-WP12: the footer's theme button is gone; the theme is the settings page's
+  and nowhere else** (`ui/src/index.html`, `main.ts`, `format.ts`, `ui/test/format.test.mjs`,
+  `ui/locales/*.json`, `crates/nazar-tray/src/state.rs`). Two places to change one setting is
+  one too many, and the footer's was the weaker of the two: its visible label was the name of
+  the theme it was *already* painting while its `aria-label` said *Switch theme*, so it read
+  as a statement to the eye and as an action to a screen reader, and it sat in a row that WP6
+  had already taught to wrap because Korean and Russian labels do not fit three buttons. The
+  settings page has named both themes in a dropdown since WP5 and writes them with the rest of
+  the form, so this was a **deletion and not a move** — nothing was added anywhere, and the
+  slot it frees is the one `docs/FUTURE.md` wants for a usage view. Out with the button went
+  `nextTheme` in `format.ts` and the test that cycled it, the `[data-theme]` query, the two
+  lines that set its label and its `aria-label`, the four-line comment explaining why its
+  label came from a message key rather than from the theme file, the click handler, and
+  `panel.action.theme` in all six locale files — **120 keys per file, now 119**, which is the
+  first key this product has ever removed. No CSS changed: the button was a plain `.button`
+  inside `.foot`, and the row still balances itself with *Refresh* and *Settings* at the left
+  and the Esc hint pushed right by its own `margin-left: auto`. `set_theme` stays registered,
+  tested and uncalled: the panel is no longer its caller, but a released build answers it and
+  retiring a command is a decision of its own rather than the side effect of moving a button —
+  the doc comment now says so instead of describing a toggle nobody can press. 77 panel tests
+  are 76 and green, `npm run typecheck` clean, and the Rust half is untouched by the change
+  and was run anyway: 490 tests, `cargo fmt --all --check`, and `cargo clippy --workspace
+  --all-targets -D warnings` clean. **Still to do:** the panel screenshots now lag by two
+  things rather than one — the round bead noted above, and a footer button that no longer
+  exists. Both are the same re-shoot with `scripts/screenshot.ps1`.

@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "Entendido",
   "panel.hint.close": "Esc cierra este panel",
   "panel.action.refresh": "Actualizar ahora",
-  "panel.action.theme": "Cambiar de tema",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "Abrir",

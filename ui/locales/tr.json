@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "Anladım",
   "panel.hint.close": "Esc bu paneli kapatır",
   "panel.action.refresh": "Şimdi yenile",
-  "panel.action.theme": "Temayı değiştir",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "Aç",

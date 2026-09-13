@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "Got it",
   "panel.hint.close": "Esc closes this panel",
   "panel.action.refresh": "Refresh now",
-  "panel.action.theme": "Switch theme",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "Open",

@@ -23,7 +23,6 @@
   "panel.hint.dismiss": "Понятно",
   "panel.hint.close": "Esc закрывает эту панель",
   "panel.action.refresh": "Обновить сейчас",
-  "panel.action.theme": "Сменить тему",
   "tray.provider.claude": "Claude",
   "tray.provider.codex": "Codex",
   "tray.menu.open": "Открыть",

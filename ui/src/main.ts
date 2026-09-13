@@ -15,9 +15,9 @@
  *   which can be minutes apart; a display that stood still for a minute would look broken.
  * * **The panel measures itself.** After every render it asks the Rust side for a window
  *   that fits, so the first-run hint can appear and disappear without leaving a gap.
- * * **The theme is the user's, and it is remembered.** The toggle writes through
- *   `set_theme` into `config.json`; light and dark follow `prefers-color-scheme` unless
- *   the settings say otherwise.
+ * * **The theme is the user's, and it is remembered.** It is chosen on the settings page
+ *   and written into `config.json` with the rest of the form; light and dark follow
+ *   `prefers-color-scheme` unless the settings say otherwise.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -31,7 +31,6 @@ import {
   freshnessClass,
   labelText,
   meterWidth,
-  nextTheme,
   resetClock,
   resetTitle,
   resolveMode,
@@ -107,7 +106,6 @@ const providersList = document.querySelector<HTMLElement>("[data-providers]");
 const emptyLine = document.querySelector<HTMLElement>("[data-empty]");
 const hintBox = document.querySelector<HTMLElement>("[data-hint]");
 const demoPill = document.querySelector<HTMLElement>("[data-demo]");
-const themeButton = document.querySelector<HTMLButtonElement>("[data-theme]");
 const refreshButton = document.querySelector<HTMLButtonElement>("[data-refresh]");
 const dismissButton = document.querySelector<HTMLButtonElement>("[data-dismiss]");
 const versionLabel = document.querySelector<HTMLElement>("[data-version]");
@@ -199,10 +197,6 @@ function applyLanguage(): void {
     const key = node.dataset["link"];
     if (key && LINKS[key]) node.textContent = LINKS[key];
   }
-  if (themeButton) {
-    themeButton.setAttribute("aria-label", t("panel.action.theme"));
-    themeButton.title = t("panel.action.theme");
-  }
   // The language picker's options are generated rather than written in the markup, so
   // `[data-i18n]` cannot reach them; they are rebuilt in the language that was just chosen.
   if (settings) paintForm();
@@ -216,11 +210,6 @@ function applyChosenTheme(): void {
   const theme = THEMES[ui.theme] ?? THEMES["nazar"];
   if (!theme) return;
   applyTheme(root, theme, resolveMode(ui.mode, darkQuery.matches));
-  // The theme's own `label` is English in both theme files. The settings picker has always
-  // named the same two themes through message keys, so the footer toggle would otherwise
-  // read "Graphite" beneath a dropdown reading "Grafit". The key wins; `label` stays in the
-  // theme files as the name the brand definition gives them, which is not a UI string.
-  if (themeButton) themeButton.textContent = t(`settings.theme.${theme.name}`);
 }
 
 /** One window row. */
@@ -669,20 +658,6 @@ async function load(): Promise<void> {
 }
 
 // ------------------------------------------------------------------ actions
-
-themeButton?.addEventListener("click", () => {
-  const theme = nextTheme(ui.theme, Object.keys(THEMES));
-  ui = { ...ui, theme };
-  applyChosenTheme();
-  void invoke<UiState>("set_theme", { theme, mode: ui.mode })
-    .then((state) => {
-      ui = state;
-      applyChosenTheme();
-    })
-    .catch(() => {
-      // Nothing to remember it in. The panel is already painted; that is the visible half.
-    });
-});
 
 refreshButton?.addEventListener("click", () => {
   void invoke("refresh_now").catch(() => {});

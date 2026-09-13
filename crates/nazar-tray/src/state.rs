@@ -11,7 +11,7 @@
 //! | `get_warnings` | the loop's counters, for a diagnostic line |
 //! | `refresh_now` | ask the loop for a pass; the audit's finding B13 is why it exists |
 //! | `get_ui_state` | theme, mode, the **resolved** language, and whether the hint is due |
-//! | `set_theme` | the panel's theme toggle, remembered in `config.json` |
+//! | `set_theme` | theme and mode, remembered in `config.json`; no caller since T-WP12 |
 //! | `dismiss_hint` | the overflow hint has been read; never show it again |
 //! | `set_panel_height` | the panel measured its own content and wants a window that fits |
 //! | `open_panel` | show the panel by the cursor |
@@ -663,11 +663,16 @@ pub fn get_ui_state(
     state.ui(&strings)
 }
 
-/// The theme toggle in the panel's footer.
+/// Theme and mode, remembered in `config.json`.
 ///
 /// Both values are taken as written and validated in the panel, which owns the theme
 /// files: a name this build does not recognise is stored and falls back to `nazar` when it
 /// is painted, rather than being rejected here and lost.
+///
+/// T-WP12 deleted the footer toggle that was its only caller; the settings form writes the
+/// same two fields, with the rest of the document, through `set_config`. The command stays
+/// registered because the bridge test names it and because removing a command a released
+/// build answers is a decision of its own, not a side effect of moving a button.
 #[tauri::command]
 pub fn set_theme(
     state: tauri::State<'_, AppState>,

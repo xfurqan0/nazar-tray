@@ -17,7 +17,6 @@ import {
   freshnessClass,
   labelText,
   meterWidth,
-  nextTheme,
   resetClock,
   resolveMode,
   severityClass,
@@ -121,14 +120,6 @@ test("a reset within a day is a time; one further out carries its weekday", () =
     `a reset four days out needs its day: got ${later} against ${soon}`,
   );
   assert.ok(later.includes(soon), `the day is added to the time, not instead of it: ${later}`);
-});
-
-test("the theme toggle cycles through the themes that exist", () => {
-  assert.equal(nextTheme("nazar", ["nazar", "graphite"]), "graphite");
-  assert.equal(nextTheme("graphite", ["nazar", "graphite"]), "nazar");
-  // A settings file naming a theme this build does not have still toggles somewhere.
-  assert.equal(nextTheme("solarized", ["nazar", "graphite"]), "nazar");
-  assert.equal(nextTheme("nazar", []), "nazar");
 });
 
 test("light and dark follow the system unless the settings say otherwise", () => {

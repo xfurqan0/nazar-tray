@@ -129,12 +129,6 @@ export function resetTitle(resetsAt: Date, locale: string): string {
   );
 }
 
-/** The next theme the toggle should switch to. Two themes, so it is a toggle. */
-export function nextTheme(current: string, available: readonly string[]): string {
-  const at = available.indexOf(current);
-  return available[(at + 1) % available.length] ?? available[0] ?? current;
-}
-
 /**
  * Light or dark, given the setting and what the operating system says.
  *
