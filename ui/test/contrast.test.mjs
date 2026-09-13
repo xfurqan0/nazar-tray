@@ -15,6 +15,8 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { SERIES_CONTRAST, SERIES_HUES, seriesPalette } from "../dist/lib/theme.mjs";
+
 const UI = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const THEMES = ["theme.nazar.json", "theme.graphite.json"].map((name) =>
   JSON.parse(readFileSync(resolve(UI, name), "utf8")),
@@ -32,6 +34,24 @@ function luminance(hex) {
 function contrast(foreground, background) {
   const [a, b] = [luminance(foreground), luminance(background)].sort((x, y) => y - x);
   return (a + 0.05) / (b + 0.05);
+}
+
+/** Where a `#RRGGBB` sits on the colour wheel, in degrees. */
+function hue(hex) {
+  const [r, g, b] = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+  const high = Math.max(r, g, b);
+  const low = Math.min(r, g, b);
+  const span = high - low;
+  if (span === 0) return 0;
+  const sixth =
+    high === r ? ((g - b) / span) % 6 : high === g ? (b - r) / span + 2 : (r - g) / span + 4;
+  return (((sixth * 60) % 360) + 360) % 360;
+}
+
+/** The shorter way round the wheel between two hues, 0°–180°. */
+function apart(one, other) {
+  const gap = Math.abs(one - other) % 360;
+  return Math.min(gap, 360 - gap);
 }
 
 /** Foreground, background, and what the panel uses the pair for. */
@@ -85,6 +105,46 @@ for (const theme of THEMES) {
           `${foreground} on ${background} (${what}) is ${ratio.toFixed(2)}:1, under 3:1`,
         );
       }
+    });
+
+    // The usage chart's lines. Not in GRAPHICS above because they are not tokens: they are
+    // derived from `accentText` at run time by `seriesPalette`, precisely so that neither
+    // theme file has to carry a second palette nobody would remember to keep legible. A line
+    // carries meaning — it says *which model* — so it owes the same 3:1 a meter bar owes, and
+    // it owes it on a ground half of which the maintainer never sees.
+    test(`${theme.name}/${mode}: every chart line clears 3:1 on the panel`, () => {
+      const palette = seriesPalette(theme, mode);
+      assert.equal(palette.length, SERIES_HUES);
+      palette.forEach((line, index) => {
+        const ratio = contrast(line, colours.panel);
+        assert.ok(
+          ratio >= SERIES_CONTRAST,
+          `line ${index} (${line}) on panel is ${ratio.toFixed(2)}:1, under ${SERIES_CONTRAST}:1`,
+        );
+      });
+    });
+
+    // And they are told apart by hue rather than by shade, which is the whole reason the
+    // heat-map's four opacities of one accent could not be reused here.
+    test(`${theme.name}/${mode}: no two chart lines are the same colour`, () => {
+      const hues = seriesPalette(theme, mode).map(hue);
+      for (let one = 0; one < hues.length; one++) {
+        for (let other = one + 1; other < hues.length; other++) {
+          const gap = apart(hues[one], hues[other]);
+          assert.ok(gap >= 40, `lines ${one} and ${other} are ${gap.toFixed(0)}° apart, under 40°`);
+        }
+      }
+    });
+
+    test(`${theme.name}/${mode}: the palette is stable, and it opens on the theme's accent`, () => {
+      // A model keeps its colour across a redraw, a language change and a restart, because
+      // this is arithmetic on the theme rather than a list somebody shuffled.
+      assert.deepEqual(seriesPalette(theme, mode), seriesPalette(theme, mode));
+      assert.equal(
+        hue(seriesPalette(theme, mode)[0]).toFixed(0),
+        hue(colours.accentText).toFixed(0),
+        "the busiest model is drawn in the colour the rest of the panel speaks in",
+      );
     });
   }
 }

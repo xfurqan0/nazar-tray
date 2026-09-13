@@ -16,9 +16,9 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
 
 ### Added
 
-- **A Usage view, on a button in the panel footer.** Three ranges — **Week**, **Month**,
-  **All** — one row per model, both providers in the same list, and a `Since 27 Aug · scanned
-  2 m ago` line saying how far back the history goes and how old it is. The headline is
+- **A Usage view, on a button in the panel footer.** Four tabs — **Week**, **Weeks**, **All**,
+  **Models** — one row per model, both providers in the same list, and a `Since 27 Aug ·
+  scanned 2 m ago` line saying how far back the history goes and how old it is. The headline is
   **`input + output + cache_read + cache_create`**, which is the same definition Claude Code's
   own `/usage` prints as *total tokens*, so the two can be read side by side. Underneath it,
   and underneath every model row, the **same total taken apart in four** — `In 802K · Out
@@ -28,22 +28,45 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
   reported zero prints `0`, in the breakdown as well as in the total — the same distinction
   the quota view draws between *nobody read this* and *you have used none of it*. Model ids
   are printed exactly as the provider spelled them, never merged and never translated.
-  Twenty-six new keys in all six languages, and **no magnitude mark among them** — `22.3M`
-  in English, `22,3 млн` in Russian and `2230만` in Korean are `Intl.NumberFormat`'s, floored
-  to the precision they are shown at, because 22.39 M is not 22.4 M.
-- **Month and All are calendar heat-maps.** Weeks as columns, Monday to Sunday down each one,
-  one cell per local day, shaded in five steps from the theme's own accent; All draws up to
-  twelve months with the month names above them and scrolls sideways when it is wider than the
-  panel. Hovering or focusing a day says its date, its tokens and the model that spent most of
-  them, on a line inside the panel rather than in an operating-system tooltip — and the grid is
-  **one tab stop**, walked with the arrow keys, a day up and down and a week across. The
-  shading is quarters of the busiest day in the grid, so the busiest day is always the darkest
-  and a legend marks which end is which. Days the range does not contain — before the 1st of a
-  month, after today, before the store began — are drawn as nothing at all, because an empty
-  track would say a day nobody could have worked on was a day nobody worked on. Week keeps its
-  strip of seven columns. **Still no charting library** (decision K2): seven CSS grid rows and
-  one custom property, in the same tokens as the rest of the panel, so the view themes itself
-  and weighs nothing.
+  Thirty-one new keys in all six languages, and **no magnitude mark among them** — `1B` in
+  English, `1 млрд` in Russian and `10억` in Korean are `Intl.NumberFormat`'s, floored to the
+  precision they are shown at, because 22.39 M is not 22.4 M.
+- **All is a calendar heat-map.** Weeks as columns, Monday to Sunday down each one, one cell
+  per local day, shaded in five steps from the theme's own accent, up to twelve months with the
+  month names above them, scrolling sideways when it is wider than the panel. Hovering or
+  focusing a day says its date, its tokens and the model that spent most of them, on a line
+  inside the panel rather than in an operating-system tooltip — and the grid is **one tab
+  stop**, walked with the arrow keys, a day up and down and a week across. The shading is
+  quarters of the busiest day in the grid, so the busiest day is always the darkest and a
+  legend marks which end is which. Days the range does not contain — after today, before the
+  store began — are drawn as nothing at all, because an empty track would say a day nobody
+  could have worked on was a day nobody worked on. Week keeps its strip of seven columns.
+  **Still no charting library** (decision K2): seven CSS grid rows and one custom property, in
+  the same tokens as the rest of the panel, so the view themes itself and weighs nothing.
+- **Every day and every week opens.** Click a day — in the Week strip or anywhere in the
+  heat-map — or a row of **Weeks**, and the view shows what that day or that week went on: the
+  four counters over it, then one row per model with its own four, under a provider heading
+  when both providers worked in it. *Back* returns to the list it was opened from, and so does
+  Esc. Nothing is asked of the store to do it: a detail is the answer already on screen cut by
+  the local day, or the local Monday, each hour **starts** in — which is also why a week's
+  detail adds up to exactly the row that opened it.
+- **Weeks is one row per calendar week, newest first**, Monday to Sunday where you are: the
+  week's total, its four counters and a bar against the busiest week in the list. The list is
+  dense, so a week nobody worked is a row saying so rather than a gap between two busy ones,
+  and a week with no counters at all prints an em dash rather than a zero. The week being lived
+  in is marked as the part week it is.
+- **Models is a chart of tokens per day, one line per model**, over **All**, **Last 7 days** or
+  **Last 30 days** — with a legend that names every line, and under it the same model rows with
+  the share of the span each took. A day a model spent nothing on is drawn as zero rather than
+  skipped, because a line that jumped the gap would draw work that did not happen. **Still no
+  charting library**: it is hand-written SVG, six polylines and nine bits of text, in six
+  colours **derived from the theme's own accent** — its hue rotated six ways and its lightness
+  moved only as far as 3:1 against the panel needs, so there is no second palette in either
+  theme file and both themes and both modes are checked by the same contrast test the meter
+  bars are. The six steps are uneven on purpose: evenly spaced hues put two lines in the green
+  band, and one green, one amber, one red, one magenta, one violet and one blue are six colours
+  a legend swatch can actually tell apart. Six lines is what a 360 px legend can name; a seventh model has no line and
+  is still in the list under the chart.
 - **The numbers come off files that were already there.** Claude Code's transcripts —
   `~/.claude/projects/**/*.jsonl`, **sub-agent transcripts included**, which are 78 % of the
   bytes — and the `token_count` events in the Codex session logs the quota reader already
@@ -66,8 +89,12 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
   it once contributed. The file is specified in [docs/usage-contract.md](docs/usage-contract.md)
   and every field either reader may touch, including everything deliberately not read, is in
   [docs/pinned-internal-formats.md](docs/pinned-internal-formats.md).
-- **A second line on the tray tooltip**: `This week 22.3M · claude-sonnet-5` under the quota
-  line — the week's tokens and the model that spent most of them. Windows shows 127 characters
+- **A second line on the tray tooltip**: `This week 1.5B · claude-sonnet-5` under the quota
+  line — the week's tokens and the model that spent most of them. The number is the four-way
+  sum the panel draws, so the tooltip and the view behind it cannot disagree; on six days of
+  the maintainer's real work that is 1 514 068 891, which is why the example here is a
+  billions-class one rather than the `22.3M` it said while the two were being counted
+  differently. Windows shows 127 characters
   of a tooltip and silently drops the rest, so the tooltip is built in three steps that give
   up the least valuable thing left, and the week line is given up before any part of the quota
   line is. **The icon still says nothing about usage**: it is the mark at every reading, and

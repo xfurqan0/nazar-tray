@@ -1436,3 +1436,98 @@ its first two items belong in the same commit as the readers they describe, beca
   that block, and T-WP20b was scoped to Rust and docs. It is three lines of TypeScript
   documentation with no behaviour behind it — the panel's arithmetic is in `usage.ts`, which is
   right — and it should go with the next package that touches `ui/**`.
+- 2026-09-13 — **T-WP21 landed: a week you can open, and a chart of which model.** The
+  maintainer read the T-WP20 build beside Claude Code's `/usage` **Stats → Models** screen and
+  came back with four things. All four are the panel; no Rust moved, and `get_usage` still
+  answers the same three ranges it answered this morning.
+  **(1) Month left and Weeks took its place.** A five-column heat-map of the month being lived
+  in answered a narrower question than the calendar on *All*, which draws that month and eleven
+  more. What the tab is now is one row per calendar week, Monday to Sunday **local**, newest
+  first: the week's total, its four counters, and a bar against the busiest week in the list.
+  **Dense**, for the reason the heat-map is dense — a week nobody worked is a row that says so,
+  and a list that closed the gap would put a quiet fortnight's neighbours next to each other —
+  and a week with no counters at all prints an em dash rather than a zero, which is the
+  distinction the rest of this view has kept since T-WP16. The week being lived in is marked as
+  the part week it is.
+  **(2) A day and a week open, and what opens is one function.** Every day in the Week strip,
+  every day in the heat-map and every row of *Weeks* leads to the same detail: that span's four
+  counters, then one row per model with its own four, under a provider heading when both
+  providers worked in it. `buildUsageDetail` filters **the answer already on screen** by the
+  local day, or the local Monday, each hour starts in — not a second `get_usage`, which could
+  come back from a scan that ran in between and leave a detail that did not add up to the row
+  that opened it. That is T-WP20b's lesson applied before it could happen again, and it is a
+  test: a week's detail is asserted equal to the weeks-list row, counter by counter.
+  This retires a sentence T-WP20 wrote deliberately. The cells were `role="img"` because
+  *nothing happens when one is activated, and a button that does nothing is a promise the panel
+  does not keep*. Something happens now, so they are real `<button>`s — which hands Enter, Space
+  and focus to the platform — and the roving tabindex, the arrow-key walk and the hover line all
+  survive unchanged.
+  **(3) Models, and six colours nobody wrote down.** A *Tokens per day* chart, one polyline per
+  model over **All**, **Last 7 days** or **Last 30 days**, a legend that names every line, and
+  under it the model rows with the share of the span each took. **A day a model spent nothing on
+  is a zero, not a gap**: a line that jumped it would draw a straight segment through a day it
+  is silent about. Still no charting library — decision K2, again — so it is hand-written SVG:
+  three rules, three dates, three compact numbers and six polylines, about ninety lines in
+  `main.ts` over arithmetic that lives in `usage.ts` where a test can read it without a browser.
+  The colours are the part worth arguing about. A line chart needs hues, and the heat-map's four
+  opacities of one accent say *more* and *less*, which is the wrong axis for *which model*.
+  Neither theme file holds six hues — `nazar` is a blue, an amber, a red and three greys — and
+  writing six hexes into both would be **a second palette in this product, in two places, that
+  no theme change reaches**, which is the thing `styles.css` says the heat-map exists in order
+  not to invent. So `seriesPalette` derives them from `accentText`, the tone the meter fill and
+  the heat-map already use: its hue rotated six ways, its saturation kept with a floor so a
+  muted theme still gives colour, and its lightness moved away from `panel` only as far as 3:1
+  needs. The rotation is **not six even steps, and that was seen rather than argued**: the first
+  build of this used 60° and put two lines in the green band, an 85° yellow-green and a 145°
+  spring green that are the same colour at the size of a 10 px swatch. The eye separates red
+  from yellow far better than yellow from green, so the steps are `0 · 50 · 100 · 150 · 205 ·
+  265`, which gives one of each family — blue, violet, magenta, red, amber, green. Measured in
+  all four combinations — nazar and graphite, light and dark — the six clear **3.02:1 at worst
+  and 11.01:1 at best**, and the closest pair of hues is **49.6°** apart. The first colour *is*
+  the theme's accent, so the busiest model is drawn in the colour the rest of the panel is
+  already speaking in. Six is what a 360 px legend can name; a seventh model has no line and is
+  still in the list underneath.
+  **(4) The list under the chart is the span's, not the window's.** Computed in the same pass as
+  the lines, because a chart of the last seven days over a table of the last twelve months is
+  two answers on one screen to a question asked once. The share is **floored** — the rule a
+  quota percentage has kept since WP3 — so the column does not add to 100, and it reuses
+  `panel.window.percent` rather than inventing a second spelling of *a number and a percent
+  sign* for the three languages that do not write `88 %`.
+  **Six new keys and one retired, 151 per file.** `usage.range.weeks`, `usage.range.models`,
+  `usage.span.days7`, `usage.span.days30`, `usage.chart.daily`, `usage.detail.week`; out goes
+  `usage.range.month` with the tab it named. The frozen counted-key list is untouched: *Last 7
+  days* spells its unit out and still needs no plural form, because the number in it is a
+  constant — Russian wants `дней` after 7 and after 30 and never anything else.
+  **134 panel tests where there were 106**, typecheck clean. The new ones are the weeks-list
+  arithmetic (a part week, a year boundary inside one column, the list and the grid covering the
+  same bounds), the detail (a week, three days including one whose only record carried no
+  counters, and the flooring that makes two shares read 99 % and 0 %), the chart (points per
+  local day with gaps as zero, the three spans, the six-line cap with eight models), the palette
+  (contrast and hue distance in both themes and both modes, plus the accent being first), the
+  state machine (`needsFetch` says only a window change asks the store again; a tab change
+  closes a detail), and three render tests that compose the weeks list, a day's detail and the
+  models list line by line from the fixture.
+  **Nothing here asks `get_usage` more often.** Three of the four tabs and all three spans are
+  cuts of one *all time* answer, so *Weeks* → *All* → *Models* → a day → *Back* is zero
+  requests; only *Week* ↔ anything else changes the window, and *Refresh* is still the one thing
+  that overrides the five-minute throttle.
+  **Looked at, and it changed two things.** Nothing in this repository renders the panel, so
+  this was a throwaway harness — the built `dist/` served locally with a stand-in for
+  `window.__TAURI_INTERNALS__` handing back forty-six days of made-up buckets, driven through
+  each tab by headless Chrome at 360 px, in both themes, both modes and English, Russian and
+  Korean. Two things came off it that no test in this repository would have caught.
+  **(a) The y axis was clipping a word.** The gutter was 36 px, which is what `78.9M` needs;
+  a magnitude mark is a *word* in four of the six languages, and the Russian panel drew
+  `78,9 млрд` cut to `8,9 млрд` — not a smaller number, a **wrong** one. Measured at 9 px in
+  the panel's own font stack over every language and every magnitude the store can reach, the
+  widest is Spanish `78,9 mil M` at 41.6 px; the gutter is 50 now and the number is anchored to
+  its right edge.
+  **(b) Two of the six lines were the same green.** Written up above: even 60° steps put an 85°
+  yellow-green next to a 145° spring green, which is one colour at the size of a legend swatch.
+  What is **still** owed is the real thing: WebView2 on the maintainer's desktop, at their
+  scaling, with their own store behind it rather than a fixture.
+  **And the two notes T-WP20b left are closed.** `ui/src/snapshot.ts`'s `UsageBucket` doc said
+  the headline was `input + output + cache_create`; it says all four now, with the six-day
+  measurement kept as the argument for the breakdown. The changelog's tooltip example was
+  `22.3M`, a number from when the tooltip and the panel were counting differently; it is `1.5B`
+  now, which is the same six days added up all four ways.

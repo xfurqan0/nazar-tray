@@ -111,9 +111,17 @@ export interface UsageRequest {
 /**
  * One model's totals for one UTC hour.
  *
- * The headline number is `input + output + cache_create`. `cache_read` goes beside it and is
- * never folded into it: measured over six days of real work it was 98.5 % of the raw total,
- * so a chart of raw totals is a chart of cache behaviour with the work lost in the rounding.
+ * **The headline number is all four: `input + output + cache_read + cache_create`** — the sum
+ * Claude Code's own `/usage` prints as *total tokens*, drawn by the panel since T-WP20 and by
+ * the tray tooltip since T-WP20b, so this product answers that question with one definition.
+ * This block said `input + output + cache_create` until T-WP21, which is what T-WP20b wrote
+ * down as owed: the panel's arithmetic had moved to `usage.ts` and this comment had not.
+ *
+ * What the old wording was protecting is still true and still shown — cache reads were 98.5 %
+ * of the raw total over six days of real work — but it is the argument for the **four-way
+ * breakdown** under the headline and under every model row, not for a smaller headline. The
+ * store has never held a headline anyway: it holds these four counters per model per hour,
+ * and which sum is drawn large is the view's decision rather than this document's.
  *
  * A future version of the store may add counters. Unknown keys survive a rewrite there and
  * are simply not named here.

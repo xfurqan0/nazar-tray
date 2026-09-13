@@ -48,6 +48,23 @@ third. `usage.less` and `usage.more` label the two ends of the heat-map's legend
 shortest strings in the product; keep them that way, because they sit either side of five
 small squares on a 360 px panel.
 
+**T-WP21 added six and took one away — 151 keys per file**, on the maintainer's second
+reading of the same view. `usage.range.weeks` and `usage.range.models` are the two new tabs;
+`usage.range.month` went with the tab it named, because the calendar on *All* draws the month
+being lived in and eleven more. `usage.span.days7` and `usage.span.days30` are two thirds of
+the *Models* selector — the third is `usage.range.all`, reused rather than asked for again, so
+the word above the selector and the word in it agree. `usage.chart.daily` titles the chart,
+and `usage.detail.week` names what a week's detail is a detail of.
+
+Two things a translator should know about those. **`usage.span.days7` spells its unit out and
+still needs no plural form**, because the number in it is a *constant*: Russian needs `дней`
+after 7 and after 30 and never anything else, so the string carries the right form once rather
+than choosing one at run time. That is why neither is on the frozen counted-key list — they
+interpolate nothing. And **the share beside a model on the *Models* tab reuses
+`panel.window.percent`**, the product's one spelling of *a number and a percent sign*; it is
+the key that already knows Turkish writes `%88` and Korean writes `88%` with no space, and a
+second key for the same shape would be a second chance to get that wrong.
+
 The status lives in this table rather than in a `_meta` key inside the files, and that is a
 finding rather than a preference. `crates/nazar-tray/src/i18n.rs` parses each file as
 `BTreeMap<String, String>`; a nested object makes the **whole file** fail to parse, and the

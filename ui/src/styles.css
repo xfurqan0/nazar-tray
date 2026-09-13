@@ -752,18 +752,46 @@ input[type="checkbox"] {
  * as everything else.
  */
 
-.usage-tabs {
+.usage-tabs,
+.usage-spans {
   display: flex;
   gap: 6px;
 }
 
-/* Three equal tabs rather than three buttons the width of their words: `Semana`, `모두` and
-   `Неделя` are three different widths, and a row that reflowed when the language changed
-   would move the tab the user is aiming at. */
-.usage-tab {
+/* Equal tabs rather than buttons the width of their words: `Semana`, `모두` and `Неделя` are
+   three different widths, and a row that reflowed when the language changed would move the
+   tab the user is aiming at. Four of them since T-WP21, so the side padding comes off — at
+   330 px four buttons at 10 px a side leave `Недели` nowhere to go — and a label that still
+   does not fit wraps to a second line rather than being cut in half. */
+.usage-tab,
+.usage-span {
   flex: 1 1 0;
   min-width: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  line-height: 1.2;
   text-align: center;
+}
+
+/* A span is a choice inside a tab, so it is drawn a step quieter than the tabs above it. */
+.usage-span {
+  font-size: var(--type-size-xs, 10px);
+}
+
+/* The way back from a day or a week, where the tabs would otherwise be. */
+.usage-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-scope-title {
+  overflow: hidden;
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-md, 13px);
+  font-weight: var(--type-weight-medium, 560);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .usage-summary {
@@ -980,6 +1008,185 @@ input[type="checkbox"] {
 }
 
 /*
+ * A day is a control now, and that is a change of promise rather than of markup.
+ *
+ * T-WP20 drew every cell as a `role="img"` and said why in as many words: nothing happened
+ * when one was activated, and a button that does nothing is a promise the panel does not
+ * keep. T-WP21 gives a day something to do — it opens that day's models — so the cells and
+ * the strip's columns are real `<button>`s, which hands Enter, Space and the platform's own
+ * focus handling over for free. The three lines below are only what keeps a button looking
+ * like the square it replaced; the shading, the size and the grid are untouched above.
+ */
+button.usage-cell,
+button.usage-bar,
+.usage-week-row {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Colour is never the only channel, so the pointer gets a ring rather than a shade: four
+   opacities of one accent have no spare step to say *this one* with. */
+button.usage-cell:hover,
+button.usage-bar:hover {
+  outline: 1px solid var(--color-accent-text, #3fa9f5);
+  outline-offset: 1px;
+}
+
+/*
+ * The *Weeks* list: one row per calendar week, newest first, and every row a way in.
+ *
+ * A card rather than a line, because a week carries four counters and a bar as well as a
+ * total — the same three pieces a model row carries, in the same order, so the two lists are
+ * read the same way. The ceiling and the scroll are the model list's, for the same reason:
+ * the window is clamped at 720 px and fifty-three weeks are not.
+ */
+.usage-week-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 236px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.usage-week-row {
+  display: block;
+  width: 100%;
+  padding: 7px 9px 8px;
+  border: 1px solid var(--color-node-border, #1e4372);
+  border-radius: 9px;
+  background: var(--color-node, #102a4c);
+  text-align: left;
+}
+
+.usage-week-row:hover,
+.usage-week-row:focus-visible {
+  border-color: var(--color-accent-text, #3fa9f5);
+  background: var(--color-node-header, #14355f);
+}
+
+/* The card's hover ground is the bar's own track colour, so without this the empty half of
+   the bar would vanish into the card exactly while it is being pointed at. */
+.usage-week-row:hover .meter,
+.usage-week-row:focus-visible .meter {
+  background: var(--color-node, #102a4c);
+}
+
+/* The week being lived in is a part week, and the mark says so without a word for it to be
+   translated into: a heavier left edge in the accent the rest of the view is drawn in. */
+.usage-week-row.current {
+  border-left: 3px solid var(--color-accent-text, #3fa9f5);
+}
+
+.usage-week-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.usage-week-when {
+  overflow: hidden;
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-sm, 11.5px);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-week-total {
+  margin-left: auto;
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-sm, 11.5px);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The *Models* chart, and what it is made of: an `<svg>` element this stylesheet does not
+ * draw and a legend it does.
+ *
+ * **Still no charting library** (decision K2). `main.ts` writes the polylines and the ticks
+ * by hand from the numbers `usage.ts` works out, in six colours `theme.ts` derives from the
+ * theme's own accent — so the chart themes itself, weighs nothing, and adds no dependency to
+ * a product whose resource budget is part of what it claims.
+ */
+.usage-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-chart {
+  min-height: 96px;
+}
+
+.usage-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* The axis furniture: a hairline the eye reads past, and labels at the smallest size the
+   product has. Neither carries meaning colour has to survive — the numbers beside them do. */
+.usage-chart-rule {
+  stroke: var(--color-edge, #2a4c7a);
+  stroke-width: 1;
+}
+
+.usage-chart-label {
+  fill: var(--color-text-faint, #7d96b5);
+  font-family: inherit;
+  font-size: 9px;
+}
+
+.usage-chart-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The legend names every line beside its colour, because a chart that can only be read in
+   colour cannot be read by everybody who has to read it. */
+.usage-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.usage-key {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+}
+
+.usage-key-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.usage-key-model {
+  overflow: hidden;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+/*
  * The rows scroll rather than growing the window past its clamp.
  *
  * The panel is 140–720 px tall (`crates/nazar-tray/src/panel.rs`), and a month of real work
@@ -1053,6 +1260,14 @@ input[type="checkbox"] {
   color: var(--color-text-faint, #7d96b5);
   font-size: var(--type-size-xs, 10px);
   font-variant-numeric: tabular-nums;
+}
+
+/* How much of the span went to this model, on the *Models* tab alone — where the question is
+   which model the window went on, and the bar beside it answers a different one (against the
+   largest row, so the biggest bar is always full). Floored, so the column does not add to
+   100; the totals above it are the numbers that do. */
+.usage-row-share {
+  margin-left: auto;
 }
 
 /* A provider heading appears only when both providers are in the answer, so it never says

@@ -61,24 +61,47 @@ import {
   type Invalid,
   type SettingsView,
 } from "./settings";
-import { THEMES, applyTheme } from "./theme";
+import { THEMES, applyTheme, seriesPalette } from "./theme";
 import {
+  FIRST_USAGE_STATE,
   HEAT_LEVELS,
+  buildUsageChart,
+  buildUsageDetail,
   buildUsageView,
   cellLine,
+  chartLevels,
+  chartPoints,
+  chartTicks,
+  closeDetail,
+  detailTitle,
   footerLine,
+  formatColumn,
   formatMonth,
   formatNumber,
   formatTokens,
   isUsageError,
+  needsFetch,
+  openDetail,
   partsLine,
   requestsKey,
+  tabRange,
   usageErrorKey,
   usageWindow,
+  weekLabel,
+  withSpan,
+  withTab,
+  type ChartBox,
   type UsageBar,
   type UsageCell,
+  type UsageChart,
   type UsageGrid,
   type UsageRow,
+  type UsageScope,
+  type UsageSpan,
+  type UsageState,
+  type UsageTab,
+  type UsageTotals,
+  type UsageWeekRow,
 } from "./usage";
 
 /** What `get_ui_state` returns: the choices, as against the measurements. */
@@ -155,7 +178,15 @@ const statuslineOutput = document.querySelector<HTMLElement>("[data-statusline-o
 
 // The usage view. Everything on it is drawn from one `get_usage` answer and the instant it
 // is drawn at; nothing here ticks, because history does not move.
-const usageTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-range]")];
+const usageTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-tab]")];
+const usageTabsRow = document.querySelector<HTMLElement>("[data-usage-tabs]");
+const usageSpanTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-span]")];
+const usageScope = document.querySelector<HTMLElement>("[data-usage-scope]");
+const usageScopeTitle = document.querySelector<HTMLElement>("[data-usage-scope-title]");
+const usageWeekRows = document.querySelector<HTMLElement>("[data-usage-week-rows]");
+const usageModels = document.querySelector<HTMLElement>("[data-usage-models]");
+const usageChartBox = document.querySelector<HTMLElement>("[data-usage-chart]");
+const usageKeys = document.querySelector<HTMLElement>("[data-usage-keys]");
 const usageSummary = document.querySelector<HTMLElement>("[data-usage-summary]");
 const usageTotal = document.querySelector<HTMLElement>("[data-usage-total]");
 const usagePartsLine = document.querySelector<HTMLElement>("[data-usage-parts]");
@@ -212,8 +243,15 @@ let derivedAt = 0;
 type ViewName = "quota" | "settings" | "usage";
 let shown: ViewName = "quota";
 
-/** The usage answer being drawn, the range it answers, and what went wrong instead. */
-let usageRange: UsageRange = "week";
+/**
+ * The usage answer being drawn, where the view is inside it, and what went wrong instead.
+ *
+ * The state is one value rather than three variables so that the moves between its parts —
+ * a tab, a span, a day opened, *Back* — are the functions in `usage.ts` that
+ * `test/usage.test.mjs` can exercise without a browser, rather than four assignments spread
+ * through the listeners at the bottom of this file.
+ */
+let usage: UsageState = FIRST_USAGE_STATE;
 let usageAnswer: UsageResponse | undefined;
 let usageProblem: { kind: string; detail: string } | undefined;
 let usageLoading = false;
@@ -221,7 +259,7 @@ let usageLoading = false;
 /**
  * Which request the view is waiting for.
  *
- * A cold scan takes a second or two, which is long enough for somebody to press *Month* and
+ * A cold scan takes a second or two, which is long enough for somebody to press *Week* and
  * then *All*. Without this the slower answer would land last and draw the wrong tab's
  * numbers under the right tab's heading.
  */
@@ -690,7 +728,7 @@ async function loadStatusline(): Promise<void> {
  * same one under another name — for the reason `docs/usage-contract.md` gives: an alias table
  * has to be right about names nobody here controls, and a wrong merge cannot be undone.
  */
-function usageRowItem(row: UsageRow): HTMLElement {
+function usageRowItem(row: UsageRow, share: boolean): HTMLElement {
   const item = document.createElement("li");
   item.className = "usage-row";
 
@@ -738,9 +776,100 @@ function usageRowItem(row: UsageRow): HTMLElement {
     requests: formatNumber(row.requests, locale),
   });
   foot.append(records);
+
+  // How much of the span this model took, on the *Models* tab alone — the question that tab
+  // exists to answer. `panel.window.percent` rather than a seventh key of its own: it is the
+  // product's one spelling of *a number and a percent sign*, and the three languages that
+  // write `%88` or `88%` rather than `88 %` already have it right there.
+  if (share && row.percent !== undefined) {
+    const percent = document.createElement("span");
+    percent.className = "usage-row-share";
+    percent.textContent = t("panel.window.percent", {
+      percent: formatNumber(row.percent, locale),
+    });
+    foot.append(percent);
+  }
   item.append(foot);
 
   return item;
+}
+
+/**
+ * One week of the *Weeks* list: Monday to Sunday, what it spent, and a way into it.
+ *
+ * A button rather than a row with a button on it, so the whole card answers the pointer and
+ * one `Tab` reaches it. The three pieces inside are the model row's three pieces in the same
+ * order — a head with a total, a bar, the four counters — because the two lists sit one tab
+ * apart and reading one should teach you how to read the other.
+ */
+function usageWeekItem(week: UsageWeekRow): HTMLElement {
+  const item = document.createElement("li");
+
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "usage-week-row";
+  if (week.current) card.classList.add("current");
+  card.dataset["usageWeek"] = week.key;
+  card.dataset["usageAt"] = String(week.start);
+
+  const head = document.createElement("div");
+  head.className = "usage-week-head";
+
+  const when = document.createElement("span");
+  when.className = "usage-week-when";
+  when.textContent = weekLabel(week, locale);
+  head.append(when);
+
+  const value = document.createElement("span");
+  value.className = "usage-week-total";
+  value.textContent = formatTokens(week.total, locale);
+  head.append(value);
+  card.append(head);
+
+  // The same empty-track rule the model rows keep: a week nobody recorded anything for has
+  // no bar at all, rather than a bar of zero length that looks like a measurement.
+  const meter = document.createElement("div");
+  meter.className = "meter";
+  meter.setAttribute("aria-hidden", "true");
+  if (week.total !== undefined) {
+    const fill = document.createElement("span");
+    fill.className = "meter-fill";
+    fill.style.width = `${week.share}%`;
+    meter.append(fill);
+  }
+  card.append(meter);
+
+  const parts = document.createElement("div");
+  parts.className = "usage-row-parts";
+  parts.textContent = partsLine(week.parts, locale, t);
+  card.append(parts);
+
+  item.append(card);
+  return item;
+}
+
+/** The model rows, under provider headings when there are two providers to tell apart. */
+function paintRows(totals: UsageTotals, share: boolean): void {
+  if (!usageRows) return;
+  const items: HTMLElement[] = [];
+  for (const group of totals.groups) {
+    // A heading for one provider is a heading that says nothing; it earns its line only
+    // when there are two of them to tell apart.
+    if (totals.grouped) {
+      const heading = document.createElement("li");
+      heading.className = "usage-provider";
+      const key = `panel.provider.${group.provider}`;
+      const name = t(key);
+      heading.textContent = name === key ? group.provider : name;
+      const sum = document.createElement("span");
+      sum.className = "usage-provider-total";
+      sum.textContent = formatTokens(group.total, locale);
+      heading.append(sum);
+      items.push(heading);
+    }
+    items.push(...group.rows.map((row) => usageRowItem(row, share)));
+  }
+  usageRows.replaceChildren(...items);
 }
 
 // --------------------------------------------------------------- the calendar
@@ -771,26 +900,30 @@ function sayCell(element: HTMLElement | null): void {
 }
 
 /**
- * Make one cell or bar answer to the pointer and to the keyboard.
+ * Make one cell or bar answer to the pointer, to the keyboard and to being activated.
  *
- * `role="img"` with a label rather than a button: nothing happens when it is activated, and a
- * button that does nothing is a promise the panel does not keep. The label is the same
- * sentence the hover line shows, so a screen reader and a pair of eyes are told the same
- * thing.
+ * A real `<button>` since T-WP21. It used to be a `role="img"` with a label, and the reason
+ * was written down here: nothing happened when one was activated, and a button that does
+ * nothing is a promise the panel does not keep. A day now opens that day's models, so the
+ * promise is kept and the element is the one the platform already knows how to focus, to
+ * activate with Enter and Space, and to announce. The label is still the sentence the hover
+ * line shows, so a screen reader and a pair of eyes are told the same thing.
  */
-function inspectable(element: HTMLElement, line: string): void {
-  element.dataset["usageLine"] = line;
-  element.setAttribute("role", "img");
-  element.setAttribute("aria-label", line);
-  element.tabIndex = -1;
-  usageStops.push(element);
+function inspectable(button: HTMLButtonElement, line: string, key: string, at: number): void {
+  button.dataset["usageLine"] = line;
+  button.dataset["usageDay"] = key;
+  button.dataset["usageAt"] = String(at);
+  button.setAttribute("aria-label", line);
+  button.tabIndex = -1;
+  usageStops.push(button);
 }
 
 /** One column of the week strip: a local day, from this Monday to today. */
 function usageColumn(bar: UsageBar): HTMLElement {
-  const column = document.createElement("span");
+  const column = document.createElement("button");
+  column.type = "button";
   column.className = "usage-bar";
-  inspectable(column, cellLine(bar, locale, t));
+  inspectable(column, cellLine(bar, locale, t), bar.key, bar.at);
   if (bar.height > 0) {
     const fill = document.createElement("span");
     fill.className = "usage-bar-fill";
@@ -803,21 +936,24 @@ function usageColumn(bar: UsageBar): HTMLElement {
 /**
  * One day of the calendar.
  *
- * A cell outside the range — before the first of the month, after today — is a hole: no
- * track, no shade, no label, and nothing the keyboard can land on. February has no 30th and
- * next Friday has not happened, and an empty track would say both were days with no work on
- * them.
+ * A cell outside the range — before the store began, after today — is a hole: no track, no
+ * shade, no label, nothing the keyboard can land on and nothing to open. February has no 30th
+ * and next Friday has not happened, and an empty track would say both were days with no work
+ * on them.
  */
 function usageDay(cell: UsageCell): HTMLElement {
-  const box = document.createElement("span");
-  box.className = "usage-cell";
   if (!cell.present) {
-    box.classList.add("blank");
-    box.setAttribute("aria-hidden", "true");
-    return box;
+    const hole = document.createElement("span");
+    hole.className = "usage-cell";
+    hole.classList.add("blank");
+    hole.setAttribute("aria-hidden", "true");
+    return hole;
   }
+  const box = document.createElement("button");
+  box.type = "button";
+  box.className = "usage-cell";
   box.classList.add(`usage-level-${cell.level}`);
-  inspectable(box, cellLine(cell, locale, t));
+  inspectable(box, cellLine(cell, locale, t), cell.key, cell.at);
   return box;
 }
 
@@ -872,14 +1008,182 @@ function paintLegend(): void {
   usageLegend.replaceChildren(...keys);
 }
 
+// ------------------------------------------------------------------ the chart
+
+/** Where an `<svg>` element lives. Not a word, and not something a catalogue translates. */
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** One SVG element, in the namespace the browser insists on for them. */
+function shape<K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] {
+  return document.createElementNS(SVG_NS, name);
+}
+
+/**
+ * The chart's coordinate space, and the box the lines are drawn inside it.
+ *
+ * Fixed numbers rather than measured pixels: the `<svg>` scales to whatever width the panel
+ * gives it, so one space works at 330 px and at whatever a future window is. 22 at the bottom
+ * is one row of date labels, and 96 of height is what is left of the clamp once a tab strip, a
+ * span strip, a legend and a scrolling list of models have been paid for.
+ *
+ * **50 on the left is a measurement, not a guess.** It was 36 — enough for `78.9M` — and the
+ * Russian panel drew `78,9 млрд` clipped to `8,9 млрд`, which is not a smaller number, it is a
+ * wrong one. A magnitude mark is a *word* in four of the six languages, so the gutter was
+ * measured at 9 px in the panel's own font stack across every language and every magnitude the
+ * store can reach: the widest is Spanish `78,9 mil M` at **41.6 px**, then Russian `78,9 млрд`
+ * at 40.2. 45 of drawing room, and the number is anchored to its right edge.
+ */
+const CHART_VIEW = { width: 320, height: 124 };
+const CHART_BOX: ChartBox = { left: 50, top: 6, width: 266, height: 96 };
+
+/**
+ * The *Models* chart: one polyline per model, three rules, three dates and three numbers.
+ *
+ * **Written by hand, which is decision K2 again.** A charting library is a dependency, a
+ * bundle and a second set of colours for a drawing that is six polylines and nine bits of
+ * text. What it is drawn from is in `usage.ts`, where a test can read it without a browser;
+ * this function is the geometry and nothing else.
+ */
+function paintChart(chart: UsageChart, colours: readonly string[]): void {
+  if (!usageChartBox) return;
+
+  const figure = shape("svg");
+  figure.setAttribute("viewBox", `0 0 ${CHART_VIEW.width} ${CHART_VIEW.height}`);
+  figure.setAttribute("role", "img");
+  figure.setAttribute("aria-label", t("usage.chart.daily"));
+
+  // The y axis: the peak, half of it and zero, each with a rule the eye can read a height
+  // against. The numbers are compact and in the reader's own language, like every other
+  // number in this view.
+  const levels = chartLevels(chart.peak);
+  levels.forEach((value, index) => {
+    const y =
+      levels.length > 1
+        ? CHART_BOX.top + (index / (levels.length - 1)) * CHART_BOX.height
+        : CHART_BOX.top + CHART_BOX.height;
+
+    const rule = shape("line");
+    rule.setAttribute("class", "usage-chart-rule");
+    rule.setAttribute("x1", String(CHART_BOX.left));
+    rule.setAttribute("x2", String(CHART_BOX.left + CHART_BOX.width));
+    rule.setAttribute("y1", String(y));
+    rule.setAttribute("y2", String(y));
+    figure.append(rule);
+
+    const label = shape("text");
+    label.setAttribute("class", "usage-chart-label");
+    label.setAttribute("x", String(CHART_BOX.left - 5));
+    label.setAttribute("y", String(y + 3));
+    label.setAttribute("text-anchor", "end");
+    label.textContent = formatTokens(value, locale);
+    figure.append(label);
+  });
+
+  // The x axis: where the span begins, roughly its middle, and where it ends. The two at the
+  // ends are anchored inwards so that neither is drawn off the edge of the panel.
+  const last = chart.days.length - 1;
+  for (const index of chartTicks(chart.days.length)) {
+    const day = chart.days[index];
+    if (!day) continue;
+    const x =
+      last > 0
+        ? CHART_BOX.left + (index / last) * CHART_BOX.width
+        : CHART_BOX.left + CHART_BOX.width / 2;
+
+    const label = shape("text");
+    label.setAttribute("class", "usage-chart-label");
+    label.setAttribute("x", String(Math.round(x)));
+    label.setAttribute("y", String(CHART_BOX.top + CHART_BOX.height + 15));
+    label.setAttribute(
+      "text-anchor",
+      index === 0 ? "start" : index === last ? "end" : "middle",
+    );
+    label.textContent = formatColumn(day.at, locale);
+    figure.append(label);
+  }
+
+  chart.series.forEach((series, index) => {
+    const colour = colours[index % colours.length] ?? "";
+    const line = shape("polyline");
+    line.setAttribute("class", "usage-chart-line");
+    line.setAttribute("points", chartPoints(series.points, chart.peak, CHART_BOX));
+    line.setAttribute("stroke", colour);
+    figure.append(line);
+
+    // A span one day wide has no line to draw — two points make a segment and one makes
+    // nothing — so the single reading is drawn as the dot it is.
+    if (chart.days.length === 1) {
+      const [only = 0] = series.points;
+      const dot = shape("circle");
+      dot.setAttribute("cx", String(CHART_BOX.left + CHART_BOX.width / 2));
+      dot.setAttribute(
+        "cy",
+        String(
+          chart.peak > 0
+            ? CHART_BOX.top + CHART_BOX.height - (only / chart.peak) * CHART_BOX.height
+            : CHART_BOX.top + CHART_BOX.height,
+        ),
+      );
+      dot.setAttribute("r", "2");
+      dot.setAttribute("fill", colour);
+      figure.append(dot);
+    }
+  });
+
+  usageChartBox.replaceChildren(figure);
+}
+
+/** The legend: every line named beside its colour, because colour is never the only channel. */
+function paintKeys(chart: UsageChart, colours: readonly string[]): void {
+  if (!usageKeys) return;
+  usageKeys.replaceChildren(
+    ...chart.series.map((series, index) => {
+      const item = document.createElement("li");
+      item.className = "usage-key";
+
+      const swatch = document.createElement("span");
+      swatch.className = "usage-key-swatch";
+      swatch.style.background = colours[index % colours.length] ?? "";
+      item.append(swatch);
+
+      const model = document.createElement("span");
+      model.className = "usage-key-model";
+      model.textContent = series.model;
+      item.append(model);
+
+      return item;
+    }),
+  );
+}
+
+/** The six line colours of the theme and mode the panel is painted in right now. */
+function chartColours(): readonly string[] {
+  const theme = THEMES[ui.theme] ?? THEMES["nazar"];
+  if (!theme) return [];
+  return seriesPalette(theme, resolveMode(ui.mode, darkQuery.matches));
+}
+
 /** Draw the usage view from the last answer, the last failure, or neither. */
 function paintUsage(): void {
   if (!usageRows) return;
 
+  const opened = usage.detail !== undefined;
   for (const tab of usageTabs) {
-    const own = tab.dataset["usageRange"] === usageRange;
+    const own = !opened && tab.dataset["usageTab"] === usage.tab;
     tab.classList.toggle("primary", own);
     tab.setAttribute("aria-selected", String(own));
+  }
+  for (const span of usageSpanTabs) {
+    const own = span.dataset["usageSpan"] === usage.span;
+    span.classList.toggle("primary", own);
+    span.setAttribute("aria-selected", String(own));
+  }
+  // A detail is not a fifth tab: the row of four is put away while one is open, and the way
+  // back stands where it stood.
+  if (usageTabsRow) usageTabsRow.hidden = opened;
+  if (usageScope) usageScope.hidden = !opened;
+  if (usageScopeTitle) {
+    usageScopeTitle.textContent = usage.detail ? detailTitle(usage.detail, locale, t) : "";
   }
 
   const view = usageAnswer ? buildUsageView(usageAnswer, new Date()) : undefined;
@@ -897,76 +1201,101 @@ function paintUsage(): void {
     usageDetailLine.textContent = detail;
   }
 
+  // What the answer is being cut into: a day or a week that was opened, a span under
+  // *Models*, or the whole window. All three are the same arithmetic in `usage.ts`, which is
+  // what keeps a detail from adding up differently from the row it was opened from.
+  const opening =
+    usageAnswer && usage.detail ? buildUsageDetail(usageAnswer, usage.detail) : undefined;
+  const chart =
+    usageAnswer && !opened && usage.tab === "models"
+      ? buildUsageChart(usageAnswer, usage.span, new Date())
+      : undefined;
+  const shownTotals: UsageTotals | undefined = opening ?? chart?.totals ?? view;
+
+  // Whether the window holds anything at all, and whether the cut of it on screen does. They
+  // differ on *Models*, where a store full of work can still have a quiet *Last 7 days* — and
+  // the span selector has to stay on screen then, or there is no way back out of the span.
+  const answered = view !== undefined && !view.empty && !usageLoading && !failed;
+  const numbers = answered && shownTotals !== undefined && shownTotals.rows.length > 0;
+
   if (usageStateLine) {
     let word = "";
     // A cold scan takes a second or two. A line saying so beats a panel that looks broken,
     // and it beats last week's numbers sitting under this week's heading while it waits.
     if (usageLoading) word = t("usage.loading");
-    else if (view && view.empty && !failed) word = t("usage.empty");
+    else if (view && !failed && !numbers) word = t("usage.empty");
     usageStateLine.hidden = word === "";
     usageStateLine.textContent = word;
   }
 
-  const numbers = view !== undefined && !view.empty && !usageLoading && !failed;
-  // The strip is the week's; the calendar is the other two tabs'. Exactly one of them is on
-  // screen, which is what keeps the hover line underneath unambiguous.
-  const strip = numbers && view?.range === "week";
-  if (usageSummary) usageSummary.hidden = !numbers;
+  // Exactly one drawing of the days is on screen at a time, which is what keeps the hover
+  // line underneath unambiguous.
+  const strip = numbers && !opened && usage.tab === "week";
+  const calendar = numbers && !opened && usage.tab === "all";
+  const weeks = numbers && !opened && usage.tab === "weeks";
+  const models = answered && !opened && usage.tab === "models";
+  if (usageSummary) usageSummary.hidden = !numbers || models;
   if (usageStrip) usageStrip.hidden = !strip;
-  if (usageGrid) usageGrid.hidden = !numbers || strip;
-  if (usageScale) usageScale.hidden = !numbers;
+  if (usageGrid) usageGrid.hidden = !calendar;
+  if (usageWeekRows) usageWeekRows.hidden = !weeks;
+  if (usageModels) usageModels.hidden = !models;
+  if (usageScale) usageScale.hidden = !strip && !calendar;
 
   usageStops = [];
   sayCell(null);
 
-  if (numbers && view) {
-    if (usageTotal) usageTotal.textContent = formatTokens(view.total, locale);
+  // Everything drawn at run time is emptied before anything is drawn again, so a tab never
+  // leaves last tab's cells sitting in a hidden box — where they would still be found by the
+  // delegated listeners and by anything walking the document.
+  if (usageStrip) usageStrip.replaceChildren();
+  if (usageWeeks) usageWeeks.replaceChildren();
+  if (usageMonths) usageMonths.replaceChildren();
+  if (usageLegend) usageLegend.replaceChildren();
+  if (usageWeekRows) usageWeekRows.replaceChildren();
+  if (!models) {
+    if (usageChartBox) usageChartBox.replaceChildren();
+    if (usageKeys) usageKeys.replaceChildren();
+  }
+
+  if (numbers && shownTotals) {
+    if (usageTotal) usageTotal.textContent = formatTokens(shownTotals.total, locale);
     // All four counters, every time. The headline is their sum — the same definition
     // `/usage` calls *total tokens* — and this is where the cache is told from the work.
-    if (usagePartsLine) usagePartsLine.textContent = partsLine(view.parts, locale, t);
-    if (usageStrip) usageStrip.replaceChildren(...view.bars.map(usageColumn));
-    if (strip) {
-      if (usageWeeks) usageWeeks.replaceChildren();
-      if (usageMonths) usageMonths.replaceChildren();
-    } else {
-      paintGrid(view.grid);
-    }
-    paintLegend();
-    // The tab stop lands on the most recent day, which is the one somebody opening this view
-    // wanted to know about.
-    roving(usageStops[usageStops.length - 1], false);
+    if (usagePartsLine) usagePartsLine.textContent = partsLine(shownTotals.parts, locale, t);
+  }
+  // Every tab has exactly one list, and on *Weeks* that list is the weeks. Drawing the model
+  // rows underneath them as well would put two scrolling lists of 236 px in a window clamped
+  // at 720 — and the models of a week are one click away in the week itself.
+  if (numbers && shownTotals && !weeks) paintRows(shownTotals, chart !== undefined);
+  else usageRows.replaceChildren();
 
-    const items: HTMLElement[] = [];
-    for (const group of view.groups) {
-      // A heading for one provider is a heading that says nothing; it earns its line only
-      // when there are two of them to tell apart.
-      if (view.grouped) {
-        const heading = document.createElement("li");
-        heading.className = "usage-provider";
-        const key = `panel.provider.${group.provider}`;
-        const name = t(key);
-        heading.textContent = name === key ? group.provider : name;
-        const sum = document.createElement("span");
-        sum.className = "usage-provider-total";
-        sum.textContent = formatTokens(group.total, locale);
-        heading.append(sum);
-        items.push(heading);
-      }
-      items.push(...group.rows.map(usageRowItem));
+  if (!opened && view) {
+    if (strip && usageStrip) usageStrip.replaceChildren(...view.bars.map(usageColumn));
+    if (calendar) paintGrid(view.grid);
+    if (strip || calendar) {
+      paintLegend();
+      // The tab stop lands on the most recent day, which is the one somebody opening this
+      // view wanted to know about.
+      roving(usageStops[usageStops.length - 1], false);
     }
-    usageRows.replaceChildren(...items);
-  } else {
-    usageRows.replaceChildren();
-    if (usageStrip) usageStrip.replaceChildren();
-    if (usageWeeks) usageWeeks.replaceChildren();
-    if (usageMonths) usageMonths.replaceChildren();
-    if (usageLegend) usageLegend.replaceChildren();
+    if (weeks && usageWeekRows) usageWeekRows.replaceChildren(...view.weeks.map(usageWeekItem));
+  }
+
+  if (models && chart) {
+    const colours = chartColours();
+    paintChart(chart, colours);
+    paintKeys(chart, colours);
   }
 
   if (usageInfoLine) {
     // Where the history begins and when it was last counted, on one line at the size of the
     // rest of the view. Two footnotes at 10 px was T-WP16's answer and nobody could read it.
-    const line = view ? footerLine(view, locale, t, Date.now()) : "";
+    //
+    // A detail keeps the freshness and loses the floor, for the reason *since* has never been
+    // drawn under the *Week* tab: `Since Jul 29` under a page headed *Sep 13, 2026* reads as a
+    // claim about the day being shown rather than about the store behind it.
+    const carries = opened && view ? { ...view, since: undefined } : view;
+    const line = carries ? footerLine(carries, locale, t, Date.now()) : "";
     usageInfoLine.hidden = line === "";
     usageInfoLine.textContent = line;
   }
@@ -984,14 +1313,14 @@ function paintUsage(): void {
 }
 
 /**
- * Ask for one range and draw what comes back.
+ * Ask for the window the tab wants and draw what comes back.
  *
  * `force` is the view's own Refresh: the throttle on the Rust side lets a scan run at most
  * every five minutes, and somebody who has just finished a long session should not be told
  * to wait for numbers that are already on disk.
  */
-async function loadUsage(range: UsageRange, force = false): Promise<void> {
-  usageRange = range;
+async function askUsage(force = false): Promise<void> {
+  const range: UsageRange = tabRange(usage.tab);
   const asked = ++usageAsked;
   usageLoading = true;
   paintUsage();
@@ -1015,6 +1344,44 @@ async function loadUsage(range: UsageRange, force = false): Promise<void> {
   }
   usageLoading = false;
   paintUsage();
+}
+
+/**
+ * Move the view, and ask the store again only when the move needs a different window.
+ *
+ * Three of the four tabs are readings of the same widest answer, and so are a span, a day
+ * opened and *Back*. Redrawing them from what is already in hand is what keeps a loading line
+ * — and a scan behind it — out of a move the panel can make instantly, and it is also what
+ * keeps two tabs from reporting two scans of the same history. {@link needsFetch} in
+ * `usage.ts` is the whole rule, and the tests exercise it there.
+ */
+function showUsage(next: UsageState): void {
+  const before = usage;
+  usage = next;
+  if (usageAnswer === undefined || needsFetch(before, next)) {
+    void askUsage();
+    return;
+  }
+  paintUsage();
+}
+
+/**
+ * Open a day or a week, and take the focus with it.
+ *
+ * The element that was activated is about to be replaced by the detail, so without this the
+ * focus falls to the document body and a keyboard user is stranded at the top of the panel
+ * with no idea that anything happened. It lands on *Back*, which is the one control the new
+ * page has that the old one did not.
+ */
+function openScope(scope: UsageScope): void {
+  showUsage(openDetail(usage, scope));
+  document.querySelector<HTMLButtonElement>("[data-usage-scope-back]")?.focus();
+}
+
+/** *Back*, and the focus with it: onto the tab whose list is coming back. */
+function closeScope(): void {
+  showUsage(closeDetail(usage));
+  usageTabs.find((tab) => tab.dataset["usageTab"] === usage.tab)?.focus();
 }
 
 // ------------------------------------------------------------------ loading
@@ -1083,7 +1450,10 @@ dismissButton?.addEventListener("click", () => {
 // expired, and the answer is what the store holds either way.
 document.querySelector("[data-open-usage]")?.addEventListener("click", () => {
   showView("usage");
-  void loadUsage(usageRange);
+  // A detail belongs to the visit it was opened in, so an open lands on a list rather than
+  // on the Tuesday somebody looked at yesterday.
+  usage = closeDetail(usage);
+  void askUsage();
 });
 
 document.querySelector("[data-usage-back]")?.addEventListener("click", () => {
@@ -1092,13 +1462,37 @@ document.querySelector("[data-usage-back]")?.addEventListener("click", () => {
 
 for (const tab of usageTabs) {
   tab.addEventListener("click", () => {
-    const range = tab.dataset["usageRange"];
-    if (range === "week" || range === "month" || range === "all") void loadUsage(range);
+    const name = tab.dataset["usageTab"];
+    if (name === "week" || name === "weeks" || name === "all" || name === "models") {
+      showUsage(withTab(usage, name satisfies UsageTab));
+    }
   });
 }
 
+for (const span of usageSpanTabs) {
+  span.addEventListener("click", () => {
+    const name = span.dataset["usageSpan"];
+    if (name === "all" || name === "days7" || name === "days30") {
+      showUsage(withSpan(usage, name satisfies UsageSpan));
+    }
+  });
+}
+
+// *Back* out of one day or one week, onto the list it was opened from.
+document.querySelector("[data-usage-scope-back]")?.addEventListener("click", closeScope);
+
+// A week of the list opens that week. Delegated, for the reason the cells are: fifty-three
+// rows are fifty-three pairs of listeners to remove on the next redraw.
+usageWeekRows?.addEventListener("click", (event) => {
+  const card = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-usage-week]");
+  const key = card?.dataset["usageWeek"];
+  const at = Number(card?.dataset["usageAt"] ?? Number.NaN);
+  if (key === undefined || !Number.isFinite(at)) return;
+  openScope({ kind: "week", key, at });
+});
+
 usageRefresh?.addEventListener("click", () => {
-  void loadUsage(usageRange, true);
+  void askUsage(true);
 });
 
 // The hover line, for both drawings of the days. Delegated rather than bound per cell: a year
@@ -1114,6 +1508,16 @@ for (const surface of [usageStrip, usageGrid]) {
     roving(cell ?? undefined, false);
   });
   surface?.addEventListener("focusout", () => sayCell(null));
+
+  // And a day opens that day. Enter and Space arrive here too, because the cells are real
+  // buttons rather than the labelled images T-WP20 drew.
+  surface?.addEventListener("click", (event) => {
+    const cell = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-usage-day]");
+    const key = cell?.dataset["usageDay"];
+    const at = Number(cell?.dataset["usageAt"] ?? Number.NaN);
+    if (key === undefined || !Number.isFinite(at)) return;
+    openScope({ kind: "day", key, at });
+  });
 }
 
 /**
@@ -1291,9 +1695,14 @@ void listen("open-settings", () => {
 });
 
 // Esc closes the panel — except on the settings and usage pages, where it goes back one step
-// first, so a user who opened one by accident is not thrown out of the panel entirely.
+// first, so a user who opened one by accident is not thrown out of the panel entirely. A day
+// or a week that is open is a step of its own, and it is the one Esc undoes first.
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (shown === "usage" && usage.detail !== undefined) {
+    closeScope();
+    return;
+  }
   if (shown !== "quota") {
     showView("quota");
     return;

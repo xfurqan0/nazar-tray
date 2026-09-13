@@ -28,15 +28,21 @@
  * * **An absent counter is absent, not zero.** A bucket built from lines that never named an
  *   input count has no `input` key, and the panel prints {@link ABSENT} rather than a
  *   confident `0`. The same rule `snapshot.ts` keeps for a window with no percentage.
- * * **A day is a cell, and a week is a column.** *Month* and *All* are calendar heat-maps —
- *   weeks as columns, Monday at the top — over the same local days the re-bucketing produces.
- *   A day outside the range being drawn is a *hole*, not a zero: February has no 30th and
- *   next Friday has not happened, and both would be a lie drawn as an empty track.
+ * * **A day is a cell, and a week is a column.** *All* is a calendar heat-map — weeks as
+ *   columns, Monday at the top — over the same local days the re-bucketing produces. A day
+ *   outside the range being drawn is a *hole*, not a zero: February has no 30th and next
+ *   Friday has not happened, and both would be a lie drawn as an empty track.
+ * * **A day and a week open the same thing.** T-WP21 made every drawn day and every row of
+ *   *Weeks* lead to one detail: that span's four counters, and one row per model under its
+ *   provider. {@link buildUsageDetail} is that one function, and it filters the answer
+ *   already in hand by the local day or the local Monday an hour **starts** in — never by a
+ *   second window asked of the store, which could come back from a different scan.
  *
  * Model ids are never merged and never translated. `claude-opus-5` and a bare `opus` are the
  * same model and appear as two rows, because merging them means a table of aliases that has
  * to be right about names nobody here controls, and a wrong merge cannot be undone once it
- * has been drawn.
+ * has been drawn. The chart on the *Models* tab keeps the rule: one line per model as its
+ * source spelled it, and two providers that happen to agree on an id are two lines.
  */
 
 import { formatDuration, type Translate } from "./format";
@@ -90,8 +96,57 @@ const MIN_VISIBLE_BAR = 3;
 /** How many shades of the accent a day can be drawn in, on top of the empty one. */
 export const HEAT_LEVELS = 4;
 
-/** The three ranges, in the order the tabs sit in. */
+/** The three ranges `get_usage` knows, which is not the same list as the tabs. */
 export const USAGE_RANGES: readonly UsageRange[] = ["week", "month", "all"];
+
+/**
+ * The four tabs, in the order they sit in.
+ *
+ * Not the same list as {@link USAGE_RANGES}, and that is the point of having two: *week* and
+ * *all* are windows the store understands, while *weeks* and *models* are two more readings
+ * of the widest of them. {@link tabRange} is the whole mapping, and {@link needsFetch} is why
+ * moving between *Weeks*, *All* and *Models* asks the Rust side for nothing at all.
+ *
+ * *Month* left with T-WP21: a five-column heat-map of the month being lived in answered a
+ * narrower question than the calendar on *All*, which draws the same month and eleven more,
+ * and the tab it freed is where *Weeks* went.
+ */
+export const USAGE_TABS = ["week", "weeks", "all", "models"] as const;
+
+/** One of {@link USAGE_TABS}. */
+export type UsageTab = (typeof USAGE_TABS)[number];
+
+/**
+ * The three spans the *Models* tab offers, in the order they sit in.
+ *
+ * The same three Claude Code's own Stats screen offers, because that is the screen this tab
+ * is read beside. *all* reuses the word on the tab above it rather than asking six languages
+ * for a second one.
+ */
+export const USAGE_SPANS = ["all", "days7", "days30"] as const;
+
+/** One of {@link USAGE_SPANS}. */
+export type UsageSpan = (typeof USAGE_SPANS)[number];
+
+/** How many local days a span covers, counting today, or everything the store holds. */
+export const SPAN_DAYS: Readonly<Record<UsageSpan, number | undefined>> = {
+  all: undefined,
+  days7: 7,
+  days30: 30,
+};
+
+/**
+ * How many model lines the chart draws.
+ *
+ * Six, because six is how many hues {@link import("./theme").seriesPalette} can put on one
+ * panel and still have the reader tell them apart. A seventh model is **not** in the chart
+ * and **is** in the list underneath it, which holds every model the span named — so nothing
+ * is lost, and the legend never says a colour the eye cannot match to a line.
+ */
+export const CHART_SERIES = 6;
+
+/** How many points one line may hold. A year of days, and a little slack. */
+const MAX_POINTS = 372;
 
 /** The error kinds `get_usage` answers with, each of which has a message key. */
 export const USAGE_ERROR_KINDS: readonly string[] = [
@@ -130,6 +185,18 @@ export interface UsageRow {
   readonly requests: number;
   /** How wide the row's bar is drawn, `0`–`100`, against the largest row. */
   readonly share: number;
+  /**
+   * The row's share of the whole window, as a **floored** percentage, or `undefined` when
+   * either number is not known.
+   *
+   * Floored rather than rounded, the same rule `displayPercent` keeps for a quota: a row
+   * worth 4.9 % of the window is not 5 %. So the column does not add up to 100, which is
+   * honest arithmetic rather than a bug — the totals beside it are the numbers that do.
+   *
+   * Drawn only on the *Models* tab, where the question is which model the window went on;
+   * the other lists answer that with the bar, which is against the largest row instead.
+   */
+  readonly percent: number | undefined;
 }
 
 /** The rows of one provider, and what they add up to. */
@@ -195,10 +262,43 @@ export interface UsageBar {
   readonly topModel: string | undefined;
 }
 
-/** Everything the view draws, worked out from one answer and one instant. */
-export interface UsageView {
-  readonly range: UsageRange;
-  /** All four counters added over the window. The same definition as `/usage`'s total. */
+/**
+ * One row of the *Weeks* tab: a calendar week, Monday to Sunday, in the reader's own zone.
+ *
+ * The list is **dense**, for the reason the heat-map is: a week with nothing in it is a week
+ * nobody worked, and a list that closed the gap would move a quiet fortnight next to a busy
+ * one and call them neighbours. A week with no counters at all has `total: undefined` and
+ * prints {@link ABSENT}, which is the same distinction the rows draw between a silence and a
+ * measured zero.
+ */
+export interface UsageWeekRow {
+  /** The local Monday the week starts on, `YYYY-MM-DD`. The key a detail is opened with. */
+  readonly key: string;
+  /** That Monday, local midnight. */
+  readonly start: number;
+  /** The Sunday, local midnight, which is what the second half of the label is drawn from. */
+  readonly end: number;
+  readonly total: number | undefined;
+  readonly parts: UsageParts;
+  readonly requests: number;
+  /** How wide the row's bar is drawn, `0`–`100`, against the busiest week in the list. */
+  readonly share: number;
+  /** The week being lived in, which is a part week and is drawn as one. */
+  readonly current: boolean;
+}
+
+/** What a detail is opened for: one local day, or one local Monday-start week. */
+export interface UsageScope {
+  readonly kind: "day" | "week";
+  /** The local day, or the week's local Monday, `YYYY-MM-DD`. */
+  readonly key: string;
+  /** That day's local midnight, for an `Intl` date. */
+  readonly at: number;
+}
+
+/** A window's numbers, however the window was cut: the whole answer, a week, or a day. */
+export interface UsageTotals {
+  /** All four counters added. The same definition as `/usage`'s total, at every grain. */
   readonly total: number | undefined;
   readonly parts: UsageParts;
   readonly requests: number;
@@ -208,15 +308,135 @@ export interface UsageView {
   readonly groups: readonly UsageGroup[];
   /** Whether more than one provider is in the answer, which is when headings earn a line. */
   readonly grouped: boolean;
-  /** The seven-day strip. Only the *week* tab draws one; the others leave it empty. */
+}
+
+/** What a day or a week says when it is opened. */
+export interface UsageDetail extends UsageTotals {
+  readonly scope: UsageScope;
+  /** Nothing was recorded in that day or week. Not an error, and not a row of zeroes. */
+  readonly empty: boolean;
+}
+
+/** One local day of the chart's x axis. */
+export interface UsageChartDay {
+  readonly key: string;
+  readonly at: number;
+}
+
+/** One model's line: a total per local day, in the order {@link UsageChart.days} holds. */
+export interface UsageSeries {
+  readonly provider: string;
+  readonly model: string;
+  /** What the model spent over the whole span, which is what the lines are sorted by. */
+  readonly total: number;
+  /** One value per day. A day the model spent nothing on is `0`, which is a measurement. */
+  readonly points: readonly number[];
+}
+
+/** The *Models* tab's chart, worked out from one answer, one span and one instant. */
+export interface UsageChart {
+  readonly span: UsageSpan;
+  readonly days: readonly UsageChartDay[];
+  /** At most {@link CHART_SERIES} lines, biggest first. */
+  readonly series: readonly UsageSeries[];
+  /** The tallest single point among the lines drawn, which the y axis is measured against. */
+  readonly peak: number;
+  /** How many models the span held, drawn or not, so a caller can say what is not on it. */
+  readonly models: number;
+  /**
+   * The span's own numbers, for the list under the chart.
+   *
+   * The list is the span's and not the window's, and it is computed in the same pass as the
+   * lines: a chart of the last seven days over a table of the last twelve months would be
+   * two answers on one screen to a question the reader asked once.
+   */
+  readonly totals: UsageTotals;
+  readonly empty: boolean;
+}
+
+/** Everything the view draws, worked out from one answer and one instant. */
+export interface UsageView extends UsageTotals {
+  readonly range: UsageRange;
+  /** The seven-day strip. Only the *Week* tab draws one; the others leave it empty. */
   readonly bars: readonly UsageBar[];
-  /** The calendar. Every range builds one; *month* and *all* are the two that draw it. */
+  /** The calendar. Every range builds one; only *All* draws it. */
   readonly grid: UsageGrid;
+  /**
+   * Every calendar week the range covers, **newest first**, which is the *Weeks* tab.
+   *
+   * Built for every range rather than only for the one that draws it, for the reason the
+   * grid is: the arithmetic costs one map over the same walk, and a field that exists only
+   * sometimes is a field every caller has to ask about.
+   */
+  readonly weeks: readonly UsageWeekRow[];
   readonly since: string | undefined;
   readonly scannedAt: string | undefined;
   readonly damaged: readonly string[];
   /** Nothing was recorded in this window. Not an error, and not a row of zeroes. */
   readonly empty: boolean;
+}
+
+// ------------------------------------------------------------- tabs and state
+
+/**
+ * Which window a tab asks the store for.
+ *
+ * *Week* is this Monday to now. Everything else is the widest window there is, because
+ * *Weeks*, *All* and *Models* are three readings of the same history and asking three times
+ * for three cuts of it would mean three scans, three `since` lines and three chances for two
+ * tabs to disagree about a number the user can put side by side.
+ */
+export function tabRange(tab: UsageTab): UsageRange {
+  return tab === "week" ? "week" : "all";
+}
+
+/** Where the view is: which tab, which span under *Models*, and which detail is open. */
+export interface UsageState {
+  readonly tab: UsageTab;
+  readonly span: UsageSpan;
+  /** The day or week being looked into, or `undefined` when the list itself is on screen. */
+  readonly detail: UsageScope | undefined;
+}
+
+/** What the view opens on: this week, no detail, and a span nothing is looking at yet. */
+export const FIRST_USAGE_STATE: UsageState = { tab: "week", span: "all", detail: undefined };
+
+/**
+ * Move to a tab, which closes any detail that was open.
+ *
+ * A detail belongs to the list it was opened from — Tuesday came from the strip, a week from
+ * the list — so carrying one across a tab change would leave the panel showing a day nothing
+ * on screen points at any more.
+ */
+export function withTab(state: UsageState, tab: UsageTab): UsageState {
+  return { ...state, tab, detail: undefined };
+}
+
+/** Choose a span under *Models*. Nothing else about the view moves. */
+export function withSpan(state: UsageState, span: UsageSpan): UsageState {
+  return { ...state, span };
+}
+
+/** Open one day or one week. */
+export function openDetail(state: UsageState, detail: UsageScope): UsageState {
+  return { ...state, detail };
+}
+
+/** *Back*: the list the detail was opened from, on the tab it was opened from. */
+export function closeDetail(state: UsageState): UsageState {
+  return { ...state, detail: undefined };
+}
+
+/**
+ * Whether a move has to ask `get_usage` again.
+ *
+ * Only a change of **window** does. Opening a day, going back, choosing a span and moving
+ * between *Weeks*, *All* and *Models* are all cuts of an answer already in hand, and asking
+ * again for each of them would put a loading line — and a scan — in front of a number the
+ * panel is holding.
+ */
+export function needsFetch(before: UsageState, after: UsageState): boolean {
+  return tabRange(before.tab) !== tabRange(after.tab);
 }
 
 // ------------------------------------------------------------------ local time
@@ -427,6 +647,14 @@ function partsOf(sum: Sums): UsageParts {
   };
 }
 
+/** Four counters nobody reported, which is what a week or a day with no hours in it holds. */
+const EMPTY_PARTS: UsageParts = {
+  input: undefined,
+  output: undefined,
+  cacheRead: undefined,
+  cacheCreate: undefined,
+};
+
 /** Add one bucket into an accumulator. */
 function gather(sum: Sums, bucket: UsageBucket): void {
   sum.input = add(sum.input, bucket.input);
@@ -440,6 +668,98 @@ function gather(sum: Sums, bucket: UsageBucket): void {
 function byTotal(left: UsageRow, right: UsageRow): number {
   const difference = (right.total ?? -1) - (left.total ?? -1);
   return difference !== 0 ? difference : left.model.localeCompare(right.model);
+}
+
+/**
+ * What one window gathers while the answer is walked, at whatever grain the window is.
+ *
+ * Provider, then model: two levels rather than one key with a separator in it, because a
+ * model id is whatever the source wrote and a separator that turned up inside one would
+ * merge two models this file is not allowed to merge.
+ */
+interface Tally {
+  readonly models: Map<string, Map<string, Sums>>;
+  readonly whole: Sums;
+}
+
+/** A fresh window. */
+function tally(): Tally {
+  return { models: new Map(), whole: sums() };
+}
+
+/** Add one bucket to a window, under its provider and its model and to the window itself. */
+function into(store: Tally, provider: string, model: string, bucket: UsageBucket): void {
+  const own = store.models.get(provider) ?? new Map<string, Sums>();
+  store.models.set(provider, own);
+  const row = own.get(model) ?? sums();
+  gather(row, bucket);
+  own.set(model, row);
+  gather(store.whole, bucket);
+}
+
+/**
+ * One window's numbers: the four counters, the rows, and the rows under their providers.
+ *
+ * The whole answer, one week and one day are the same arithmetic over a different set of
+ * hours, so they are the same function. That is what keeps a week's detail from adding up
+ * differently from the row of the list it was opened from.
+ */
+function summarise(store: Tally): UsageTotals {
+  const flat: UsageRow[] = [];
+  for (const [provider, own] of store.models) {
+    for (const [model, sum] of own) {
+      const parts = partsOf(sum);
+      flat.push({
+        provider,
+        model,
+        total: partsTotal(parts),
+        parts,
+        requests: sum.requests,
+        share: 0,
+        percent: undefined,
+      });
+    }
+  }
+
+  const parts = partsOf(store.whole);
+  const total = partsTotal(parts);
+
+  // The share is against the largest row rather than against the window's total, so the
+  // biggest bar is always full: at 360 px a row worth 3 % of the week would otherwise be a
+  // bar too short to see, and the number beside it is what carries the proportion anyway.
+  // The *percentage* is the other question — how much of the window went here — and it is
+  // floored, never rounded up, which is the rule a quota reading already keeps.
+  const largest = flat.reduce((most, row) => Math.max(most, row.total ?? 0), 0);
+  const rows: UsageRow[] = flat
+    .map((row) => ({
+      ...row,
+      share: largest > 0 ? Math.min(100, ((row.total ?? 0) / largest) * 100) : 0,
+      percent:
+        row.total === undefined || total === undefined || !(total > 0)
+          ? undefined
+          : Math.floor((row.total / total) * 100),
+    }))
+    .sort(byTotal);
+
+  const groups: UsageGroup[] = [...new Set(rows.map((row) => row.provider))]
+    .map((provider) => {
+      const own = rows.filter((row) => row.provider === provider);
+      return {
+        provider,
+        total: own.reduce<number | undefined>((sum, row) => add(sum, row.total), undefined),
+        rows: own,
+      };
+    })
+    .sort((left, right) => (right.total ?? -1) - (left.total ?? -1));
+
+  return {
+    total,
+    parts,
+    requests: store.whole.requests,
+    rows,
+    groups,
+    grouped: groups.length > 1,
+  };
 }
 
 /**
@@ -558,39 +878,86 @@ function buildGrid(
 }
 
 /**
+ * The *Weeks* tab: one row per calendar week the range covers, newest first.
+ *
+ * The same bounds the calendar is drawn on, so the list and the heat-map cover the same
+ * history and a week counted in one is a week drawn in the other. Dense, and capped at the
+ * width a grid is capped at — a list nobody scrolls to the end of is the same failure as a
+ * grid nobody scrolls to the end of.
+ */
+function buildWeeks(
+  range: UsageRange,
+  now: Date,
+  floor: number | undefined,
+  weekly: Map<string, Sums>,
+): UsageWeekRow[] {
+  const [first, last] = gridBounds(range, now, floor);
+  const today = startOfLocalDay(now);
+  const stop = last.getTime() < today.getTime() ? last : today;
+  const thisWeek = startOfLocalWeek(now).getTime();
+
+  const rows: UsageWeekRow[] = [];
+  const cursor = startOfLocalWeek(first);
+  const final = startOfLocalWeek(stop).getTime();
+
+  while (cursor.getTime() <= final && rows.length < MAX_COLUMNS) {
+    const start = new Date(cursor.getTime());
+    const key = localDate(start);
+    const sum = weekly.get(key);
+    const parts = sum ? partsOf(sum) : EMPTY_PARTS;
+    rows.push({
+      key,
+      start: start.getTime(),
+      end: addLocalDays(start, 6).getTime(),
+      total: partsTotal(parts),
+      parts,
+      requests: sum?.requests ?? 0,
+      share: 0,
+      current: start.getTime() === thisWeek,
+    });
+    cursor.setDate(cursor.getDate() + 7);
+  }
+
+  const busiest = rows.reduce((most, row) => Math.max(most, row.total ?? 0), 0);
+  return rows
+    .map((row) => ({
+      ...row,
+      share: busiest > 0 ? Math.min(100, ((row.total ?? 0) / busiest) * 100) : 0,
+    }))
+    .reverse();
+}
+
+/**
  * Everything the view needs, from one answer and the instant it is being drawn at.
  *
- * The answer's hourly UTC buckets are walked once: into per-model sums, and into the local day
+ * The answer's hourly UTC buckets are walked once: into per-model sums, into the local day
  * each hour **starts** in — both that day's total and, per model, what it spent there, which
- * is what the hover line names. Nothing is stored — the same rule the quota view keeps — so a
- * panel left open over midnight redraws into the new day the moment it is asked to.
+ * is what the hover line names — and into the local week that day belongs to. Nothing is
+ * stored — the same rule the quota view keeps — so a panel left open over midnight redraws
+ * into the new day the moment it is asked to.
  */
 export function buildUsageView(response: UsageResponse, now: Date): UsageView {
   const range: UsageRange = USAGE_RANGES.includes(response.range) ? response.range : "week";
-  // Provider, then model: two levels rather than one key with a separator in it, because a
-  // model id is whatever the source wrote and a separator that turned up inside one would
-  // merge two models this file is not allowed to merge.
-  const models = new Map<string, Map<string, Sums>>();
+  const window = tally();
   const dayTotals = new Map<string, number>();
   const dayModels = new Map<string, Map<string, number>>();
-  const window = sums();
+  const weekly = new Map<string, Sums>();
   let earliest: number | undefined;
 
   for (const [provider, hours] of Object.entries(response.providers ?? {})) {
-    const own = models.get(provider) ?? new Map<string, Sums>();
-    models.set(provider, own);
-
     for (const [key, buckets] of Object.entries(hours)) {
       const at = hourStart(key);
       if (at === undefined) continue;
       if (earliest === undefined || at < earliest) earliest = at;
       const day = localDayKey(at);
+      const week = localWeekKey(at);
 
       for (const [model, bucket] of Object.entries(buckets)) {
-        const row = own.get(model) ?? sums();
-        gather(row, bucket);
-        own.set(model, row);
-        gather(window, bucket);
+        into(window, provider, model, bucket);
+
+        const own = weekly.get(week) ?? sums();
+        gather(own, bucket);
+        weekly.set(week, own);
 
         const sum = bucketTotal(bucket);
         if (sum === undefined) continue;
@@ -602,42 +969,10 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
     }
   }
 
-  const flat: UsageRow[] = [];
-  for (const [provider, own] of models) {
-    for (const [model, sum] of own) {
-      const parts = partsOf(sum);
-      flat.push({
-        provider,
-        model,
-        total: partsTotal(parts),
-        parts,
-        requests: sum.requests,
-        share: 0,
-      });
-    }
-  }
-
-  // The share is against the largest row rather than against the window's total, so the
-  // biggest bar is always full: at 360 px a row worth 3 % of the week would otherwise be a
-  // bar too short to see, and the number beside it is what carries the proportion anyway.
-  const largest = flat.reduce((most, row) => Math.max(most, row.total ?? 0), 0);
-  const share = (total: number | undefined): number =>
-    largest > 0 ? Math.min(100, ((total ?? 0) / largest) * 100) : 0;
-  const rows: UsageRow[] = flat.map((row) => ({ ...row, share: share(row.total) })).sort(byTotal);
-
-  const groups: UsageGroup[] = [...new Set(rows.map((row) => row.provider))]
-    .map((provider) => {
-      const own = rows.filter((row) => row.provider === provider);
-      return {
-        provider,
-        total: own.reduce<number | undefined>((sum, row) => add(sum, row.total), undefined),
-        rows: own,
-      };
-    })
-    .sort((left, right) => (right.total ?? -1) - (left.total ?? -1));
-
+  const totals = summarise(window);
   const floor = range === "all" ? (sinceInstant(response.since) ?? earliest) : earliest;
   const grid = buildGrid(range, now, floor, dayTotals, dayModels);
+  const weeks = buildWeeks(range, now, floor, weekly);
 
   // The strip is the week grid's one column, cut at today: seven cells is a calendar, and a
   // strip that drew Saturday before it happened would be a bar chart with a promise in it.
@@ -655,23 +990,216 @@ export function buildUsageView(response: UsageResponse, now: Date): UsageView {
           : 0,
     }));
 
-  const parts = partsOf(window);
-
   return {
+    ...totals,
     range,
-    total: partsTotal(parts),
-    parts,
-    requests: window.requests,
-    rows,
-    groups,
-    grouped: groups.length > 1,
     bars,
     grid,
+    weeks,
     since: response.since,
     scannedAt: response.scanned_at,
     damaged: response.damaged ?? [],
-    empty: rows.length === 0,
+    empty: totals.rows.length === 0,
   };
+}
+
+// ------------------------------------------------------------------ the detail
+
+/**
+ * What one day or one week holds, per model, under its provider.
+ *
+ * The answer already in hand is filtered rather than asked for again: a second `get_usage`
+ * would run against a store that may have been scanned in between, and a detail that did not
+ * add up to the row it was opened from is the failure T-WP20b spent a package on. The walk
+ * is the same one {@link buildUsageView} does, over the same hours, with one comparison in
+ * front of it.
+ */
+export function buildUsageDetail(response: UsageResponse, scope: UsageScope): UsageDetail {
+  const store = tally();
+
+  for (const [provider, hours] of Object.entries(response.providers ?? {})) {
+    for (const [key, buckets] of Object.entries(hours)) {
+      const at = hourStart(key);
+      if (at === undefined) continue;
+      // The hour lands in the local day it **starts** in, so a day and the week that holds
+      // it are cut from the same instant and a week is exactly its seven days added up.
+      const where = scope.kind === "day" ? localDayKey(at) : localWeekKey(at);
+      if (where !== scope.key) continue;
+      for (const [model, bucket] of Object.entries(buckets)) into(store, provider, model, bucket);
+    }
+  }
+
+  const totals = summarise(store);
+  return { ...totals, scope, empty: totals.rows.length === 0 };
+}
+
+// ------------------------------------------------------------------- the chart
+
+/** The first and last local day of a span, as midnights. */
+function chartBounds(span: UsageSpan, now: Date, floor: number | undefined): [Date, Date] {
+  const today = startOfLocalDay(now);
+  const days = SPAN_DAYS[span];
+  if (days !== undefined) return [addLocalDays(today, -(days - 1)), today];
+  // *All time* is drawn over the history the calendar is drawn over, for the same reason the
+  // weeks list is: two tabs that disagree about how far back *all* goes are worse than one
+  // that is honest about the floor, which is what the `Since` line under the headline says.
+  const [first] = gridBounds("all", now, floor);
+  const oldest = addLocalDays(today, -(MAX_POINTS - 1));
+  return [first.getTime() > oldest.getTime() ? first : oldest, today];
+}
+
+/**
+ * The *Models* tab's chart: one line per model, a point per local day.
+ *
+ * **A day a model spent nothing on is `0`, not a gap.** A line that skipped it would join
+ * Monday to Wednesday with a straight segment through the Tuesday it is silent about, which
+ * draws work that did not happen. Zero is what happened, and a line at the axis says so.
+ *
+ * The span decides the days and nothing else: the same answer is cut three ways, so moving
+ * between *All*, *Last 7 days* and *Last 30 days* redraws without asking the store anything.
+ */
+export function buildUsageChart(response: UsageResponse, span: UsageSpan, now: Date): UsageChart {
+  // Where *all time* begins needs the store's floor, and the floor needs a look at the keys,
+  // so the hours are walked twice: once for the earliest of them and once for the numbers.
+  // Both passes are over an object already in memory and neither of them parses anything.
+  let earliest: number | undefined;
+  for (const hours of Object.values(response.providers ?? {})) {
+    for (const key of Object.keys(hours)) {
+      const at = hourStart(key);
+      if (at !== undefined && (earliest === undefined || at < earliest)) earliest = at;
+    }
+  }
+
+  const floor = sinceInstant(response.since) ?? earliest;
+  const [first, last] = chartBounds(span, now, floor);
+  const days: UsageChartDay[] = [];
+  const inside = new Set<string>();
+  for (
+    let cursor = new Date(first.getTime());
+    cursor.getTime() <= last.getTime() && days.length < MAX_POINTS;
+    cursor = addLocalDays(cursor, 1)
+  ) {
+    const key = localDate(cursor);
+    days.push({ key, at: cursor.getTime() });
+    inside.add(key);
+  }
+
+  // Provider, then model, then local day. Three levels rather than one key with separators
+  // in it, for the reason {@link Tally} gives: a model id is whatever the source wrote, and a
+  // separator that turned up inside one would merge two lines this file may not merge.
+  const daily = new Map<string, Map<string, Map<string, number>>>();
+  const store = tally();
+
+  for (const [provider, hours] of Object.entries(response.providers ?? {})) {
+    const own = daily.get(provider) ?? new Map<string, Map<string, number>>();
+    daily.set(provider, own);
+
+    for (const [key, buckets] of Object.entries(hours)) {
+      const at = hourStart(key);
+      if (at === undefined) continue;
+      const day = localDayKey(at);
+      if (!inside.has(day)) continue;
+
+      for (const [model, bucket] of Object.entries(buckets)) {
+        into(store, provider, model, bucket);
+        const sum = bucketTotal(bucket);
+        if (sum === undefined) continue;
+        const line = own.get(model) ?? new Map<string, number>();
+        line.set(day, (line.get(day) ?? 0) + sum);
+        own.set(model, line);
+      }
+    }
+  }
+
+  const inSpan: UsageSeries[] = [];
+  for (const [provider, own] of daily) {
+    for (const [model, line] of own) {
+      const points = days.map((day) => line.get(day.key) ?? 0);
+      const total = points.reduce((sum, value) => sum + value, 0);
+      // A model that spent nothing inside the span is not a flat line at the axis, it is a
+      // model this span has nothing to say about, and a legend entry for it would be a
+      // colour with no line beside it.
+      if (total > 0) inSpan.push({ provider, model, total, points });
+    }
+  }
+  inSpan.sort((left, right) => right.total - left.total || left.model.localeCompare(right.model));
+
+  const series = inSpan.slice(0, CHART_SERIES);
+  const peak = series.reduce(
+    (most, own) => own.points.reduce((high, value) => Math.max(high, value), most),
+    0,
+  );
+
+  return {
+    span,
+    days,
+    series,
+    peak,
+    models: inSpan.length,
+    totals: summarise(store),
+    empty: series.length === 0,
+  };
+}
+
+/** Where a line is drawn, in the coordinate space of the SVG that holds it. */
+export interface ChartBox {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Two decimals, which is finer than a pixel and shorter than an attribute full of digits. */
+function place(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * One line's `points` attribute: evenly along the x axis, and against the chart's own peak.
+ *
+ * A span of one day has no width to spread over, so its single point sits in the middle of
+ * the box rather than on its left edge, where a line of one point would be invisible against
+ * the axis. A chart with a peak of zero draws every line flat on the floor, which is what a
+ * span nobody spent anything in looks like.
+ */
+export function chartPoints(
+  points: readonly number[],
+  peak: number,
+  box: ChartBox,
+): string {
+  const last = points.length - 1;
+  return points
+    .map((value, index) => {
+      const x = last > 0 ? box.left + (index / last) * box.width : box.left + box.width / 2;
+      const y = peak > 0 ? box.top + box.height - (value / peak) * box.height : box.top + box.height;
+      return `${place(x)},${place(y)}`;
+    })
+    .join(" ");
+}
+
+/**
+ * Which days carry a label under the chart: the first, the middle and the last.
+ *
+ * Three, because a month of ticks at 10 px in a 330 px panel is a grey smear, and because
+ * the three that matter are where the span begins, where it ends and roughly where the
+ * middle of it is. Claude Code's own Stats screen labels its axis the same way.
+ */
+export function chartTicks(count: number): number[] {
+  if (count <= 0) return [];
+  if (count <= 2) return [...Array(count).keys()];
+  return [0, Math.floor((count - 1) / 2), count - 1];
+}
+
+/**
+ * The values the y axis is labelled with, biggest first: the peak, half of it, and zero.
+ *
+ * Three lines rather than a computed "nice" scale: the numbers beside them are compact —
+ * `1B`, `500M`, `0` — and a scale that rounded the top up to a round number would draw a
+ * ceiling above the tallest day rather than at it.
+ */
+export function chartLevels(peak: number): number[] {
+  if (!(peak > 0)) return [0];
+  return [peak, peak / 2, 0];
 }
 
 // ------------------------------------------------------------------ formatting
@@ -733,6 +1261,37 @@ export function formatColumn(at: number | string | undefined, locale: string): s
 /** A month name over a column of the calendar: `Sep`. */
 export function formatMonth(at: number, locale: string): string {
   return new Intl.DateTimeFormat(locale, { month: "short" }).format(new Date(at));
+}
+
+/**
+ * What joins the two ends of a span: `Sep 14 – Sep 20`.
+ *
+ * An en dash rather than a message key, for the reason {@link SEPARATOR} is punctuation: a
+ * dash between two dates is a dash between two dates in all six languages, and a key would
+ * eventually be translated into a word that does not fit a 360 px row.
+ */
+export const RANGE_DASH = " – ";
+
+/**
+ * A week as the *Weeks* tab writes it: Monday to Sunday, without the year.
+ *
+ * The year is left off for the reason the footer's *since* leaves it off — the list is read,
+ * not parsed, and `Dec 28 – Jan 3` says which two years it crosses by saying which two months
+ * it crosses. The detail that opens from the row carries the full date.
+ */
+export function weekLabel(week: { start: number; end: number }, locale: string): string {
+  return `${formatColumn(week.start, locale)}${RANGE_DASH}${formatColumn(week.end, locale)}`;
+}
+
+/**
+ * What the detail calls itself: a date for a day, and a named week for a week.
+ *
+ * A week gets a word — *Week of 14 Sep 2026* — because `Sep 14 – Sep 20` at the top of a page
+ * of model rows reads as a filter somebody typed rather than as the thing being looked at.
+ */
+export function detailTitle(scope: UsageScope, locale: string, t: Translate): string {
+  const date = formatDay(scope.at, locale);
+  return scope.kind === "day" ? date : t("usage.detail.week", { date });
 }
 
 /**

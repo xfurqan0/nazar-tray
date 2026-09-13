@@ -83,28 +83,56 @@
           <h2 class="settings-title" data-i18n="usage.title"></h2>
         </div>
 
+        <!--
+          Four tabs, and the fourth is not a fourth window. *Week* is this Monday to now;
+          *Weeks*, *All* and *Models* are three readings of the same widest window, so moving
+          between them costs no request — see `needsFetch` in `usage.ts`. *Month* left with
+          T-WP21: the calendar on *All* draws the month being lived in and eleven more.
+        -->
         <div class="usage-tabs" data-usage-tabs role="tablist">
           <button
             type="button"
             class="button usage-tab"
             role="tab"
-            data-usage-range="week"
+            data-usage-tab="week"
             data-i18n="usage.range.week"
           ></button>
           <button
             type="button"
             class="button usage-tab"
             role="tab"
-            data-usage-range="month"
-            data-i18n="usage.range.month"
+            data-usage-tab="weeks"
+            data-i18n="usage.range.weeks"
           ></button>
           <button
             type="button"
             class="button usage-tab"
             role="tab"
-            data-usage-range="all"
+            data-usage-tab="all"
             data-i18n="usage.range.all"
           ></button>
+          <button
+            type="button"
+            class="button usage-tab"
+            role="tab"
+            data-usage-tab="models"
+            data-i18n="usage.range.models"
+          ></button>
+        </div>
+
+        <!--
+          What a day or a week says when it is opened, and the way back to the list it was
+          opened from. It stands where the tabs stand, because a detail is not a fifth tab and
+          a row of tabs above it would offer four ways out of a page with one way back.
+        -->
+        <div class="usage-scope" data-usage-scope hidden>
+          <button
+            type="button"
+            class="button"
+            data-usage-scope-back
+            data-i18n="settings.back"
+          ></button>
+          <span class="usage-scope-title" data-usage-scope-title></span>
         </div>
 
         <p class="note note-error" data-usage-error hidden></p>
@@ -126,10 +154,10 @@
         </section>
 
         <!--
-          Two drawings of the same days, one per range. *Week* keeps the strip of seven
-          columns; *Month* and *All* draw the calendar, weeks as columns and Monday at the
-          top. Both are built at run time and both feed the one hover line underneath, which
-          is the panel's own and not the operating system's tooltip.
+          Two drawings of the same days, one per tab. *Week* keeps the strip of seven columns;
+          *All* draws the calendar, weeks as columns and Monday at the top. Both are built at
+          run time, both feed the one hover line underneath — which is the panel's own and not
+          the operating system's tooltip — and in both of them a day can be opened.
         -->
         <div class="usage-strip" data-usage-strip hidden></div>
 
@@ -148,6 +176,48 @@
             <span data-i18n="usage.more"></span>
           </span>
         </div>
+
+        <!--
+          *Weeks*: one row per calendar week, newest first, each of them a way into that week.
+          Dense, for the reason the heat-map is dense — a quiet week is a fact, and a list that
+          closed the gap would put a fortnight's neighbours next to each other.
+        -->
+        <ul class="usage-week-rows" data-usage-week-rows hidden></ul>
+
+        <!--
+          *Models*: a span selector, a line per model over the days in it, a legend that names
+          every line, and then the same model rows as the other tabs with a share beside them.
+          The chart is hand-written SVG built at run time — still no charting library, which is
+          decision K2 — and its colours come from `seriesPalette` in `theme.ts`.
+        -->
+        <section class="usage-models" data-usage-models hidden>
+          <div class="usage-spans" data-usage-spans role="tablist">
+            <button
+              type="button"
+              class="button usage-span"
+              role="tab"
+              data-usage-span="all"
+              data-i18n="usage.range.all"
+            ></button>
+            <button
+              type="button"
+              class="button usage-span"
+              role="tab"
+              data-usage-span="days7"
+              data-i18n="usage.span.days7"
+            ></button>
+            <button
+              type="button"
+              class="button usage-span"
+              role="tab"
+              data-usage-span="days30"
+              data-i18n="usage.span.days30"
+            ></button>
+          </div>
+          <p class="usage-caption" data-i18n="usage.chart.daily"></p>
+          <div class="usage-chart" data-usage-chart></div>
+          <ul class="usage-keys" data-usage-keys></ul>
+        </section>
 
         <ul class="usage-rows" data-usage-rows></ul>
 

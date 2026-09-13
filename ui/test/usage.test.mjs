@@ -44,10 +44,22 @@ import { catalogs } from "../dist/lib/locales.mjs";
 import {
   ABSENT,
   ALL_TIME_FLOOR,
+  CHART_SERIES,
+  FIRST_USAGE_STATE,
   HEAT_LEVELS,
+  SEPARATOR,
+  USAGE_SPANS,
+  USAGE_TABS,
   bucketTotal,
+  buildUsageChart,
+  buildUsageDetail,
   buildUsageView,
   cellLine,
+  chartLevels,
+  chartPoints,
+  chartTicks,
+  closeDetail,
+  detailTitle,
   footerLine,
   formatColumn,
   formatDay,
@@ -59,12 +71,18 @@ import {
   isUsageError,
   localDayKey,
   localWeekKey,
+  needsFetch,
+  openDetail,
   partsLine,
   requestsKey,
   rfc3339,
   startOfLocalWeek,
+  tabRange,
   usageErrorKey,
   usageWindow,
+  weekLabel,
+  withSpan,
+  withTab,
 } from "../dist/lib/usage.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -792,6 +810,469 @@ test("the view reads the way it is meant to, line by line, in English", () => {
   });
 });
 
+// --------------------------------------------------------------- T-WP21: weeks
+
+test("the weeks list is dense, newest first, and says which week is still being lived in", () => {
+  inZone("Asia/Istanbul", () => {
+    // Over *all time* the store's own floor is 8 September, a Tuesday, so the list opens on
+    // the week that holds it — and the week between that Monday and the work is a week with
+    // nothing in it rather than a week missing from the list.
+    const view = buildUsageView({ ...FIXTURE, range: "all" }, new Date("2026-09-16T09:00:00Z"));
+
+    assert.deepEqual(
+      view.weeks.map((week) => [week.key, week.total]),
+      [
+        ["2026-09-14", 1_003_418_000],
+        ["2026-09-07", undefined],
+      ],
+      "newest first, and a week nobody recorded anything in is absent rather than zero",
+    );
+
+    const [current, quiet] = view.weeks;
+    assert.equal(current.current, true, "16 September is a Wednesday in the week of the 14th");
+    assert.equal(quiet.current, false);
+    assert.equal(formatTokens(quiet.total, "en"), ABSENT, "a silent week prints an em dash");
+    assert.equal(quiet.requests, 0);
+
+    // A part week is still a whole calendar week: the row runs to its Sunday even though
+    // three of its days have not happened, because that is what the row is a row of.
+    assert.equal(weekLabel(current, "en"), "Sep 14 – Sep 20");
+    assert.equal(new Date(current.end).getDay(), 0, "the second end of the label is a Sunday");
+    assert.deepEqual(current.parts, {
+      input: 802_000,
+      output: 354_000,
+      cacheRead: 1_002_009_000,
+      cacheCreate: 253_000,
+    });
+    assert.equal(current.requests, 85);
+    assert.equal(current.share, 100, "the busiest week fills its track");
+    assert.equal(quiet.share, 0);
+
+    // The list and the heat-map are cut from the same bounds, so a week counted in one is a
+    // column drawn in the other.
+    assert.equal(view.weeks.length, view.grid.columns.length);
+  });
+});
+
+test("a weeks list across a year boundary is two weeks, and neither loses its Monday", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView(
+      answer({
+        range: "all",
+        since: "2026-12-30T09:00:00Z",
+        providers: {
+          claude: {
+            "2026-12-31T20": { "claude-opus-5": { input: 10, output: 10, requests: 1 } },
+            "2027-01-04T08": { "claude-opus-5": { input: 100, output: 100, requests: 1 } },
+          },
+        },
+      }),
+      new Date("2027-01-05T10:00:00Z"),
+    );
+
+    assert.deepEqual(
+      view.weeks.map((week) => [week.key, week.total]),
+      [
+        ["2027-01-04", 200],
+        ["2026-12-28", 20],
+      ],
+    );
+    // The week that opens the new year is the one being lived in; the one before it ends on
+    // 3 January, so its label crosses two months and says so without naming a year.
+    assert.equal(view.weeks[0].current, true);
+    assert.equal(weekLabel(view.weeks[1], "en"), "Dec 28 – Jan 3");
+    assert.equal(new Date(view.weeks[1].start).getFullYear(), 2026);
+    assert.equal(new Date(view.weeks[1].end).getFullYear(), 2027);
+  });
+});
+
+test("the weeks list only ever holds the weeks the calendar is drawn over", () => {
+  inZone("Asia/Istanbul", () => {
+    // The *Week* tab's own answer covers one week, so the list is that one week: the same
+    // bounds, at a different width.
+    const view = buildUsageView(FIXTURE, new Date("2026-09-16T09:00:00Z"));
+    assert.equal(view.weeks.length, 1);
+    assert.equal(view.weeks[0].key, "2026-09-14");
+    assert.equal(view.weeks[0].total, view.total, "one week is the whole of a week's answer");
+  });
+});
+
+// -------------------------------------------------------------- T-WP21: detail
+
+test("a week opens into its models, and they add up to the row that opened them", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView(FIXTURE, new Date("2026-09-16T09:00:00Z"));
+    const detail = buildUsageDetail(FIXTURE, {
+      kind: "week",
+      key: "2026-09-14",
+      at: Date.parse("2026-09-14T00:00:00+03:00"),
+    });
+
+    assert.equal(detail.empty, false);
+    assert.equal(detail.total, view.weeks[0].total, "the detail is the row taken apart");
+    assert.deepEqual(detail.parts, view.weeks[0].parts);
+    assert.equal(detail.requests, 85);
+    assert.equal(detail.grouped, true, "both providers worked that week");
+    assert.deepEqual(
+      detail.rows.map((row) => [row.provider, row.model, row.total]),
+      [
+        ["claude", "claude-opus-5", 1_001_010_000],
+        ["codex", "gpt-5.6-sol", 2_400_000],
+        ["claude", "claude-haiku-4-5", 8_000],
+        ["claude", "claude-sonnet-4-5", undefined],
+      ],
+    );
+    assert.deepEqual(
+      detail.groups.map((group) => [group.provider, group.total]),
+      [
+        ["claude", 1_001_018_000],
+        ["codex", 2_400_000],
+      ],
+    );
+  });
+});
+
+test("a day opens into the models of that day alone", () => {
+  inZone("Asia/Istanbul", () => {
+    const monday = buildUsageDetail(FIXTURE, { kind: "day", key: "2026-09-14", at: 0 });
+    // 21:00Z on Sunday is Monday 00:00 in Istanbul, so that hour is counted here — the same
+    // rule the strip and the heat-map are cut with.
+    assert.equal(monday.total, 1_001_018_000);
+    assert.equal(monday.requests, 57);
+    assert.equal(monday.grouped, false, "no Codex work on the Monday, so no headings");
+    assert.deepEqual(
+      monday.rows.map((row) => [row.model, row.total, row.requests]),
+      [
+        ["claude-opus-5", 1_001_010_000, 50],
+        ["claude-haiku-4-5", 8_000, 7],
+      ],
+    );
+    // Floored, never rounded up, which is why these two do not add to 100.
+    assert.deepEqual(
+      monday.rows.map((row) => row.percent),
+      [99, 0],
+    );
+
+    const wednesday = buildUsageDetail(FIXTURE, { kind: "day", key: "2026-09-16", at: 0 });
+    assert.equal(wednesday.total, 2_400_000);
+    assert.deepEqual(
+      wednesday.rows.map((row) => [row.provider, row.model]),
+      [["codex", "gpt-5.6-sol"]],
+    );
+
+    // A day whose only record carried no counters: one row, one request count, and an
+    // absence rather than a zero at every grain of it.
+    const tuesday = buildUsageDetail(FIXTURE, { kind: "day", key: "2026-09-15", at: 0 });
+    assert.equal(tuesday.empty, false, "three requests happened; nobody said what they cost");
+    assert.equal(tuesday.total, undefined);
+    assert.equal(tuesday.rows[0].percent, undefined);
+    assert.equal(formatTokens(tuesday.total, "en"), ABSENT);
+
+    const nothing = buildUsageDetail(FIXTURE, { kind: "day", key: "2026-09-11", at: 0 });
+    assert.equal(nothing.empty, true);
+    assert.deepEqual(nothing.rows, []);
+  });
+});
+
+test("a detail says what it is a detail of", () => {
+  inZone("Asia/Istanbul", () => {
+    const at = Date.parse("2026-09-14T00:00:00+03:00");
+    assert.equal(detailTitle({ kind: "day", key: "2026-09-14", at }, "en", en), "Sep 14, 2026");
+    assert.equal(
+      detailTitle({ kind: "week", key: "2026-09-14", at }, "en", en),
+      "Week of Sep 14, 2026",
+    );
+    const tr = createTranslator(catalogs, "tr");
+    assert.equal(
+      detailTitle({ kind: "week", key: "2026-09-14", at }, "tr", tr),
+      "14 Eyl 2026 haftası",
+    );
+  });
+});
+
+// -------------------------------------------------------------- T-WP21: models
+
+test("the chart is one line per model per local day, with a silent day drawn as zero", () => {
+  inZone("Asia/Istanbul", () => {
+    const chart = buildUsageChart(FIXTURE, "days7", new Date("2026-09-16T09:00:00Z"));
+
+    assert.equal(chart.days.length, 7, "seven days, counting today");
+    assert.deepEqual(
+      chart.days.map((day) => day.key),
+      [
+        "2026-09-10",
+        "2026-09-11",
+        "2026-09-12",
+        "2026-09-13",
+        "2026-09-14",
+        "2026-09-15",
+        "2026-09-16",
+      ],
+    );
+
+    assert.deepEqual(
+      chart.series.map((series) => [series.provider, series.model, series.total]),
+      [
+        ["claude", "claude-opus-5", 1_001_010_000],
+        ["codex", "gpt-5.6-sol", 2_400_000],
+        ["claude", "claude-haiku-4-5", 8_000],
+      ],
+      "biggest first, and a model that spent nothing in the span is not a line",
+    );
+
+    // A gap is a zero, not a break: a line that skipped the Tuesday would draw a segment
+    // straight through a day it is silent about.
+    assert.deepEqual(chart.series[0].points, [0, 0, 0, 0, 1_001_010_000, 0, 0]);
+    assert.deepEqual(chart.series[1].points, [0, 0, 0, 0, 0, 0, 2_400_000]);
+    assert.equal(
+      chart.series.every((series) => series.points.length === chart.days.length),
+      true,
+      "every line has a point for every day",
+    );
+
+    assert.equal(chart.peak, 1_001_010_000);
+    assert.equal(chart.models, 3);
+    assert.equal(chart.empty, false);
+
+    // The list under the chart is the span's, not the window's — and it still has a row for
+    // the model nobody could total, which has no line.
+    assert.equal(chart.totals.total, 1_003_418_000);
+    assert.deepEqual(
+      chart.totals.rows.map((row) => row.model),
+      ["claude-opus-5", "gpt-5.6-sol", "claude-haiku-4-5", "claude-sonnet-4-5"],
+    );
+    assert.equal(chart.totals.grouped, true);
+  });
+});
+
+test("the span selector changes the days and nothing else about the answer", () => {
+  inZone("Asia/Istanbul", () => {
+    const now = new Date("2026-09-16T09:00:00Z");
+    const week = buildUsageChart(FIXTURE, "days7", now);
+    const month = buildUsageChart(FIXTURE, "days30", now);
+    const all = buildUsageChart(FIXTURE, "all", now);
+
+    assert.equal(month.days.length, 30);
+    assert.equal(month.days[0].key, "2026-08-18");
+    assert.equal(month.days[29].key, "2026-09-16");
+
+    // *All time* is the store's own floor to today, which is what the `Since` line says and
+    // what the calendar on *All* is drawn over.
+    assert.equal(all.days.length, 9, "8 September to 16 September");
+    assert.equal(all.days[0].key, "2026-09-08");
+
+    // The same work, cut three ways: every span sees all of it here, so the totals agree.
+    for (const chart of [week, month, all]) {
+      assert.equal(chart.totals.total, 1_003_418_000);
+      assert.equal(chart.peak, 1_001_010_000);
+    }
+
+    // A span that misses the work says so rather than drawing last week under this week's
+    // heading: the days are drawn, the lines are not.
+    const quiet = buildUsageChart(FIXTURE, "days7", new Date("2026-10-16T09:00:00Z"));
+    assert.equal(quiet.days.length, 7);
+    assert.deepEqual(quiet.series, []);
+    assert.equal(quiet.peak, 0);
+    assert.equal(quiet.empty, true);
+    assert.equal(quiet.totals.total, undefined);
+  });
+});
+
+test("the chart draws at most six lines, and the list under it draws all of them", () => {
+  inZone("Asia/Istanbul", () => {
+    // Eight models on one day. Six get a colour the reader can tell apart; the other two are
+    // in the list underneath, which is the whole answer.
+    const many = {};
+    for (let index = 0; index < 8; index++) {
+      many[`model-${index}`] = { input: (index + 1) * 1000, requests: 1 };
+    }
+    const chart = buildUsageChart(
+      answer({ range: "all", providers: { claude: { "2026-09-14T09": many } } }),
+      "days7",
+      new Date("2026-09-16T09:00:00Z"),
+    );
+
+    assert.equal(CHART_SERIES, 6);
+    assert.equal(chart.series.length, 6);
+    assert.equal(chart.models, 8, "how many there were, drawn or not");
+    assert.equal(chart.totals.rows.length, 8);
+    assert.deepEqual(
+      chart.series.map((series) => series.model),
+      ["model-7", "model-6", "model-5", "model-4", "model-3", "model-2"],
+      "the six biggest, biggest first",
+    );
+  });
+});
+
+test("a line is placed against the chart's own peak, and one day is a dot rather than a line", () => {
+  const box = { left: 0, top: 0, width: 100, height: 100 };
+  assert.equal(chartPoints([0, 50, 100], 100, box), "0,100 50,50 100,0");
+  assert.equal(chartPoints([25, 25], 100, box), "0,75 100,75", "a flat line is flat");
+  assert.equal(chartPoints([10], 100, box), "50,90", "one point sits in the middle of the box");
+  assert.equal(
+    chartPoints([0, 0, 0], 0, box),
+    "0,100 50,100 100,100",
+    "a span nobody spent anything in lies on the floor rather than dividing by zero",
+  );
+  assert.equal(chartPoints([], 100, box), "");
+
+  // The axis: three dates along the bottom and three numbers up the side, whatever the span.
+  assert.deepEqual(chartTicks(7), [0, 3, 6]);
+  assert.deepEqual(chartTicks(30), [0, 14, 29]);
+  assert.deepEqual(chartTicks(2), [0, 1]);
+  assert.deepEqual(chartTicks(1), [0]);
+  assert.deepEqual(chartTicks(0), []);
+  assert.deepEqual(chartLevels(1_000_000), [1_000_000, 500_000, 0]);
+  assert.deepEqual(chartLevels(0), [0], "a chart with nothing in it has one label, and it is 0");
+});
+
+// --------------------------------------------------------------- T-WP21: state
+
+test("a tab is a window, a span and a detail are not", () => {
+  assert.deepEqual([...USAGE_TABS], ["week", "weeks", "all", "models"]);
+  assert.deepEqual([...USAGE_SPANS], ["all", "days7", "days30"]);
+  assert.deepEqual(FIRST_USAGE_STATE, { tab: "week", span: "all", detail: undefined });
+
+  assert.equal(tabRange("week"), "week");
+  for (const tab of ["weeks", "all", "models"]) {
+    assert.equal(tabRange(tab), "all", `${tab} reads the widest window there is`);
+  }
+
+  const first = FIRST_USAGE_STATE;
+  const weeks = withTab(first, "weeks");
+  assert.equal(needsFetch(first, weeks), true, "this week to all time is a different window");
+  assert.equal(needsFetch(weeks, withTab(weeks, "all")), false);
+  assert.equal(needsFetch(weeks, withTab(weeks, "models")), false);
+  assert.equal(needsFetch(weeks, withSpan(weeks, "days30")), false, "a span asks for nothing");
+  assert.equal(withSpan(weeks, "days30").span, "days30");
+  assert.equal(withSpan(weeks, "days30").tab, "weeks", "and it moves nothing else");
+});
+
+test("clicking a day opens it, Back closes it, and a tab change closes it too", () => {
+  const scope = { kind: "day", key: "2026-09-14", at: 1_757_800_000_000 };
+
+  const list = withTab(FIRST_USAGE_STATE, "all");
+  const open = openDetail(list, scope);
+  assert.deepEqual(open.detail, scope);
+  assert.equal(open.tab, "all", "a detail is opened on the tab it was opened from");
+  assert.equal(needsFetch(list, open), false, "a day is a cut of the answer already in hand");
+
+  const back = closeDetail(open);
+  assert.equal(back.detail, undefined);
+  assert.deepEqual(back, list, "Back is the list it was opened from, exactly");
+  assert.equal(needsFetch(open, back), false);
+
+  // A detail belongs to the list it came from, so a tab change puts it away rather than
+  // leaving a day on screen that nothing on screen points at any more.
+  assert.equal(withTab(open, "models").detail, undefined);
+  assert.equal(withTab(open, "all").detail, undefined, "even the tab it was opened from");
+
+  // A week opens the same way, and the two cannot be confused: the kind decides whether the
+  // key is read as a local day or as a local Monday.
+  const week = openDetail(list, { kind: "week", key: "2026-09-14", at: scope.at });
+  assert.equal(week.detail.kind, "week");
+  assert.equal(closeDetail(week).detail, undefined);
+});
+
+// ------------------------------------------------------- T-WP21: reading the view
+
+test("the weeks list reads the way it is meant to, line by line, in English", () => {
+  inZone("Asia/Istanbul", () => {
+    const view = buildUsageView({ ...FIXTURE, range: "all" }, new Date("2026-09-16T09:00:00Z"));
+    const lines = view.weeks.flatMap((week) => [
+      `${weekLabel(week, "en")} ${formatTokens(week.total, "en")}`,
+      partsLine(week.parts, "en", en),
+    ]);
+
+    assert.deepEqual(lines, [
+      "Sep 14 – Sep 20 1B",
+      "In 802K · Out 354K · Cache read 1B · Cache write 253K",
+      "Sep 7 – Sep 13 —",
+      "In — · Out — · Cache read — · Cache write —",
+    ]);
+  });
+});
+
+test("a day's detail reads the way it is meant to, line by line, in English", () => {
+  inZone("Asia/Istanbul", () => {
+    const now = Date.parse("2026-09-16T09:00:00Z");
+    const at = Date.parse("2026-09-14T00:00:00+03:00");
+    const detail = buildUsageDetail(FIXTURE, { kind: "day", key: "2026-09-14", at });
+    const lines = [detailTitle(detail.scope, "en", en)];
+
+    // A detail keeps the freshness and loses the floor: `Since Sep 8` under a page headed
+    // *Sep 14, 2026* would read as a claim about the day rather than about the store, which
+    // is the same reason *since* has never been drawn under the Week tab. The panel drops it
+    // by handing `footerLine` a view with no `since`, which is what this asserts.
+    const all = buildUsageView({ ...FIXTURE, range: "all" }, new Date(now));
+    assert.equal(footerLine(all, "en", en, now), "Since Sep 8 · scanned 1 h 0 m ago");
+    assert.equal(footerLine({ ...all, since: undefined }, "en", en, now), "scanned 1 h 0 m ago");
+
+    lines.push(`${formatTokens(detail.total, "en")} ${en("usage.tokens")}`);
+    lines.push(partsLine(detail.parts, "en", en));
+    for (const group of detail.groups) {
+      if (detail.grouped) {
+        lines.push(`${en(`panel.provider.${group.provider}`)} ${formatTokens(group.total, "en")}`);
+      }
+      for (const row of group.rows) {
+        lines.push(`${row.model} ${formatTokens(row.total, "en")}`);
+        lines.push(
+          `${partsLine(row.parts, "en", en)} ${en(requestsKey(row.provider), {
+            requests: formatNumber(row.requests, "en"),
+          })}`,
+        );
+      }
+    }
+
+    assert.deepEqual(lines, [
+      "Sep 14, 2026",
+      "1B tokens",
+      "In 502K · Out 254K · Cache read 1B · Cache write 253K",
+      "claude-opus-5 1B",
+      "In 501K · Out 252K · Cache read 1B · Cache write 253K 50 req.",
+      "claude-haiku-4-5 8K",
+      "In 1K · Out 2K · Cache read 5K · Cache write 0 7 req.",
+    ]);
+  });
+});
+
+test("the models list reads the way it is meant to, share and all, in English", () => {
+  inZone("Asia/Istanbul", () => {
+    const chart = buildUsageChart(FIXTURE, "all", new Date("2026-09-16T09:00:00Z"));
+    const lines = [en("usage.chart.daily")];
+
+    lines.push(chart.series.map((series) => series.model).join(SEPARATOR));
+    for (const row of chart.totals.rows) {
+      const share =
+        row.percent === undefined
+          ? ABSENT
+          : en("panel.window.percent", { percent: formatNumber(row.percent, "en") });
+      lines.push(`${row.model} ${formatTokens(row.total, "en")} ${share}`);
+    }
+
+    assert.deepEqual(lines, [
+      "Tokens per day",
+      "claude-opus-5 · gpt-5.6-sol · claude-haiku-4-5",
+      "claude-opus-5 1B 99 %",
+      "gpt-5.6-sol 2.4M 0 %",
+      "claude-haiku-4-5 8K 0 %",
+      "claude-sonnet-4-5 — —",
+    ]);
+  });
+});
+
+test("the markup offers exactly the tabs and spans this file knows", () => {
+  // Two lists in two languages: a tab in the markup that this file has never heard of is a
+  // button whose click does nothing, and one here that the markup lacks is a tab nobody can
+  // reach. `ui/test/i18n.test.mjs` already checks that each of them names a real key.
+  const html = readFileSync(resolve(REPO, "ui/src/index.html"), "utf8");
+  const named = (attribute) =>
+    [...html.matchAll(new RegExp(`${attribute}="([^"]+)"`, "g"))].map((match) => match[1]);
+
+  assert.deepEqual(named("data-usage-tab"), [...USAGE_TABS]);
+  assert.deepEqual(named("data-usage-span"), [...USAGE_SPANS]);
+});
+
 // -------------------------------------------------------------- the stylesheet
 
 test("the stylesheet draws what this file computes", () => {
@@ -837,4 +1318,37 @@ test("the stylesheet draws what this file computes", () => {
     "the footer line is not a footnote any more",
   );
   assert.ok(!css.includes(".usage-line"), "and the two it replaced are gone");
+
+  // T-WP21. A day is a control now, so it is a real `<button>` with the styling of a button
+  // taken off it — which is what hands Enter, Space and focus to the platform.
+  assert.match(
+    css,
+    /button\.usage-cell,\s*\nbutton\.usage-bar,\s*\n\.usage-week-row \{[^}]*appearance:\s*none/s,
+    "a day and a week are buttons wearing the square they replaced",
+  );
+  assert.ok(
+    !/\.usage-cell \{[^}]*role/s.test(css),
+    "nothing in the stylesheet should be asserting a role",
+  );
+
+  // The weeks list scrolls rather than growing a window that is clamped at 720 px, the same
+  // ceiling and the same reason as the model rows beside it.
+  assert.match(css, /\.usage-week-rows \{[^}]*max-height:\s*236px/s);
+  assert.match(css, /\.usage-week-rows \{[^}]*overflow-y:\s*auto/s);
+  assert.match(
+    css,
+    /\.usage-week-row\.current \{[^}]*var\(--color-accent-text/s,
+    "the part week is marked in the theme's own accent, not a colour this view invented",
+  );
+
+  // The chart is an `<svg>` that scales to the panel, and every colour in it is a token or a
+  // stroke `theme.ts` derived — there is no hex in the stylesheet for it.
+  assert.match(css, /\.usage-chart svg \{[^}]*width:\s*100%/s);
+  assert.match(css, /\.usage-chart-rule \{[^}]*var\(--color-edge/s);
+  assert.match(css, /\.usage-chart-label \{[^}]*var\(--color-text-faint/s);
+  assert.match(css, /\.usage-chart-line \{[^}]*fill:\s*none/s, "a line chart fills nothing");
+  assert.ok(
+    !/\.usage-chart-line \{[^}]*stroke:/s.test(css),
+    "the stroke is the palette's, set per line, and must not be frozen in the stylesheet",
+  );
 });
