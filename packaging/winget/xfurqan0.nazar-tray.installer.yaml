@@ -49,7 +49,7 @@ Installers:
     # Sixty-four zeros until the release exists: this is the hash of a file that is uploaded in
     # the step before, so it is filled in from the release's own `SHA256SUMS` — the installer
     # the GitHub runner built, not one built on a laptop. docs/RELEASE.md step 6.
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 56A270198613632E94ED30AF4D66DDA8BEB6B42DEA5452123780D1DE4473991C
 
 ManifestType: installer
 ManifestVersion: 1.6.0
