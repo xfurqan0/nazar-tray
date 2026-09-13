@@ -1140,3 +1140,46 @@ its first two items belong in the same commit as the readers they describe, beca
   and why deleting one alone double counts, and what Codex spells differently — and
   `pinned-internal-formats.md` gains the fixtures and the version observed. 19 new tests, 407 in
   the crate, workspace green.
+- 2026-09-13 — **T-WP16 landed: the usage view.** A third view in the same window, opened by
+  a button where T-WP12 took the theme toggle out of the footer. Three tabs — *Week*, *Month*,
+  *All* — a headline, one row per model, a strip of days underneath, and three lines saying
+  how much of it to believe.
+  **(1) The local week is the panel's, and it is arithmetic rather than a library.** The view
+  computes Monday 00:00 and the first of the month in the reader's own zone, sends the two
+  instants as RFC 3339 **with their offset**, and cuts the hourly UTC buckets it gets back into
+  local days (week, month) or local Monday-start weeks (all). A bucket lands in the local day
+  its hour **starts** in — the rule `docs/usage-contract.md` states — so 21:00Z on a Sunday is
+  Monday's for anybody at +03:00, and an offset of `+05:30` never splits an hour by a ratio it
+  would have to invent. The dates are built through the local `Date` constructor rather than by
+  adding 86 400 000 ms, which is what keeps the week of a daylight-saving change at seven
+  differently named days and a week that crosses New Year with its Monday in the old year.
+  Both are tests, in `Europe/Berlin` and at the year boundary.
+  **(2) The headline is `input + output + cache_create`, and the cache line is beside it.**
+  Never inside it: cache reads were 98.5 % of the raw total over six days of real work, so a
+  headline that folded them in would be a number about cache behaviour with the work lost in
+  the rounding. **An absent counter prints an em dash and a reported zero prints `0`** — the
+  same distinction the quota view draws between "nobody read this" and "you have used none of
+  it", and it earns its keep here because Codex reports `cache_create: 0` on every event while
+  a Claude record can carry no counters at all. Model ids are printed raw, never merged and
+  never translated. A row's second number is labelled twice over — *req.* for Claude, *evt.*
+  for Codex — because T-WP14 counts `token_count` events, several of which make one turn, and
+  one word over both would be a label that lies about one of them.
+  **(3) No charting library** (decision K2). The strip is one flex item per day with a height
+  in percent, and a model's share is the same `.meter` the quota rows use, so the view themes
+  itself and weighs nothing. The rows scroll at 272 px rather than asking for a window taller
+  than the 140–720 px clamp `panel.rs` enforces, which is the one thing that would put numbers
+  where nobody can see them.
+  **(4) The words.** Twenty keys in all six languages, and **no magnitude mark among them**:
+  `Intl.NumberFormat`'s compact notation writes `22.3M` in English, `22,3 млн` in Russian and
+  `2230만` in Korean, so there is no `K`, `M` or `B` in a locale file to get wrong — and the
+  value is **floored to the precision it is shown at** before it is formatted, because 22.39 M
+  is not 22.4 M, the same rule as a quota percentage. The frozen counted-key list is untouched:
+  what `usage.cacheRead` interpolates is a finished string, like `{time}` and `{age}` before
+  it. An error is a key and a diagnostic — the five kinds `get_usage` can return, plus a sixth
+  sentence for a kind this build has not met — with `detail` printed verbatim underneath, and a
+  damaged month is a notice rather than an error.
+  **97 panel tests where there were 78**, `npm run typecheck` clean, and the bridge test now
+  watches the `usage.*` namespace too. **Not verified on screen:** this package was written and
+  tested without running the tray, so the layout at 360 px, the scroll ceiling and the tab row
+  in six languages are argued rather than seen. The numbers, the re-bucketing and the words are
+  tested; the pixels are owed a look.

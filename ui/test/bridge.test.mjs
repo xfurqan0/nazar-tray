@@ -299,7 +299,7 @@ test("the panel asks for the fields the derived view actually carries", () => {
 });
 
 /** Message keys look like `panel.window.weekly`: a namespace and at least one dot. */
-const KEY = /"((?:app|panel|tray|time|window|alert|settings)\.[A-Za-z0-9_.]+)"/g;
+const KEY = /"((?:app|panel|tray|time|window|alert|settings|usage)\.[A-Za-z0-9_.]+)"/g;
 
 test("every message key either side names is in all six locale files", () => {
   // Since WP6 the six catalogues are level, so a key is checked against every one of them
@@ -336,12 +336,20 @@ test("every message key either side names is in all six locale files", () => {
     }
   }
 
-  // Four keys are built at run time from the provider's name, so no literal appears.
+  // Four keys are built at run time from the provider's name, so no literal appears. The
+  // five usage errors are built from the kind the Rust side sent, which is the same idea:
+  // `usage.error.${kind}` in `ui/src/usage.ts`, with `usage.error.unknown` — which *is* a
+  // literal — as the fallback for a kind this build has not met.
   for (const key of [
     "panel.provider.claude",
     "panel.provider.codex",
     "tray.provider.claude",
     "tray.provider.codex",
+    "usage.error.bad_range",
+    "usage.error.bad_window",
+    "usage.error.no_state_dir",
+    "usage.error.scan_failed",
+    "usage.error.store_unreadable",
   ]) {
     assert.ok(key in catalogs.en, `${key} is built at run time and must exist`);
     named.add(key);

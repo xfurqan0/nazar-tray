@@ -62,7 +62,78 @@
 
         <footer class="foot">
           <button type="button" class="button" data-refresh data-i18n="panel.action.refresh"></button>
+          <button type="button" class="button" data-open-usage data-i18n="usage.title"></button>
           <button type="button" class="button" data-open-settings data-i18n="settings.title"></button>
+          <span class="esc" data-i18n="panel.hint.close"></span>
+        </footer>
+      </div>
+
+      <!--
+        The third view: what the tokens went on. It sits in the same window as the other two
+        for the same reason, and it is the only view whose command reads more than two small
+        files — so it has a loading line of its own, and what it draws comes from a store
+        rather than from this second's reading.
+
+        The rows, the strip and the footer lines are built at run time: a row drawn before
+        `get_usage` answered would be a row asserting a number nobody has counted.
+      -->
+      <div class="view usage" data-view="usage" hidden>
+        <div class="settings-head">
+          <button type="button" class="button" data-usage-back data-i18n="settings.back"></button>
+          <h2 class="settings-title" data-i18n="usage.title"></h2>
+        </div>
+
+        <div class="usage-tabs" data-usage-tabs role="tablist">
+          <button
+            type="button"
+            class="button usage-tab"
+            role="tab"
+            data-usage-range="week"
+            data-i18n="usage.range.week"
+          ></button>
+          <button
+            type="button"
+            class="button usage-tab"
+            role="tab"
+            data-usage-range="month"
+            data-i18n="usage.range.month"
+          ></button>
+          <button
+            type="button"
+            class="button usage-tab"
+            role="tab"
+            data-usage-range="all"
+            data-i18n="usage.range.all"
+          ></button>
+        </div>
+
+        <p class="note note-error" data-usage-error hidden></p>
+        <pre class="console" data-usage-detail hidden></pre>
+        <p class="empty" data-usage-state hidden></p>
+
+        <section class="usage-summary" data-usage-summary hidden>
+          <p class="usage-headline">
+            <span class="usage-total" data-usage-total></span>
+            <span class="usage-caption" data-i18n="usage.tokens"></span>
+          </p>
+          <p class="usage-cache" data-usage-cache></p>
+        </section>
+
+        <div class="usage-strip" data-usage-strip aria-hidden="true" hidden></div>
+
+        <ul class="usage-rows" data-usage-rows></ul>
+
+        <p class="usage-line" data-usage-since hidden></p>
+        <p class="usage-line" data-usage-scanned hidden></p>
+        <p class="note" data-usage-damaged hidden></p>
+
+        <footer class="foot">
+          <button
+            type="button"
+            class="button"
+            data-usage-refresh
+            data-i18n="panel.action.refresh"
+          ></button>
           <span class="esc" data-i18n="panel.hint.close"></span>
         </footer>
       </div>

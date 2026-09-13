@@ -45,6 +45,8 @@ import {
   formatClock,
   type ProviderView,
   type SnapshotView,
+  type UsageRange,
+  type UsageResponse,
   type WindowView,
 } from "./snapshot";
 import {
@@ -60,6 +62,19 @@ import {
   type SettingsView,
 } from "./settings";
 import { THEMES, applyTheme } from "./theme";
+import {
+  buildUsageView,
+  formatColumn,
+  formatDay,
+  formatNumber,
+  formatTokens,
+  isUsageError,
+  requestsKey,
+  usageErrorKey,
+  usageWindow,
+  type UsageBar,
+  type UsageRow,
+} from "./usage";
 
 /** What `get_ui_state` returns: the choices, as against the measurements. */
 interface UiState {
@@ -110,8 +125,8 @@ const refreshButton = document.querySelector<HTMLButtonElement>("[data-refresh]"
 const dismissButton = document.querySelector<HTMLButtonElement>("[data-dismiss]");
 const versionLabel = document.querySelector<HTMLElement>("[data-version]");
 
-// The settings view. Every one of these is inside the same window as the quota view; see
-// index.html for why there is not a second window.
+// The settings and usage views. Every one of these is inside the same window as the quota
+// view; see index.html for why there is not a second window.
 const views = document.querySelectorAll<HTMLElement>("[data-view]");
 const settingsForm = document.querySelector<HTMLFormElement>("[data-settings]");
 const settingsErrors = document.querySelector<HTMLElement>("[data-settings-errors]");
@@ -132,6 +147,22 @@ const statuslineApply = document.querySelector<HTMLButtonElement>("[data-statusl
 const statuslineCancel = document.querySelector<HTMLButtonElement>("[data-statusline-cancel]");
 const statuslineNote = document.querySelector<HTMLElement>("[data-statusline-note]");
 const statuslineOutput = document.querySelector<HTMLElement>("[data-statusline-output]");
+
+// The usage view. Everything on it is drawn from one `get_usage` answer and the instant it
+// is drawn at; nothing here ticks, because history does not move.
+const usageTabs = [...document.querySelectorAll<HTMLButtonElement>("[data-usage-range]")];
+const usageSummary = document.querySelector<HTMLElement>("[data-usage-summary]");
+const usageTotal = document.querySelector<HTMLElement>("[data-usage-total]");
+const usageCache = document.querySelector<HTMLElement>("[data-usage-cache]");
+const usageStrip = document.querySelector<HTMLElement>("[data-usage-strip]");
+const usageRows = document.querySelector<HTMLElement>("[data-usage-rows]");
+const usageStateLine = document.querySelector<HTMLElement>("[data-usage-state]");
+const usageErrorLine = document.querySelector<HTMLElement>("[data-usage-error]");
+const usageDetailLine = document.querySelector<HTMLElement>("[data-usage-detail]");
+const usageSinceLine = document.querySelector<HTMLElement>("[data-usage-since]");
+const usageScannedLine = document.querySelector<HTMLElement>("[data-usage-scanned]");
+const usageDamagedLine = document.querySelector<HTMLElement>("[data-usage-damaged]");
+const usageRefresh = document.querySelector<HTMLButtonElement>("[data-usage-refresh]");
 
 let ui: UiState = {
   theme: "nazar",
@@ -166,6 +197,25 @@ let t: Translate = createTranslator(catalogs, locale);
 /** The last snapshot, and the local instant it was derived for. */
 let latest: SnapshotView | undefined;
 let derivedAt = 0;
+
+/** Which of the three views is on screen. The markup opens on the numbers. */
+type ViewName = "quota" | "settings" | "usage";
+let shown: ViewName = "quota";
+
+/** The usage answer being drawn, the range it answers, and what went wrong instead. */
+let usageRange: UsageRange = "week";
+let usageAnswer: UsageResponse | undefined;
+let usageProblem: { kind: string; detail: string } | undefined;
+let usageLoading = false;
+
+/**
+ * Which request the view is waiting for.
+ *
+ * A cold scan takes a second or two, which is long enough for somebody to press *Month* and
+ * then *All*. Without this the slower answer would land last and draw the wrong tab's
+ * numbers under the right tab's heading.
+ */
+let usageAsked = 0;
 
 /** How far the local clock has moved since the snapshot was derived. */
 function drift(): number {
@@ -203,6 +253,10 @@ function applyLanguage(): void {
   // Same reason: the status-line section's state line and its first button say different
   // things depending on the machine, so neither can carry a `data-i18n` attribute.
   if (statusline) paintStatusline();
+  // And the same again for the usage view: every number on it is formatted for a language —
+  // `22.3M` is `22,3 Mn` in Turkish — so a language change redraws it rather than leaving
+  // English digits grouped the English way.
+  if (usageAnswer || usageProblem) paintUsage();
 }
 
 /** Paint the panel in the chosen theme, following the system for light and dark. */
@@ -370,9 +424,11 @@ function draw(): void {
   if (demoPill) demoPill.hidden = !ui.demo;
 
   tick();
-  // The settings page is measured by `showView`; a redraw behind it must not shrink the
-  // window to the size of a view nobody is looking at.
-  if (!settingsOpen()) reportHeight();
+  // The other two views are measured by `showView`; a redraw behind one of them must not
+  // shrink the window to the size of a view nobody is looking at. It says "is the quota view
+  // the one showing" rather than "is the settings page closed" because there are three of
+  // them now, and the usage view is the taller one.
+  if (shown === "quota") reportHeight();
 }
 
 /** Rewrite the countdowns and the ages. Called every second; touches text, not structure. */
@@ -395,18 +451,14 @@ function reportHeight(): void {
 
 // ------------------------------------------------------------------- settings
 
-/** Show one of the two views and give the window a height that fits it. */
-function showView(name: "quota" | "settings"): void {
+/** Show one of the three views and give the window a height that fits it. */
+function showView(name: ViewName): void {
+  shown = name;
   for (const view of views) view.hidden = view.dataset["view"] !== name;
   // The window is measured from whatever is on screen, so switching views has to be
   // followed by a measurement or the settings page opens inside a panel-sized window.
   lastHeight = 0;
   reportHeight();
-}
-
-/** Whether the settings view is the one showing. */
-function settingsOpen(): boolean {
-  return settingsForm?.hidden === false;
 }
 
 /** The control that holds one field of the form. */
@@ -618,6 +670,216 @@ async function loadStatusline(): Promise<void> {
   paintStatusline();
 }
 
+// --------------------------------------------------------------------- usage
+
+/**
+ * One model's row: the id as the source spelled it, what it spent, and how much of the
+ * window that is.
+ *
+ * The id is printed raw — never translated, never merged with a model that is probably the
+ * same one under another name — for the reason `docs/usage-contract.md` gives: an alias table
+ * has to be right about names nobody here controls, and a wrong merge cannot be undone.
+ */
+function usageRowItem(row: UsageRow): HTMLElement {
+  const item = document.createElement("li");
+  item.className = "usage-row";
+
+  const head = document.createElement("div");
+  head.className = "usage-row-head";
+
+  const model = document.createElement("span");
+  model.className = "usage-model";
+  model.textContent = row.model;
+  head.append(model);
+
+  const value = document.createElement("span");
+  value.className = "usage-row-total";
+  value.textContent = formatTokens(row.total, locale);
+  head.append(value);
+  item.append(head);
+
+  // The same empty-track rule as a window nobody could read: a bar of zero length and a bar
+  // with no number behind it look identical, and one of them is a lie.
+  const meter = document.createElement("div");
+  meter.className = "meter";
+  meter.setAttribute("aria-hidden", "true");
+  if (row.total !== undefined) {
+    const fill = document.createElement("span");
+    fill.className = "meter-fill";
+    fill.style.width = `${row.share}%`;
+    meter.append(fill);
+  }
+  item.append(meter);
+
+  const foot = document.createElement("div");
+  foot.className = "usage-row-foot";
+  const records = document.createElement("span");
+  // Two labels rather than one: on the Claude side a record is a reply, on the Codex side it
+  // is a `token_count` event and several of them make one turn.
+  records.textContent = t(requestsKey(row.provider), {
+    requests: formatNumber(row.requests, locale),
+  });
+  foot.append(records);
+  item.append(foot);
+
+  return item;
+}
+
+/** One column of the strip: a local day, or a local week on the *all* tab. */
+function usageColumn(bar: UsageBar): HTMLElement {
+  const column = document.createElement("span");
+  column.className = "usage-bar";
+  column.title = t("usage.bar", {
+    date: formatColumn(bar.at, locale),
+    tokens: formatTokens(bar.total, locale),
+  });
+  if (bar.height > 0) {
+    const fill = document.createElement("span");
+    fill.className = "usage-bar-fill";
+    fill.style.height = `${bar.height}%`;
+    column.append(fill);
+  }
+  return column;
+}
+
+/** Draw the usage view from the last answer, the last failure, or neither. */
+function paintUsage(): void {
+  if (!usageRows) return;
+
+  for (const tab of usageTabs) {
+    const own = tab.dataset["usageRange"] === usageRange;
+    tab.classList.toggle("primary", own);
+    tab.setAttribute("aria-selected", String(own));
+  }
+
+  const view = usageAnswer ? buildUsageView(usageAnswer, new Date()) : undefined;
+  const failed = usageProblem !== undefined;
+
+  if (usageErrorLine) {
+    usageErrorLine.hidden = !failed;
+    usageErrorLine.textContent = usageProblem ? t(usageErrorKey(usageProblem.kind)) : "";
+  }
+  if (usageDetailLine) {
+    // The reader's own words, printed verbatim: it names the value that was refused or
+    // repeats what a file said, and no catalogue can know that in advance.
+    const detail = usageProblem?.detail.trim() ?? "";
+    usageDetailLine.hidden = detail === "";
+    usageDetailLine.textContent = detail;
+  }
+
+  if (usageStateLine) {
+    let word = "";
+    // A cold scan takes a second or two. A line saying so beats a panel that looks broken,
+    // and it beats last week's numbers sitting under this week's heading while it waits.
+    if (usageLoading) word = t("usage.loading");
+    else if (view && view.empty && !failed) word = t("usage.empty");
+    usageStateLine.hidden = word === "";
+    usageStateLine.textContent = word;
+  }
+
+  const numbers = view !== undefined && !view.empty && !usageLoading && !failed;
+  if (usageSummary) usageSummary.hidden = !numbers;
+  if (usageStrip) usageStrip.hidden = !numbers;
+
+  if (numbers && view) {
+    if (usageTotal) usageTotal.textContent = formatTokens(view.total, locale);
+    if (usageCache) {
+      // Never inside the headline: cache reads were 98.5 % of the raw total over six days of
+      // real work, so a number with them folded in is a number about the cache.
+      usageCache.textContent = t("usage.cacheRead", {
+        tokens: formatTokens(view.cacheRead, locale),
+      });
+    }
+    if (usageStrip) usageStrip.replaceChildren(...view.bars.map(usageColumn));
+
+    const items: HTMLElement[] = [];
+    for (const group of view.groups) {
+      // A heading for one provider is a heading that says nothing; it earns its line only
+      // when there are two of them to tell apart.
+      if (view.grouped) {
+        const heading = document.createElement("li");
+        heading.className = "usage-provider";
+        const key = `panel.provider.${group.provider}`;
+        const name = t(key);
+        heading.textContent = name === key ? group.provider : name;
+        const sum = document.createElement("span");
+        sum.className = "usage-provider-total";
+        sum.textContent = formatTokens(group.total, locale);
+        heading.append(sum);
+        items.push(heading);
+      }
+      items.push(...group.rows.map(usageRowItem));
+    }
+    usageRows.replaceChildren(...items);
+  } else {
+    usageRows.replaceChildren();
+    if (usageStrip) usageStrip.replaceChildren();
+  }
+
+  if (usageSinceLine) {
+    // Only on the *all* tab, where it is the honest boundary of the word: the store holds
+    // what the first scan could still see, not everything that ever happened.
+    const show = view !== undefined && view.range === "all" && view.since !== undefined;
+    usageSinceLine.hidden = !show;
+    usageSinceLine.textContent = show
+      ? t("usage.since", { date: formatDay(view?.since, locale) })
+      : "";
+  }
+  if (usageScannedLine) {
+    const at = view?.scannedAt === undefined ? Number.NaN : Date.parse(view.scannedAt);
+    const show = Number.isFinite(at);
+    usageScannedLine.hidden = !show;
+    usageScannedLine.textContent = show
+      ? t("usage.scanned", { age: formatDuration(Date.now() - at, t) })
+      : "";
+  }
+  if (usageDamagedLine) {
+    // A damaged month is not an error: the months beside it loaded, and this says which one
+    // is missing from the numbers above rather than repairing a file that may be the only
+    // copy of it.
+    const damaged = view?.damaged ?? [];
+    usageDamagedLine.hidden = damaged.length === 0;
+    usageDamagedLine.textContent =
+      damaged.length > 0 ? t("usage.damaged", { months: damaged.join(", ") }) : "";
+  }
+
+  if (shown === "usage") reportHeight();
+}
+
+/**
+ * Ask for one range and draw what comes back.
+ *
+ * `force` is the view's own Refresh: the throttle on the Rust side lets a scan run at most
+ * every five minutes, and somebody who has just finished a long session should not be told
+ * to wait for numbers that are already on disk.
+ */
+async function loadUsage(range: UsageRange, force = false): Promise<void> {
+  usageRange = range;
+  const asked = ++usageAsked;
+  usageLoading = true;
+  paintUsage();
+
+  const span = usageWindow(range, new Date());
+  try {
+    const answer = await invoke<UsageResponse>("get_usage", {
+      request: { range, from: span.from, to: span.to, force },
+    });
+    if (asked !== usageAsked) return;
+    usageAnswer = answer;
+    usageProblem = undefined;
+  } catch (problem) {
+    if (asked !== usageAsked) return;
+    usageAnswer = undefined;
+    // A rejection that is not the command's own error shape — a window being torn down, a
+    // page opened outside the tray — still gets a sentence rather than a blank view.
+    usageProblem = isUsageError(problem)
+      ? { kind: problem.kind, detail: problem.detail }
+      : { kind: "", detail: String(problem) };
+  }
+  usageLoading = false;
+  paintUsage();
+}
+
 // ------------------------------------------------------------------ loading
 
 /** Ask the Rust side for the derived view and redraw. */
@@ -675,6 +937,31 @@ dismissButton?.addEventListener("click", () => {
   // The hint was the only reason to look at the top of the panel; give the focus back to
   // something that still exists rather than to a button that has just been hidden.
   refreshButton?.focus();
+});
+
+// ---------------------------------------------------------------- usage actions
+
+// The button sits where the theme toggle used to (T-WP12). Every open asks again rather than
+// showing what was drawn an hour ago: the call is cheap unless the five-minute throttle has
+// expired, and the answer is what the store holds either way.
+document.querySelector("[data-open-usage]")?.addEventListener("click", () => {
+  showView("usage");
+  void loadUsage(usageRange);
+});
+
+document.querySelector("[data-usage-back]")?.addEventListener("click", () => {
+  showView("quota");
+});
+
+for (const tab of usageTabs) {
+  tab.addEventListener("click", () => {
+    const range = tab.dataset["usageRange"];
+    if (range === "week" || range === "month" || range === "all") void loadUsage(range);
+  });
+}
+
+usageRefresh?.addEventListener("click", () => {
+  void loadUsage(usageRange, true);
 });
 
 // ------------------------------------------------------------- settings actions
@@ -818,11 +1105,11 @@ void listen("open-settings", () => {
   void loadSettings().then(() => showView("settings"));
 });
 
-// Esc closes the panel — except on the settings page, where it goes back one step first,
-// so a user who opened the settings by accident is not thrown out of the panel entirely.
+// Esc closes the panel — except on the settings and usage pages, where it goes back one step
+// first, so a user who opened one by accident is not thrown out of the panel entirely.
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (settingsOpen()) {
+  if (shown !== "quota") {
     showView("quota");
     return;
   }

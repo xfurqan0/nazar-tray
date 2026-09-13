@@ -46,6 +46,7 @@ await build({
     resolve(SRC, "snapshot.ts"),
     resolve(SRC, "format.ts"),
     resolve(SRC, "settings.ts"),
+    resolve(SRC, "usage.ts"),
   ],
   outdir: resolve(DIST, "lib"),
   outExtension: { ".js": ".mjs" },

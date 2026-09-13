@@ -717,3 +717,191 @@ input[type="checkbox"] {
   gap: 6px;
   align-self: center;
 }
+
+/* ------------------------------------------------------------------- usage
+ *
+ * The third view, and the one with the most numbers on it. Everything below is the panel's
+ * existing vocabulary — the same tokens, the same `.meter` the quota rows use, the same
+ * `.button` for the tabs — for the reason the settings page gives: there is no second
+ * palette in this product.
+ *
+ * **No charting library** (decision K2). The strip is one flex item per day and a height in
+ * percent; a model's share is the width of a `.meter-fill`. That is the whole of the
+ * drawing, it weighs nothing, and it themes itself because it is made of the same variables
+ * as everything else.
+ */
+
+.usage-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+/* Three equal tabs rather than three buttons the width of their words: `Semana`, `모두` and
+   `Неделя` are three different widths, and a row that reflowed when the language changed
+   would move the tab the user is aiming at. */
+.usage-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
+
+.usage-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+}
+
+/* The one number the view exists to show: `input + output + cache_create` over the window.
+   Selectable, like the quota percentages, because it is the thing worth copying. */
+.usage-total {
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-xl, 19px);
+  font-weight: var(--type-weight-strong, 680);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.usage-caption {
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  font-weight: var(--type-weight-medium, 560);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+  text-transform: uppercase;
+}
+
+/* Beside the headline and never inside it: cache reads are two orders of magnitude larger
+   than the work, so a total with them folded in is a chart of cache behaviour. */
+.usage-cache {
+  margin: 0;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-sm, 11.5px);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One column per local day, or per local week on the *all* tab. The columns are drawn even
+   when they are empty — a Wednesday with no work is a fact, and a strip that closed the gap
+   would say the opposite. */
+.usage-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 40px;
+}
+
+.usage-bar {
+  display: flex;
+  flex: 1 1 0;
+  align-items: flex-end;
+  min-width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-node-header, #14355f);
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  display: block;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--color-accent-text, #3fa9f5);
+}
+
+/*
+ * The rows scroll rather than growing the window past its clamp.
+ *
+ * The panel is 140–720 px tall (`crates/nazar-tray/src/panel.rs`), and a month of real work
+ * can name a dozen models. Without a ceiling here the view would ask for a window taller
+ * than it can have and the last rows would be drawn where nobody can see them — which is
+ * worse than a list that is visibly scrollable.
+ */
+.usage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 272px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.usage-row {
+  padding: 7px 9px 8px;
+  border: 1px solid var(--color-node-border, #1e4372);
+  border-radius: 9px;
+  background: var(--color-node, #102a4c);
+}
+
+.usage-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* The model id exactly as the source reported it, which is why it is monospaced and why it
+   is allowed to be selected: it is a name to copy into an issue, not a word. */
+.usage-model {
+  overflow: hidden;
+  color: var(--color-text, #eaf2ff);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: var(--type-size-sm, 11.5px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.usage-row-total {
+  margin-left: auto;
+  color: var(--color-text, #eaf2ff);
+  font-size: var(--type-size-sm, 11.5px);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.usage-row-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A provider heading appears only when both providers are in the answer, so it never says
+   the obvious. */
+.usage-provider {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--color-text-muted, #a8bfdc);
+  font-size: var(--type-size-xs, 10px);
+  font-weight: var(--type-weight-medium, 560);
+  letter-spacing: var(--type-tracking-wide, 0.07em);
+  text-transform: uppercase;
+}
+
+.usage-provider-total {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* The two diagnostic lines under the numbers: where the store begins, and when it was last
+   added to. Both are answers to "should I believe this", which is why they are on the page
+   rather than in a log. */
+.usage-line {
+  margin: 0;
+  color: var(--color-text-faint, #7d96b5);
+  font-size: var(--type-size-xs, 10px);
+  line-height: 1.45;
+}

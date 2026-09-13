@@ -21,14 +21,19 @@ something reads badly to you, that is not a nuisance — it is the thing this ta
 | `ru.json` | Русский | machine-translated, WP6 and WP7 | not yet |
 | `es.json` | Español | machine-translated, WP6 and WP7 | not yet |
 
-**119 keys per file.** WP7 added thirteen: the settings page's status-line section, all under
+**139 keys per file.** WP7 added thirteen: the settings page's status-line section, all under
 `settings.statusline.*`. They are the longest sentences in the product — the section has to
 say that installing nazar-tray does *not* touch Claude Code's settings and that this button
 does — so they are the first place a translation reads badly. The wrapper's own output shown
 underneath them is deliberately **not** translated: it is a unified diff of a JSON file and a
 path to a backup, and a translated diff is a picture of a diff. T-WP12 took one away again:
 `panel.action.theme` named a footer button that no longer exists, and the theme is now
-chosen only in the settings, where `settings.theme.*` already named it.
+chosen only in the settings, where `settings.theme.*` already named it. T-WP16 added twenty,
+all under `usage.*`: the third view's tabs, its two numbers, its three footer lines and the
+six sentences an error can be. Two of them are the same idea said twice on purpose —
+`usage.row.requests` and `usage.row.events` — because a record that carried usage is a reply
+on the Claude side and a `token_count` event on the Codex side, and one word over both would
+be a label that lies about one of them.
 
 The status lives in this table rather than in a `_meta` key inside the files, and that is a
 finding rather than a preference. `crates/nazar-tray/src/i18n.rs` parses each file as
@@ -79,6 +84,15 @@ count, so adding one fails the suite until somebody decides which of the two rou
 
 Percent signs and unit spacing follow the language, not English: Turkish writes `%88`,
 Chinese and Korean write `88%` with no space, English, Russian and Spanish write `88 %`.
+
+**A token count carries no unit at all in these files, and that is the same rule again.**
+`22.3M` in English is `22,3 Mn` in Turkish, `22,3 млн` in Russian, `2230万` in Chinese and
+`2230만` in Korean — and every one of those marks comes from `Intl.NumberFormat`'s compact
+notation in `ui/src/usage.ts`, not from a string here. So there is no `K`, `M` or `B` to
+translate, no decimal separator to get wrong, and the placeholder in `usage.cacheRead` or
+`usage.bar` holds a number that has **already been formatted for the language** — the same
+thing `{time}` and `{age}` have always held. That is why those keys are not on the frozen
+counted-key list: what they interpolate is a finished string, not a bare count.
 
 ## What is deliberately **not** translated
 
