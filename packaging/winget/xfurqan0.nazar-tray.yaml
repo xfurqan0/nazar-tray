@@ -5,7 +5,7 @@
 # docs/RELEASE.md for the one value that has to be filled in first.
 
 PackageIdentifier: xfurqan0.nazar-tray
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.6.0

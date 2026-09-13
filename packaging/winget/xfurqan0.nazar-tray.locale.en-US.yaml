@@ -3,7 +3,7 @@
 # The default-locale manifest: everything `winget show xfurqan0.nazar-tray` prints.
 
 PackageIdentifier: xfurqan0.nazar-tray
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 PackageLocale: en-US
 
 Publisher: Furkan Yıldız
@@ -52,7 +52,7 @@ Tags:
   - tray
   - usage
 
-ReleaseNotesUrl: https://github.com/xfurqan0/nazar-tray/releases/tag/v0.1.0
+ReleaseNotesUrl: https://github.com/xfurqan0/nazar-tray/releases/tag/v0.2.0
 
 Documentations:
   - DocumentLabel: README

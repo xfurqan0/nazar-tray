@@ -6,13 +6,22 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
-## [Unreleased]
+## [0.2.0] — 2026-09-13
 
 **Usage history.** 0.1.0 answered *how much of my window is gone?* The tray now also answers
 *how many tokens did I actually spend, and on which model?* — from numbers that were already
 on the disk, for both providers, without a network call and without an estimate anywhere in
 it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
 `schemaVersion: 1`, and Nazar reads nothing new.
+
+**Still unsigned, and winget is still a day or two behind.** The signing story has not changed
+since 0.1.0 and neither has the reasoning — SignPath Foundation asks that a project already be
+released, and [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md) is what ships in place of a
+certificate, with a `SHA256SUMS` file and a GitHub build attestation where a signature would
+go. Each release is a fresh pull request against `microsoft/winget-pkgs`, reviewed after the
+tag rather than before it, so `winget install xfurqan0.nazar-tray` resolves to 0.2.0 a day or
+two late; until it does, the installer is on the
+[Releases](https://github.com/xfurqan0/nazar-tray/releases) page.
 
 ### Added
 
@@ -46,10 +55,15 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
 - **Every day and every week opens.** Click a day — in the Week strip or anywhere in the
   heat-map — or a row of **Weeks**, and the view shows what that day or that week went on: the
   four counters over it, then one row per model with its own four, under a provider heading
-  when both providers worked in it. *Back* returns to the list it was opened from, and so does
-  Esc. Nothing is asked of the store to do it: a detail is the answer already on screen cut by
-  the local day, or the local Monday, each hour **starts** in — which is also why a week's
-  detail adds up to exactly the row that opened it.
+  when both providers worked in it. Nothing is asked of the store to do it: a detail is the
+  answer already on screen cut by the local day, or the local Monday, each hour **starts** in —
+  which is also why a week's detail adds up to exactly the row that opened it.
+  **There is exactly one way back, and the title says where it goes.** A day opened from the
+  calendar used to stack two *Back* buttons in the same corner — one out of the day, one out of
+  the view — and neither said which it was; the one that is left closes the detail while a
+  detail is open and leaves the view when none is, with the heading beside it naming the day or
+  the week rather than repeating the word *Usage*. Esc is routed through the same function, so
+  the key and the button can never come to mean different things.
 - **Weeks is one row per calendar week, newest first**, Monday to Sunday where you are: the
   week's total, its four counters and a bar against the busiest week in the list. The list is
   dense, so a week nobody worked is a row saying so rather than a gap between two busy ones,
@@ -144,6 +158,20 @@ it. Nothing about the quota path moved: `limits.json` is unchanged and stays at
   was, along with every other one in the product. Hover and `:focus-visible` share one rule
   now and fill the control with the same ground a settings field sits on, a pair
   `ui/test/contrast.test.mjs` already measures in both themes and both modes.
+- **`--demo` invents its usage history too, and that is the difference between a screenshot
+  and a disclosure.** A screenshot run has always had synthetic *quota* numbers; until this
+  release it had no synthetic *usage* document, so the view and the tray tooltip read the real
+  store — and every picture of the usage view in `docs/screenshots` would have carried a month
+  of the maintainer's own model use, which models and how much on which days, into a public
+  repository. The demo store is now five weeks of hourly buckets, four model ids, both
+  providers and two days at the far end that only the statistics cache reaches, every number a
+  function of the day, the hour and the model so that a diff in `docs/screenshots` means the
+  panel changed rather than that the dice rolled again. **It is enforced rather than intended**:
+  one function decides whether this process has a store directory at all, it answers `None` for
+  a demo run, and a test asserts both that answer and that no second place in the module can
+  name the directory. Two flags come with it, documented like every other screenshot flag —
+  `--view usage` and `--usage-tab week|weeks|all|models|day`, the last being the Week tab with
+  its newest day opened, which is the one state of that view no tab name reaches.
 - **The README's privacy statement says which files are read and which fields are taken.**
   *"Never reads your tokens and never talks to the network"* is still true and stays — "token"
   there is a sign-in token — but it is no longer the whole sentence, because reading

@@ -37,10 +37,10 @@ gate rather than the release.
 
 ```powershell
 # Edit by hand, all in the same commit:
-#   Cargo.toml                        -> [workspace.package] version = "0.1.0"
-#   crates/nazar-tray/tauri.conf.json -> "version": "0.1.0"
-#   ui/package.json                   -> "version": "0.1.0"
-#   packaging/winget/*.yaml           -> PackageVersion: 0.1.0  (three files)
+#   Cargo.toml                        -> [workspace.package] version = "0.2.0"
+#   crates/nazar-tray/tauri.conf.json -> "version": "0.2.0"
+#   ui/package.json                   -> "version": "0.2.0"
+#   packaging/winget/*.yaml           -> PackageVersion: 0.2.0  (three files)
 
 Select-String -Path Cargo.toml, crates\nazar-tray\tauri.conf.json, ui\package.json -Pattern 'version'
 Select-String -Path packaging\winget\*.yaml -Pattern 'PackageVersion'
@@ -56,7 +56,7 @@ The `Cargo.lock` moves with the version. Let cargo do it rather than editing it:
 ```powershell
 cargo check --workspace --locked   # fails if the lock file is behind
 git add -A
-git commit -m "Release 0.1.0"
+git commit -m "Release 0.2.0"
 ```
 
 ---
@@ -85,15 +85,19 @@ machine it was built on, **deletes the bundle** rather than leave an installer o
 disk looking finished. So an installer that exists at this point is one that
 passed. Step 5 runs the same check by hand.
 
-Expected, for 0.1.0 on `x86_64-pc-windows-msvc`:
+Expected, on `x86_64-pc-windows-msvc`:
 
-| Artefact | Size |
-|---|---|
-| `nazar-tray.exe` | 4.74 MB |
-| `nazar-statusline.exe` | 340 KB |
-| `nazar-tray_0.1.0_x64-setup.exe` | 1.95 MB |
+| Artefact | 0.1.0 | 0.2.0 |
+|---|---|---|
+| `nazar-tray.exe` | 4.74 MB | 5.03 MB |
+| `nazar-statusline.exe` | 340 KB | 340 KB |
+| `nazar-tray_<version>_x64-setup.exe` | 1.95 MB | 2.07 MB |
 
-Measured 2026-09-09 with the release profile in `Cargo.toml` (`opt-level = "s"`,
+The usage history cost 290 KB of tray binary and 120 KB of installer: a scanner, a
+deduplicator, a store and a view, all of it compiled in rather than fetched. The
+wrapper did not move, because none of it is in the wrapper.
+
+Measured 2026-09-09 and 2026-09-13 with the release profile in `Cargo.toml` (`opt-level = "s"`,
 `lto`, one codegen unit, stripped, `panic = "abort"`) and the path remapping this
 script passes. Cargo's stock release settings gave 11.95 MB, 497 KB and 3.06 MB
 for the same source on 2026-09-07, which is what those four lines are worth.
@@ -122,7 +126,7 @@ Read the file list out of the package itself:
 
 ```powershell
 # 7-Zip reads an NSIS installer's contents without running it.
-& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\nazar-tray_0.1.0_x64-setup.exe
+& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\nazar-tray_0.2.0_x64-setup.exe
 ```
 
 Then install it and look at what landed:
@@ -136,7 +140,7 @@ Get-ChildItem -Recurse "$env:LOCALAPPDATA\nazar-tray" | Select-Object Name, Leng
 ## 4. Smoke the installer as a user would
 
 ```powershell
-$setup = "target\release\bundle\nsis\nazar-tray_0.1.0_x64-setup.exe"
+$setup = "target\release\bundle\nsis\nazar-tray_0.2.0_x64-setup.exe"
 
 # Silent, per user, no elevation prompt.
 Start-Process $setup -ArgumentList "/S" -Wait
@@ -246,10 +250,10 @@ Also confirm by eye:
 Write the release notes, which the workflow will attach to the draft:
 
 ```powershell
-# docs/release-notes-0.1.0.md — the CHANGELOG entry, shortened, with the known
+# docs/release-notes-0.2.0.md — the CHANGELOG entry, shortened, with the known
 # limits kept rather than buried. Template at the bottom of this page.
 git add -A
-git commit -m "Release notes for 0.1.0"
+git commit -m "Release notes for 0.2.0"
 git push origin main
 ```
 
@@ -260,8 +264,8 @@ git push origin main
 **From here on, nothing is reversible.**
 
 ```powershell
-git tag -a v0.1.0 -m "nazar-tray 0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "nazar-tray 0.2.0"
+git push origin v0.2.0
 ```
 
 The tag starts `.github/workflows/release.yml`: it re-runs the whole gate, builds
@@ -272,18 +276,18 @@ publish.
 
 ```powershell
 gh run watch
-gh release view v0.1.0        # a draft, with two assets
+gh release view v0.2.0        # a draft, with two assets
 ```
 
 Take the installer's hash from the release's own `SHA256SUMS` — the one built by
 the runner, not the one on your laptop — and put it in the winget manifest:
 
 ```powershell
-gh release download v0.1.0 --pattern SHA256SUMS --dir .
+gh release download v0.2.0 --pattern SHA256SUMS --dir .
 Get-Content SHA256SUMS
 # Paste the hash into packaging/winget/xfurqan0.nazar-tray.installer.yaml
 winget validate --manifest packaging\winget
-git add packaging/winget && git commit -m "winget: hash for 0.1.0" && git push
+git add packaging/winget && git commit -m "winget: hash for 0.2.0" && git push
 ```
 
 ---
@@ -314,14 +318,14 @@ Read the draft on github.com first — the notes, the two assets, the file names
 Then:
 
 ```powershell
-gh release edit v0.1.0 --draft=false
+gh release edit v0.2.0 --draft=false
 ```
 
 Check what a user gets:
 
 ```powershell
-gh release view v0.1.0 --web
-gh attestation verify (gh release download v0.1.0 --pattern "*-setup.exe" --dir . --clobber; ".\nazar-tray_0.1.0_x64-setup.exe") --repo xfurqan0/nazar-tray
+gh release view v0.2.0 --web
+gh attestation verify (gh release download v0.2.0 --pattern "*-setup.exe" --dir . --clobber; ".\nazar-tray_0.2.0_x64-setup.exe") --repo xfurqan0/nazar-tray
 ```
 
 ---
@@ -391,7 +395,7 @@ manual approval `docs/CODE_SIGNING.md` promises.
   "it shows nothing" reports; `nazar-tray --print` and `nazar-statusline status`
   are the first two things to ask for.
 - The updater plugin is compiled in but **no updater endpoint is configured and
-  no minisign key exists** for 0.1.0. Before turning it on: generate the key with
+  no minisign key exists** for any release so far. Before turning it on: generate the key with
   `cargo tauri signer generate`, keep the private key in a password manager and a
   second offline copy, and never put it in the repository. Losing it means never
   shipping an update to the installed base again; `.gitignore` already refuses
@@ -401,7 +405,8 @@ manual approval `docs/CODE_SIGNING.md` promises.
 
 ## Release notes template
 
-`docs/release-notes-0.1.0.md`, which the workflow attaches to the draft:
+`docs/release-notes-<version>.md`, which the workflow attaches to the draft. Both releases so
+far are in the tree; 0.1.0 is reproduced here because it is the shape rather than the words:
 
 ```markdown
 # nazar-tray 0.1.0

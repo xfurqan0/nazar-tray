@@ -4,15 +4,18 @@
 
 A pixel bead sits in your tray. Hover it for your most-constrained window and what this week has cost; click it for the full picture: every window, its percentage, when it resets, and where your tokens went. Orange at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **0.1.0, released.** Everything is here: both readers, the refresh loop inside the
-> tray process, `~/.nazar/limits.json` written atomically by one process and only when the
-> numbers have moved, the icon and the panel, notifications, autostart, settings, six
-> languages, the installer, the winget manifests and the release pipeline. Windows first;
-> macOS and Linux builds later from the same codebase.
+> Status: **0.2.0, released.** 0.1.0 brought both readers, the refresh loop inside the tray
+> process, `~/.nazar/limits.json` written atomically by one process and only when the numbers
+> have moved, the icon and the panel, notifications, autostart, settings, six languages, the
+> installer, the winget manifests and the release pipeline. **0.2.0 adds the usage history**:
+> what you actually spent, per model, per day, per week and for all time, for both providers,
+> off files that were already on your disk. Windows first; macOS and Linux builds later from
+> the same codebase.
 >
 > **winget takes a day or two to catch up.** The package is submitted as a pull request
-> against `microsoft/winget-pkgs` once the release is out, and a reviewer there merges it. So
-> until `winget install xfurqan0.nazar-tray` resolves, take the installer from
+> against `microsoft/winget-pkgs` once the release is out, and a reviewer there merges it. The
+> 0.1.0 pull request is still in review and 0.2.0 follows it, so until
+> `winget install xfurqan0.nazar-tray` resolves, take the installer from
 > [Releases](https://github.com/xfurqan0/nazar-tray/releases) — the same file, with its hash
 > and its attestation.
 >
@@ -43,8 +46,8 @@ Or take the installer from [Releases](https://github.com/xfurqan0/nazar-tray/rel
 it. Every release carries a `SHA256SUMS` file and a GitHub build attestation:
 
 ```powershell
-Get-FileHash .\nazar-tray_0.1.0_x64-setup.exe -Algorithm SHA256
-gh attestation verify .\nazar-tray_0.1.0_x64-setup.exe --repo xfurqan0/nazar-tray
+Get-FileHash .\nazar-tray_0.2.0_x64-setup.exe -Algorithm SHA256
+gh attestation verify .\nazar-tray_0.2.0_x64-setup.exe --repo xfurqan0/nazar-tray
 ```
 
 **It is not code-signed, so a browser download raises SmartScreen** — "Windows protected your
@@ -76,7 +79,7 @@ That is the whole default quota path: two local files in, one local `limits.json
 
 **Quota comes from two files, and the fields are countable.** From a Codex session log: the `rate_limits` block Codex writes into it — two percentages, two window lengths, two reset times and the plan name. From Claude Code: the same kind of numbers, handed to your status line on every redraw and recorded by the wrapper — two percentages and two reset times. Eleven values in total reach `limits.json`, and nothing else does.
 
-**Usage history — arriving in 0.2.0 — reads your session transcripts, and takes nine fields out of them.** To answer *how many tokens did I spend, and on which model*, nazar-tray reads `~/.claude/projects/**/*.jsonl` (subagent transcripts included) and the `token_count` events in the Codex logs it already opens. From a Claude record it takes the record type, the timestamp, the model id, the four token counters **the server itself reported**, and two ids that exist only to drop duplicate records and are never written anywhere. From a Codex event: the timestamp, four counters, and the model name from the turn. That is the whole of it, and none of it is an estimate — these are the numbers the provider reported, added up.
+**Usage history reads your session transcripts, and takes nine fields out of them.** To answer *how many tokens did I spend, and on which model*, nazar-tray reads `~/.claude/projects/**/*.jsonl` (subagent transcripts included) and the `token_count` events in the Codex logs it already opens. From a Claude record it takes the record type, the timestamp, the model id, the four token counters **the server itself reported**, and two ids that exist only to drop duplicate records and are never written anywhere. From a Codex event: the timestamp, four counters, and the model name from the turn. That is the whole of it, and none of it is an estimate — these are the numbers the provider reported, added up.
 
 **The number it shows is what you spent, which is not the number `/usage` shows.** Claude Code
 writes a message once per *content block* and every one of those lines carries the whole usage
@@ -118,13 +121,68 @@ With the mode **off** — which is how it ships — nothing in nazar-tray opens 
 - Themes (`nazar`, `graphite`), autostart, six UI languages (English, Türkçe, 中文, 한국어, Русский, Español)
 - `nazar-tray --print` for scripts and for Linux, and `--print --write` to refresh
   `~/.nazar/limits.json` once without a tray running
-- **Usage history — in 0.2.0, not in this release:** tokens this week, this month and all
-  time, one row per model, for both providers, from the numbers the providers already
-  reported — deduplicated by default, with a switch for the per-line count `/usage` shows
-  ([what it reads](#what-it-reads-and-what-it-never-reads))
+- **Usage history:** what you actually spent, by week, by day and for all time, one row per
+  model, for both providers, from the numbers the providers already reported — deduplicated
+  by default, with a switch for the per-line count `/usage` shows ([the section
+  below](#usage-history))
 - A **per-user installer** — no administrator rights, no service, no scheduled task — and an
   uninstaller that removes the startup entry, the record Windows keeps beside it, and the
   status-line wrapper's edit to Claude Code's settings
+
+## Usage history
+
+**Quota says how much of your window is gone. This says where it went.** *Usage* in the panel
+footer opens four tabs over the same history, and every number in them is one a provider
+reported — nothing here is an estimate, and there is no price anywhere, because a number this
+product cannot source is a number it does not print.
+
+| | |
+|---|---|
+| **Week** | this week, Monday to today where you are: the headline, its four counters, and a bar per day |
+| **Weeks** | one row per calendar week, newest first, each against the busiest in the list |
+| **All** | a calendar heat-map, up to twelve months, shaded in five steps from the theme's own accent |
+| **Models** | tokens per day, one line per model, over all time, the last 7 days or the last 30 |
+
+![The usage view's Week tab: 476M tokens, its four counters, seven daily bars and a row per model](docs/screenshots/usage-100-week.png)
+![The All tab: a calendar heat-map of five weeks, with two older days drawn as outlines](docs/screenshots/usage-100-all.png)
+
+<sub>Demo data. The headline is **`input + output + cache_read + cache_create`**, which is the
+same definition Claude Code's `/usage` prints as *total tokens*; underneath it, and underneath
+every model row, is that total taken apart in four, because cache reads were 98.5 % of the raw
+total over six days of real work and that is a fact the reader should be able to see rather
+than one the headline quietly decides for them. The outlined cells are days reported by Claude
+Code rather than measured here — see the second switch below. Model ids are printed exactly as
+the provider spelled them, never merged and never translated.</sub>
+
+**Every day and every week opens.** Click a day, in the Week strip or anywhere in the
+heat-map, or a row of **Weeks**, and you get what that day or week went on: the four counters
+over it, then one row per model with its own four, under a provider heading when both worked
+in it. *Back* — and Esc — closes it again.
+
+![A day opened: 55.7M tokens, two Claude models and one Codex model, with a Back button](docs/screenshots/usage-100-day.png)
+![The Models tab: tokens per day as four lines with a legend naming each model](docs/screenshots/usage-100-models.png)
+
+**By default the number is what you spent.** One message counted once, however many lines
+Claude Code wrote it on — which is not the number `/usage` shows, because Claude Code writes a
+line per content block and every copy carries the whole usage object. On the machine this was
+measured on that is **1.667× the real spend**, and it is not a constant you could divide back
+out ([anthropics/claude-code#91775](https://github.com/anthropics/claude-code/issues/91775#issuecomment-5654151098)).
+Two switches in settings, both off by default:
+
+| | |
+|---|---|
+| **Count like Claude Code** | show the per-line numbers instead, so the two windows agree. Labelled *as /usage counts* under the headline, and the tray tooltip follows the same switch. The store keeps **both** counts, so turning it on and off changes what is drawn and never what was recorded. |
+| **Fill history from Claude Code's stats** | copy in the days **older than your transcripts**, as Claude Code reported them — totals only, no breakdown, because that file holds one number and a guess at how it splits into four would be four invented numbers. Drawn apart from the days nazar-tray measured, and a day your transcripts cover is never reported. |
+
+![The settings page's Usage history section, with both switches and what each one does](docs/screenshots/usage-100-settings.png)
+
+**The scan is never on the quota path.** Quota is why this application exists and it reads two
+small files in milliseconds; a walk of hundreds of megabytes must not queue in front of that.
+So nothing scans on the refresh loop — it runs when you open this view, at most once every
+five minutes, and *Refresh now* is the only thing that overrides it. The hourly totals it
+writes live in `%APPDATA%\nazar\usage\`, beside your settings rather than in `~/.nazar`,
+because a month of hourly token counts is a usage profile and no other program reads it
+([docs/usage-contract.md](docs/usage-contract.md)).
 
 ## Notifications
 
@@ -198,11 +256,13 @@ payload it hands your **status line**, on every refresh, and then they are gone.
 second binary in the package, `nazar-statusline.exe`, which records that payload and then runs
 the status line you already had, unchanged.
 
-![The settings page's Status line section: what the wrapper does, whether it is installed, and one button reading "Install status-line wrapper"](docs/screenshots/wp7-100-statusline.png)
+![The settings page's Status line section: what the wrapper does and whether it is installed](docs/screenshots/wp7-100-statusline.png)
 
 <sub>The settings page, scrolled to the status-line section. "Not installed" is what a fresh
-machine says, and it is why the Claude Code windows read *unknown* until you press the
-button.</sub>
+machine says, and it is why the Claude Code windows read *unknown* until you install the
+wrapper. The button that does it is not in this picture: every screenshot is taken with
+`--demo`, a run that may not write your settings, and the page says so where the button would
+be rather than offering one that would refuse.</sub>
 
 **Installing nazar-tray does not install it.** Claude Code's `settings.json` belongs to Claude
 Code and to you, and an installer that edited it would be editing a file you never mentioned,
@@ -293,15 +353,15 @@ left in English.
 
 ## Roadmap
 
-- v1: Windows (winget + GitHub Releases), Claude Code + Codex
-- After v1: a code-signing certificate through SignPath Foundation, which asks that a project
+- 0.1.0: Windows (winget + GitHub Releases), Claude Code + Codex — **done**
+- 0.2.0: **usage history** — per week, per day and for all time, one row per model, both
+  providers — **done**. Planned as work packages in [docs/PROJECT.md](docs/PROJECT.md) §7,
+  with what it reads [above](#what-it-reads-and-what-it-never-reads) and the file it writes in
+  [docs/usage-contract.md](docs/usage-contract.md)
+- Next: a code-signing certificate through SignPath Foundation, which asks that a project
   already be released — [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md)
 - v2: macOS build, multiple accounts, more providers
 - Linux: CLI output and the Nazar canvas; a tray popup is not reliably possible on Linux today
-- 0.2.0: **usage history** — tokens per week, per month and for all time, one row per model,
-  both providers. Planned as work packages in [docs/PROJECT.md](docs/PROJECT.md) §7, with what
-  it reads [above](#what-it-reads-and-what-it-never-reads) and the file it writes in
-  [docs/usage-contract.md](docs/usage-contract.md)
 - Anything else that is wanted but not scheduled is [docs/FUTURE.md](docs/FUTURE.md)
 
 ## Development
@@ -419,17 +479,23 @@ cargo build -p nazar-tray
 powershell -File scripts/screenshot.ps1
 ```
 
-Every picture in `docs/screenshots` comes from that one command. It runs the tray with
+Every picture in `docs/screenshots` comes from that one command, and
+[`docs/screenshots/README.md`](docs/screenshots) says what each file is. It runs the tray with
 `--demo`, which uses synthetic numbers, opens the panel at start-up, **never takes the
 advisory lock and writes nothing** — so a screenshot session cannot overwrite the real
-`~/.nazar/limits.json` or change your settings. 150 % and 200 % are rendered at those scales
-rather than upscaled: WebView2 is passed `--force-device-scale-factor` and the window is
-multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`, `-Hint`, `-Offer`,
-`-View`, `-Locale` and `-Out` take one picture of one state. `-Hint` and `-Offer` exist
-because the first-run tip and the Max-plan offer are each shown once per machine, which
-makes them the states a screenshot cannot otherwise reach twice. The documented set ends with
-the same panel in all six languages (`wp6-100-*.png`), which is how a translation that no
-longer fits the layout gets noticed.
+`~/.nazar/limits.json` or change your settings, and since 0.2.0 it answers the usage view out
+of a fixture of its own rather than out of your store, so no picture here carries anybody's
+real model use. **Quit a running nazar-tray first**: two processes cannot share one WebView2
+user-data folder with different browser arguments, `--scale` passes one, and the script
+refuses to start rather than let every scaled shot time out. 150 % and 200 % are rendered at
+those scales rather than upscaled: WebView2 is passed `--force-device-scale-factor` and the
+window is multiplied to match, so no display setting has to be touched. `-Theme`, `-Mode`,
+`-Hint`, `-Offer`, `-View`, `-UsageTab`, `-Scroll`, `-Locale` and `-Out` take one picture of
+one state. `-Hint` and `-Offer` exist because the first-run tip and the Max-plan offer are
+each shown once per machine, which makes them the states a screenshot cannot otherwise reach
+twice; `-UsageTab day` is the one state of the usage view no tab name reaches. The documented
+set ends with the same panel in all six languages (`wp6-100-*.png`), which is how a
+translation that no longer fits the layout gets noticed.
 
 **Watching a threshold being crossed**
 
