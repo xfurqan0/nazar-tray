@@ -36,6 +36,11 @@
 //!   which Claude Code prunes, and states the invariant that keeps a crash from counting
 //!   anything twice.
 //!
+//! **`docs/usage-contract.md` is the document [`store`] writes**, written before this code
+//! was: the shape, the spellings, the hourly UTC grain, what the file never contains, and
+//! what happens to a month that no longer parses. `docs/pinned-internal-formats.md` is the
+//! matching inventory of what is read out of a transcript and what is off limits.
+//!
 //! Everything here is UTC. A week that starts on Monday in the reader's own time zone is a
 //! drawing decision and belongs in the panel, where asking the operating system for an
 //! offset is one call; in this crate it is forbidden, and hourly rows are what make it
@@ -54,8 +59,10 @@ use crate::error::Result;
 use crate::timefmt::{now_rfc3339, unix_seconds_from_rfc3339};
 
 pub use dedupe::{Credit, Credited, Deduper};
-pub use scan::{Record, Usage};
-pub use store::{Bucket, Hours, Models, Month, Months, PROVIDER, VERSION};
+pub use scan::{Record, UNKNOWN_MODEL, Usage};
+pub use store::{
+    Applied, Bucket, Hours, Models, Month, Months, PROVIDER, ProviderTotals, VERSION, rebuild,
+};
 
 /// `<home>/.claude/projects` — where Claude Code keeps its transcripts.
 ///
@@ -74,7 +81,6 @@ pub fn projects_dir(home: &Path) -> PathBuf {
 /// rather than optional ones: a scan that read nothing read nothing, and that is a fact
 /// rather than an unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
     /// Transcript files found under `projects/`.
     pub files_seen: u64,
@@ -96,7 +102,9 @@ pub struct UsageSummary {
     pub dedupe_fallbacks: u64,
     /// Messages the server never billed, `model` being `<synthetic>`.
     pub synthetic: u64,
-    /// Usage lines dropped for want of a model, a message id, or a timestamp.
+    /// Messages whose source named no model, filed under [`UNKNOWN_MODEL`].
+    pub unnamed_model: u64,
+    /// Usage lines dropped for want of a message id, a timestamp, or any number at all.
     pub unattributable: u64,
     /// Distinct messages credited.
     pub credited: u64,
@@ -110,6 +118,9 @@ pub struct UsageSummary {
     pub naive_total: u64,
     /// The months whose documents this scan wrote.
     pub months: Vec<String>,
+    /// The months whose documents do not parse. Left exactly as they are; see
+    /// [`store::rebuild`].
+    pub damaged: Vec<String>,
     /// The earliest instant the store holds anything for, RFC 3339 UTC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
@@ -178,8 +189,7 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
         summary.lines += pass.lines;
         summary.malformed += pass.malformed;
         summary.synthetic += pass.skipped(scan::Skipped::Synthetic);
-        summary.unattributable += pass.skipped(scan::Skipped::NoModel)
-            + pass.skipped(scan::Skipped::NoMessageId)
+        summary.unattributable += pass.skipped(scan::Skipped::NoMessageId)
             + pass.skipped(scan::Skipped::NoTimestamp)
             + pass.skipped(scan::Skipped::NoNumbers);
 
@@ -195,6 +205,9 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
                 continue;
             };
             summary.credited += u64::from(item.fresh);
+            if item.fresh && item.record.model == UNKNOWN_MODEL {
+                summary.unnamed_model += 1;
+            }
             summary.credited_total = summary.credited_total.saturating_add(item.delta.total());
             store::credit(
                 months.entry(month).or_default(),
@@ -233,6 +246,7 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
     } else {
         cursors.generation += 1;
         Some(store::Pending {
+            provider: PROVIDER.to_owned(),
             generation: cursors.generation,
             scanned_at: summary.scanned_at.clone(),
             months,
@@ -244,7 +258,9 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
     store::write_cursors(state_dir, &cursors)?;
 
     if let Some(block) = block {
-        summary.months = store::apply(state_dir, &block)?;
+        let applied = store::apply(state_dir, &block)?;
+        summary.months = applied.written;
+        summary.damaged = applied.damaged;
         cursors.pending = None;
         store::write_cursors(state_dir, &cursors)?;
     }
@@ -260,10 +276,7 @@ pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
 /// happens there. An hour is in the answer when **its start** falls inside the half-open
 /// range.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UsageView {
-    /// Which provider these totals are for.
-    pub provider: String,
     /// The earliest instant the store holds anything for, RFC 3339 UTC. The panel's
     /// "since {date}" line, and the reason "all time" is an honest label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -275,8 +288,10 @@ pub struct UsageView {
     pub from: String,
     /// The end of the range asked for, as it was asked for.
     pub to: String,
-    /// UTC hour (`YYYY-MM-DDTHH`) to model to totals.
-    pub hours: Hours,
+    /// Provider (`claude`, `codex`) to UTC hour to model to totals.
+    pub providers: BTreeMap<String, Hours>,
+    /// The months whose documents do not parse, and so are missing from the answer.
+    pub damaged: Vec<String>,
 }
 
 /// Read the store back for one UTC range.
@@ -287,7 +302,6 @@ pub struct UsageView {
 /// in the panel, and it should draw "no data" rather than a stack trace.
 pub fn query(state_dir: &Path, from: &str, to: &str) -> Result<UsageView> {
     let mut view = UsageView {
-        provider: PROVIDER.to_owned(),
         from: from.to_owned(),
         to: to.to_owned(),
         ..UsageView::default()
@@ -295,12 +309,12 @@ pub fn query(state_dir: &Path, from: &str, to: &str) -> Result<UsageView> {
 
     let known = store::months(state_dir)?;
     if let Some(first) = known.first()
-        && let Some(document) = store::read_month(state_dir, first)?
+        && let store::Read::Document(document) = store::read_month(state_dir, first)?
     {
         view.since = document.earliest().or(document.since);
     }
     if let Some(last) = known.last()
-        && let Some(document) = store::read_month(state_dir, last)?
+        && let store::Read::Document(document) = store::read_month(state_dir, last)?
     {
         view.scanned_at = document.scanned_at;
     }
@@ -319,19 +333,33 @@ pub fn query(state_dir: &Path, from: &str, to: &str) -> Result<UsageView> {
         if !touches(month, start, end) {
             continue;
         }
-        let Some(document) = store::read_month(state_dir, month)? else {
-            continue;
-        };
-        for (hour, models) in document.hours {
-            let Some(at) = unix_seconds_from_rfc3339(&format!("{hour}:00:00Z")) else {
-                continue;
-            };
-            if at < start || at >= end {
+        let document = match store::read_month(state_dir, month)? {
+            store::Read::Document(document) => document,
+            store::Read::Absent => continue,
+            store::Read::Damaged => {
+                // The months beside it still load, and the panel is told which one to
+                // point the user at. See `store::rebuild`.
+                view.damaged.push(month.clone());
                 continue;
             }
-            let into = view.hours.entry(hour).or_default();
-            for (model, bucket) in models {
-                into.entry(model).or_default().absorb(&bucket);
+        };
+        for (provider, totals) in document.providers {
+            for (hour, models) in totals.buckets {
+                let Some(at) = unix_seconds_from_rfc3339(&format!("{hour}:00:00Z")) else {
+                    continue;
+                };
+                if at < start || at >= end {
+                    continue;
+                }
+                let into = view
+                    .providers
+                    .entry(provider.clone())
+                    .or_default()
+                    .entry(hour)
+                    .or_default();
+                for (model, bucket) in models {
+                    into.entry(model).or_default().absorb(&bucket);
+                }
             }
         }
     }
@@ -355,8 +383,10 @@ fn earliest(state_dir: &Path) -> Result<Option<String>> {
     let Some(first) = known.first() else {
         return Ok(None);
     };
-    Ok(store::read_month(state_dir, first)?
-        .and_then(|document| document.earliest().or(document.since)))
+    match store::read_month(state_dir, first)? {
+        store::Read::Document(document) => Ok(document.earliest().or(document.since)),
+        store::Read::Absent | store::Read::Damaged => Ok(None),
+    }
 }
 
 #[cfg(test)]

@@ -6,39 +6,37 @@
 //! week. The totals are therefore kept here, in this product's own files, and the
 //! transcripts are only ever the source they were built from.
 //!
-//! # The documents
-//!
-//! One file per **UTC** month, `<state dir>/usage/YYYY-MM.json`, each written whole and
-//! atomically ([`crate::atomic`]) the way everything else in this crate is written:
+//! **`docs/usage-contract.md` is the document this module writes**, and it was written
+//! before this code was. What is here is the implementation of that page: the shape, the
+//! spellings, the hourly UTC grain, the rule that a bucket never goes down, and the rule
+//! that a damaged month is reported and left alone rather than repaired.
 //!
 //! ```json
 //! {
 //!   "version": 1,
-//!   "provider": "claude",
 //!   "month": "2026-09",
 //!   "since": "2026-09-08T04:00:00Z",
-//!   "scannedAt": "2026-09-13T02:31:07Z",
-//!   "appliedThrough": 12,
-//!   "hours": {
-//!     "2026-09-13T02": {
-//!       "claude-opus-5": {"input": 2, "output": 328, "cacheCreate": 24843,
-//!                         "cacheRead": 35613, "requests": 1}
+//!   "scanned_at": "2026-09-13T02:31:07Z",
+//!   "providers": {
+//!     "claude": {
+//!       "applied_through": 12,
+//!       "buckets": {
+//!         "2026-09-13T02": {
+//!           "claude-opus-5": {"input": 2, "output": 328, "cache_create": 24843,
+//!                             "cache_read": 35613, "requests": 1}
+//!         }
+//!       }
 //!     }
 //!   }
 //! }
 //! ```
 //!
-//! Hours rather than days, and UTC rather than anything else, for one reason each. UTC
-//! because this crate is forbidden to ask the machine what time zone it is in — resets and
-//! instants are arithmetic on UTC and rendering a calendar is the panel's job, in
-//! JavaScript, where it is one call. Hours because a row that is a UTC *day* cannot be
-//! re-cut into the reader's day, and a row that is a UTC *hour* can: every offset the world
-//! uses is a whole number of hours or a half of one, and a half-hour offset moves whole
-//! hours between days without splitting one.
-//!
 //! Beside them, `<state dir>/usage/cursors.json`: where each transcript had been read up
-//! to, keyed by a hash of its path rather than the path, so the file cannot be read as a
-//! list of the directories somebody works in.
+//! to. It is this module's own bookkeeping rather than part of the contract, and it names
+//! nothing — a transcript is filed under a hash of its path, not the path, because
+//! `~/.claude/projects/` is named after every working directory somebody has opened a
+//! session in; and a credited message is filed under a hash of its identifiers, not the
+//! identifiers.
 //!
 //! # The invariant
 //!
@@ -51,10 +49,10 @@
 //!    from it are written **in the same atomic write** — the cursor document carries the
 //!    scan's totals in [`Cursors::pending`] as it advances its offsets. So there is no
 //!    state in which the offset moved past a record whose totals were not recorded.
-//! 2. *A pending total is applied once.* Every scan takes the next [`Cursors::generation`],
-//!    and a month document records the generation it last absorbed in `appliedThrough`. A
-//!    pending block is added to a month only when the month's stamp is older, so replaying
-//!    the same block is a no-operation.
+//! 2. *A pending total is applied once.* Every scan that has something to file takes the
+//!    next [`Cursors::generation`], and each provider's block in a month document records
+//!    the generation it last absorbed in `applied_through`. A pending block is added only
+//!    when that stamp is older, so replaying the same block is a no-operation.
 //!
 //! The write order is: apply anything left pending from last time → read the transcripts →
 //! **write the cursor with the new offsets and the new pending block** (this is the commit
@@ -63,13 +61,21 @@
 //! crash after it leaves a pending block that the next pass replays, skipping the months
 //! that already carry its generation.
 //!
-//! The one state this cannot repair is a `cursors.json` that is no longer readable JSON.
-//! Defaulting it would reset every offset to zero and count every surviving transcript into
-//! months that already hold it, so it is an error instead, and recovering is a decision
-//! somebody makes: delete the usage directory and rebuild from whatever transcripts are
-//! still on the machine.
+//! Two states this cannot repair on its own, both deliberate:
+//!
+//! * A `cursors.json` that is no longer readable JSON is an **error**, not a fresh start.
+//!   Defaulting it would reset every offset to zero and count every surviving transcript
+//!   into months that already hold it.
+//! * A month document that is no longer readable JSON is **reported and left exactly as it
+//!   is** — never replaced by an empty one and never repaired. The months beside it keep
+//!   working. A lost month may not exist anywhere else, so deleting it is a thing the user
+//!   does once they know.
+//!
+//! [`rebuild`] is the escape hatch both point at: it removes the cursor and the month
+//! documents together, so the next scan counts whatever the transcripts still hold from
+//! the top. Together, because removing either alone is the one way to double count.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,19 +86,20 @@ use super::scan::{Usage, fnv1a};
 use crate::atomic;
 use crate::error::{Error, Result};
 
-/// Schema version written by this build.
+/// Schema version written by this build. Its own number, unrelated to `limits.json`'s.
 pub const VERSION: u32 = 1;
 
-/// The provider these documents describe.
+/// The provider this module's scanner reads.
 pub const PROVIDER: &str = "claude";
 
 /// One model's totals for one UTC hour.
 ///
-/// Each measurement is absent until a record reported it, so a bucket built from lines
-/// that never named an input count says so rather than claiming zero. `requests` counts
-/// distinct messages, after dedupe.
+/// The counter names are the ones the sources already use, rather than `limits.json`'s
+/// camelCase: this file is meant to be readable next to a raw `message.usage` block, and
+/// the contract page argues the trade. Each measurement is absent until a record reported
+/// it, so a bucket built from lines that never named an input count says so rather than
+/// claiming zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Bucket {
     /// `input_tokens`, summed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,7 +111,7 @@ pub struct Bucket {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_create: Option<u64>,
     /// `cache_read_input_tokens`, summed. Around 98.5% of the raw total on a real machine,
-    /// which is why the panel shows it on its own line instead of inside the headline.
+    /// which is why the panel shows it beside the headline and never inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<u64>,
     /// Distinct messages, after dedupe.
@@ -166,31 +173,47 @@ pub fn credit(hours: &mut Hours, hour: &str, model: &str, usage: &Usage, fresh: 
         .add(usage, fresh);
 }
 
-/// One month's totals.
+/// The earliest hour a set of buckets holds, as an RFC 3339 instant.
+fn earliest_hour(hours: &Hours) -> Option<String> {
+    hours.keys().next().map(|hour| format!("{hour}:00:00Z"))
+}
+
+/// One provider's totals within a month.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTotals {
+    /// The newest scan generation whose totals are already in `buckets`. This module's
+    /// bookkeeping, per provider, so that two readers filing into the same month never
+    /// share a stamp.
+    #[serde(default)]
+    pub applied_through: u64,
+    /// UTC hour to model to totals. An hour in which nothing happened is absent, never a
+    /// row of zeroes.
+    #[serde(default)]
+    pub buckets: Hours,
+    /// Fields a future version added. Preserved verbatim.
+    #[serde(flatten, default)]
+    pub extra: Map<String, Value>,
+}
+
+/// One month's totals, for every provider that has been read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Month {
     /// Schema version. See [`VERSION`].
     pub version: u32,
-    /// Which provider these totals are for.
-    pub provider: String,
-    /// The UTC month, `YYYY-MM`.
+    /// The UTC month, `YYYY-MM`, and the same value as the file name.
     pub month: String,
-    /// The earliest instant this document holds anything for, RFC 3339 UTC.
+    /// The earliest instant **the whole store** holds anything for, RFC 3339 UTC.
     ///
-    /// The panel needs it: "all time" means "since the first scan, plus however far back
-    /// the transcripts went that day", and a label that does not say which is dishonest.
+    /// Not the earliest in this file: it is what the panel's "since {date}" line reads,
+    /// and it is the honest boundary of the words "all time".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
-    /// When a scan last added to this document, RFC 3339 UTC.
+    /// When the scan that produced this document finished, RFC 3339 UTC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scanned_at: Option<String>,
-    /// The newest scan generation whose totals are already in `hours`.
+    /// `claude`, `codex`. A provider that has never been read has no key at all.
     #[serde(default)]
-    pub applied_through: u64,
-    /// UTC hour to model to totals.
-    #[serde(default)]
-    pub hours: Hours,
+    pub providers: BTreeMap<String, ProviderTotals>,
     /// Fields a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -202,23 +225,30 @@ impl Month {
     pub fn new(month: &str) -> Self {
         Month {
             version: VERSION,
-            provider: PROVIDER.to_owned(),
             month: month.to_owned(),
             since: None,
             scanned_at: None,
-            applied_through: 0,
-            hours: Hours::new(),
+            providers: BTreeMap::new(),
             extra: Map::new(),
         }
     }
 
-    /// The earliest hour this document holds, as an RFC 3339 instant.
+    /// One provider's hourly buckets, if it has any here.
+    #[must_use]
+    pub fn buckets(&self, provider: &str) -> Option<&Hours> {
+        self.providers
+            .get(provider)
+            .map(|totals| &totals.buckets)
+            .filter(|hours| !hours.is_empty())
+    }
+
+    /// The earliest hour any provider holds in this document, as an RFC 3339 instant.
     #[must_use]
     pub fn earliest(&self) -> Option<String> {
-        self.hours
-            .keys()
-            .next()
-            .map(|hour| format!("{hour}:00:00Z"))
+        self.providers
+            .values()
+            .filter_map(|totals| earliest_hour(&totals.buckets))
+            .min()
     }
 }
 
@@ -227,9 +257,10 @@ impl Month {
 /// This is the write-ahead half of the invariant in the module documentation: it exists on
 /// disk only between the commit and the moment every month has absorbed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Pending {
-    /// The generation these totals belong to.
+    /// Which provider's totals these are.
+    pub provider: String,
+    /// The generation they belong to.
     pub generation: u64,
     /// When the pass ran, RFC 3339 UTC.
     pub scanned_at: String,
@@ -244,11 +275,16 @@ impl Pending {
     pub fn is_empty(&self) -> bool {
         self.months.is_empty()
     }
+
+    /// The earliest hour anywhere in this block, as an RFC 3339 instant.
+    #[must_use]
+    pub fn earliest(&self) -> Option<String> {
+        self.months.values().filter_map(earliest_hour).min()
+    }
 }
 
 /// Where one transcript had been read up to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FileCursor {
     /// The file's identity when it was last read. A different one means a different file.
     pub identity: String,
@@ -262,13 +298,12 @@ pub struct FileCursor {
 
 /// The cursor document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Cursors {
     /// Schema version. See [`VERSION`].
     pub version: u32,
     /// Which provider these cursors are for.
     pub provider: String,
-    /// The newest scan generation. Each pass takes the next one.
+    /// The newest scan generation. Each pass that has something to file takes the next one.
     #[serde(default)]
     pub generation: u64,
     /// Totals committed but not yet added to their month documents.
@@ -342,32 +377,61 @@ pub fn read_cursors(state_dir: &Path) -> Result<Cursors> {
 }
 
 /// Write the cursor document, atomically.
+///
+/// Compact rather than indented, unlike the month documents beside it: a month document is
+/// the contract and somebody will open it, while this one is bookkeeping with an entry per
+/// transcript and up to sixteen carried keys in each. Over 127 transcripts it was 302 KB
+/// indented and 163 KB compact, and it is rewritten twice per scan.
 pub fn write_cursors(state_dir: &Path, cursors: &Cursors) -> Result<()> {
-    write_document(&cursors_path(state_dir), cursors)
+    let mut text = serde_json::to_string(cursors)?;
+    text.push('\n');
+    atomic::write_bytes(&cursors_path(state_dir), text.as_bytes())
 }
 
-/// Read one month document, if it exists.
-pub fn read_month(state_dir: &Path, month: &str) -> Result<Option<Month>> {
+/// What reading a month document produced.
+#[derive(Debug)]
+pub enum Read {
+    /// The document, as it is on disk.
+    Document(Box<Month>),
+    /// There is no document for that month.
+    Absent,
+    /// There is one and it does not parse. It is left exactly as it is.
+    Damaged,
+}
+
+/// Read one month document, never failing on a damaged one.
+pub fn read_month(state_dir: &Path, month: &str) -> Result<Read> {
     let path = month_path(state_dir, month);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Read::Absent),
         Err(source) => return Err(Error::io(&path, source)),
     };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|source| Error::json(&path, source))
+    match serde_json::from_str::<Month>(&text) {
+        Ok(document) => Ok(Read::Document(Box::new(document))),
+        Err(_) => Ok(Read::Damaged),
+    }
 }
 
-/// Write one month document, atomically.
-pub fn write_month(state_dir: &Path, month: &Month) -> Result<()> {
-    write_document(&month_path(state_dir, &month.month), month)
+/// Write one month document, atomically, and only when it would differ from what is there.
+///
+/// Returns `true` when something was written. Comparing first is what makes a scan that
+/// found nothing leave the directory byte for byte as it was, and it costs one read of a
+/// file this pass has already read.
+pub fn write_month(state_dir: &Path, document: &Month) -> Result<bool> {
+    let path = month_path(state_dir, &document.month);
+    let text = document_text(document)?;
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == text) {
+        return Ok(false);
+    }
+    atomic::write_bytes(&path, text.as_bytes())?;
+    Ok(true)
 }
 
-fn write_document<T: Serialize>(path: &Path, document: &T) -> Result<()> {
+fn document_text<T: Serialize>(document: &T) -> Result<String> {
     let mut text = serde_json::to_string_pretty(document)?;
     text.push('\n');
-    atomic::write_bytes(path, text.as_bytes())
+    Ok(text)
 }
 
 /// Every month a document exists for, oldest first.
@@ -405,33 +469,106 @@ pub fn is_month(text: &str) -> bool {
         && bytes[5..].iter().all(u8::is_ascii_digit)
 }
 
+/// What filing a pending block did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// Months whose documents were written.
+    pub written: Vec<String>,
+    /// Months whose documents do not parse. Left exactly as they are, and skipped.
+    pub damaged: Vec<String>,
+}
+
 /// Add a pending block to its month documents, skipping any that already carry it.
 ///
-/// Idempotent by construction: a month whose `appliedThrough` is at or past the block's
-/// generation is left exactly as it is. Returns the months that were written.
-pub fn apply(state_dir: &Path, pending: &Pending) -> Result<Vec<String>> {
-    let mut written = Vec::new();
+/// Idempotent by construction: a provider block whose `applied_through` is at or past the
+/// block's generation is left exactly as it is, and a document that would not change is
+/// not rewritten. The store-wide `since` is recomputed here and stamped into every
+/// readable month, which is what makes that field mean what the contract says it means.
+pub fn apply(state_dir: &Path, pending: &Pending) -> Result<Applied> {
+    let mut outcome = Applied::default();
+    let mut damaged = BTreeSet::new();
+    let mut documents: BTreeMap<String, Month> = BTreeMap::new();
+
+    let known = months(state_dir)?;
+    for month in known.iter().chain(pending.months.keys()) {
+        if documents.contains_key(month) || damaged.contains(month) {
+            continue;
+        }
+        match read_month(state_dir, month)? {
+            Read::Document(document) => {
+                documents.insert(month.clone(), *document);
+            }
+            Read::Absent => {}
+            Read::Damaged => {
+                damaged.insert(month.clone());
+            }
+        }
+    }
+
     for (month, hours) in &pending.months {
-        let mut document = read_month(state_dir, month)?.unwrap_or_else(|| Month::new(month));
-        if document.applied_through >= pending.generation {
+        if damaged.contains(month) {
+            continue;
+        }
+        let document = documents
+            .entry(month.clone())
+            .or_insert_with(|| Month::new(month));
+        let totals = document
+            .providers
+            .entry(pending.provider.clone())
+            .or_default();
+        if totals.applied_through >= pending.generation {
             continue;
         }
         for (hour, models) in hours {
-            let into = document.hours.entry(hour.clone()).or_default();
+            let into = totals.buckets.entry(hour.clone()).or_default();
             for (model, bucket) in models {
                 into.entry(model.clone()).or_default().absorb(bucket);
             }
         }
-        document.version = VERSION;
-        document.provider = PROVIDER.to_owned();
-        document.month = month.clone();
-        document.applied_through = pending.generation;
+        totals.applied_through = pending.generation;
         document.scanned_at = Some(pending.scanned_at.clone());
-        document.since = document.earliest();
-        write_month(state_dir, &document)?;
-        written.push(month.clone());
     }
-    Ok(written)
+
+    let since = documents.values().filter_map(Month::earliest).min();
+    for (month, document) in &mut documents {
+        document.version = VERSION;
+        document.month = month.clone();
+        document.since = since.clone();
+        if write_month(state_dir, document)? {
+            outcome.written.push(month.clone());
+        }
+    }
+    outcome.damaged = damaged.into_iter().collect();
+    Ok(outcome)
+}
+
+/// Remove the cursor and every month document, so the next scan starts from the top.
+///
+/// The escape hatch for a damaged store, and the only safe way to ask for one: removing
+/// the month documents without the cursor leaves a store that will never see those months
+/// again, and removing the cursor without the month documents counts every surviving
+/// transcript into months that already hold it. Whatever the transcripts no longer hold is
+/// gone — which is the thing the store exists to avoid, so this is a decision somebody
+/// makes rather than something a reader does to recover.
+///
+/// Returns the number of documents removed.
+pub fn rebuild(state_dir: &Path) -> Result<usize> {
+    let mut removed = 0;
+    let cursors = cursors_path(state_dir);
+    match std::fs::remove_file(&cursors) {
+        Ok(()) => removed += 1,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Error::io(&cursors, source)),
+    }
+    for month in months(state_dir)? {
+        let path = month_path(state_dir, &month);
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::io(&path, source)),
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -454,10 +591,22 @@ mod tests {
         let mut months = Months::new();
         months.insert(month.to_owned(), hours);
         Pending {
+            provider: PROVIDER.to_owned(),
             generation,
             scanned_at: "2026-09-13T02:31:07Z".to_owned(),
             months,
         }
+    }
+
+    fn document(dir: &Path, month: &str) -> Month {
+        match read_month(dir, month).unwrap() {
+            Read::Document(document) => *document,
+            other => panic!("expected a document for {month}, got {other:?}"),
+        }
+    }
+
+    fn bucket(dir: &Path, month: &str, hour: &str) -> Bucket {
+        document(dir, month).buckets(PROVIDER).unwrap()[hour]["claude-opus-5"].clone()
     }
 
     #[test]
@@ -511,8 +660,9 @@ mod tests {
     fn unknown_keys_survive_a_round_trip() {
         let dir = TempDir::new("usage-store-forward");
         let mut document = Month::new("2026-09");
+        let totals = document.providers.entry(PROVIDER.to_owned()).or_default();
         credit(
-            &mut document.hours,
+            &mut totals.buckets,
             "2026-09-13T02",
             "claude-opus-5",
             &usage(2, 328),
@@ -520,15 +670,46 @@ mod tests {
         );
         document
             .extra
-            .insert("writerBuild".to_owned(), "9.9".into());
-        write_month(&dir.path, &document).unwrap();
+            .insert("writer_build".to_owned(), "9.9".into());
+        assert!(write_month(&dir.path, &document).unwrap());
 
-        let read = read_month(&dir.path, "2026-09").unwrap().unwrap();
-        assert_eq!(read.extra["writerBuild"], Value::from("9.9"));
+        let read = self::document(&dir.path, "2026-09");
+        assert_eq!(read.extra["writer_build"], Value::from("9.9"));
         assert_eq!(
-            read.hours["2026-09-13T02"]["claude-opus-5"].output,
+            bucket(&dir.path, "2026-09", "2026-09-13T02").output,
             Some(328)
         );
+    }
+
+    #[test]
+    fn the_counters_keep_the_spelling_the_sources_use() {
+        let dir = TempDir::new("usage-store-spelling");
+        apply(
+            &dir.path,
+            &pending(
+                1,
+                "2026-09",
+                "2026-09-13T02",
+                &Usage {
+                    input: Some(1),
+                    output: Some(2),
+                    cache_create: Some(3),
+                    cache_read: Some(4),
+                },
+            ),
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(month_path(&dir.path, "2026-09")).unwrap();
+        for key in [
+            "\"cache_create\"",
+            "\"cache_read\"",
+            "\"scanned_at\"",
+            "\"providers\"",
+            "\"buckets\"",
+        ] {
+            assert!(text.contains(key), "the document does not spell {key}");
+        }
     }
 
     #[test]
@@ -536,18 +717,22 @@ mod tests {
         let dir = TempDir::new("usage-store-idempotent");
         let block = pending(1, "2026-09", "2026-09-13T02", &usage(2, 328));
 
-        assert_eq!(apply(&dir.path, &block).unwrap(), vec!["2026-09"]);
+        assert_eq!(apply(&dir.path, &block).unwrap().written, vec!["2026-09"]);
+        let text = std::fs::read_to_string(month_path(&dir.path, "2026-09")).unwrap();
+
         assert!(
-            apply(&dir.path, &block).unwrap().is_empty(),
+            apply(&dir.path, &block).unwrap().written.is_empty(),
             "the second apply must be a no-operation"
         );
-
-        let read = read_month(&dir.path, "2026-09").unwrap().unwrap();
         assert_eq!(
-            read.hours["2026-09-13T02"]["claude-opus-5"].output,
+            std::fs::read_to_string(month_path(&dir.path, "2026-09")).unwrap(),
+            text,
+            "and must leave the document byte for byte as it was"
+        );
+        assert_eq!(
+            bucket(&dir.path, "2026-09", "2026-09-13T02").output,
             Some(328)
         );
-        assert_eq!(read.applied_through, 1);
     }
 
     #[test]
@@ -564,11 +749,119 @@ mod tests {
         )
         .unwrap();
 
-        let read = read_month(&dir.path, "2026-09").unwrap().unwrap();
-        let bucket = &read.hours["2026-09-13T02"]["claude-opus-5"];
+        let bucket = bucket(&dir.path, "2026-09", "2026-09-13T02");
         assert_eq!(bucket.output, Some(330));
         assert_eq!(bucket.requests, 2);
-        assert_eq!(read.since.as_deref(), Some("2026-09-13T02:00:00Z"));
+        assert_eq!(
+            document(&dir.path, "2026-09").since.as_deref(),
+            Some("2026-09-13T02:00:00Z")
+        );
+    }
+
+    #[test]
+    fn since_is_the_whole_store_in_every_month_that_holds_it() {
+        let dir = TempDir::new("usage-store-since");
+        apply(
+            &dir.path,
+            &pending(1, "2026-09", "2026-09-05T10", &usage(1, 1)),
+        )
+        .unwrap();
+        assert_eq!(
+            document(&dir.path, "2026-09").since.as_deref(),
+            Some("2026-09-05T10:00:00Z")
+        );
+
+        // An older month arrives; the newer document's `since` moves with it.
+        apply(
+            &dir.path,
+            &pending(2, "2026-08", "2026-08-02T03", &usage(1, 1)),
+        )
+        .unwrap();
+        for month in ["2026-08", "2026-09"] {
+            assert_eq!(
+                document(&dir.path, month).since.as_deref(),
+                Some("2026-08-02T03:00:00Z"),
+                "{month} carries the store's earliest instant, not its own"
+            );
+        }
+    }
+
+    #[test]
+    fn two_providers_share_a_month_without_sharing_a_stamp() {
+        let dir = TempDir::new("usage-store-providers");
+        apply(
+            &dir.path,
+            &pending(1, "2026-09", "2026-09-13T02", &usage(2, 328)),
+        )
+        .unwrap();
+
+        let mut hours = Hours::new();
+        credit(
+            &mut hours,
+            "2026-09-13T02",
+            "gpt-6-astra",
+            &usage(9, 9),
+            true,
+        );
+        let mut months = Months::new();
+        months.insert("2026-09".to_owned(), hours);
+        apply(
+            &dir.path,
+            &Pending {
+                provider: "codex".to_owned(),
+                generation: 1,
+                scanned_at: "2026-09-13T02:40:00Z".to_owned(),
+                months,
+            },
+        )
+        .unwrap();
+
+        let read = document(&dir.path, "2026-09");
+        assert_eq!(read.providers.len(), 2);
+        assert_eq!(
+            read.buckets("claude").unwrap()["2026-09-13T02"]["claude-opus-5"].output,
+            Some(328)
+        );
+        assert_eq!(
+            read.buckets("codex").unwrap()["2026-09-13T02"]["gpt-6-astra"].output,
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn a_damaged_month_is_reported_and_left_exactly_as_it_is() {
+        let dir = TempDir::new("usage-store-damaged");
+        apply(
+            &dir.path,
+            &pending(1, "2026-08", "2026-08-31T23", &usage(1, 1)),
+        )
+        .unwrap();
+
+        let broken = "{ this was a month once";
+        std::fs::write(month_path(&dir.path, "2026-08"), broken).unwrap();
+
+        let outcome = apply(
+            &dir.path,
+            &pending(2, "2026-08", "2026-08-31T23", &usage(5, 5)),
+        )
+        .unwrap();
+        assert_eq!(outcome.damaged, vec!["2026-08"]);
+        assert_eq!(
+            std::fs::read_to_string(month_path(&dir.path, "2026-08")).unwrap(),
+            broken,
+            "never replaced by an empty one and never repaired"
+        );
+
+        // And the months beside it keep working.
+        apply(
+            &dir.path,
+            &pending(3, "2026-09", "2026-09-01T00", &usage(1, 1)),
+        )
+        .unwrap();
+        assert_eq!(
+            bucket(&dir.path, "2026-09", "2026-09-01T00").output,
+            Some(1)
+        );
     }
 
     #[test]
@@ -591,6 +884,22 @@ mod tests {
         assert!(is_month("2026-09"));
         assert!(!is_month("cursors"));
         assert!(!is_month("2026-9"));
+    }
+
+    #[test]
+    fn rebuilding_takes_the_cursor_and_the_months_together() {
+        let dir = TempDir::new("usage-store-rebuild");
+        apply(
+            &dir.path,
+            &pending(1, "2026-09", "2026-09-01T00", &usage(1, 1)),
+        )
+        .unwrap();
+        write_cursors(&dir.path, &Cursors::default()).unwrap();
+
+        assert_eq!(rebuild(&dir.path).unwrap(), 2);
+        assert!(months(&dir.path).unwrap().is_empty());
+        assert_eq!(read_cursors(&dir.path).unwrap().generation, 0);
+        assert_eq!(rebuild(&dir.path).unwrap(), 0, "and is safe to repeat");
     }
 
     #[test]

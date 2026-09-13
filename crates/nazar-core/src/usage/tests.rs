@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{
-    Bucket, UsageSummary, projects_dir, query, scan, scan_claude,
-    store::{self, Month},
+    Bucket, PROVIDER, UNKNOWN_MODEL, UsageSummary, projects_dir, query, scan, scan_claude,
+    store::{self, Month, Read},
 };
 use crate::testutil::TempDir;
 
@@ -63,15 +63,16 @@ impl Machine {
     }
 
     fn month(&self, month: &str) -> Month {
-        store::read_month(&self.state(), month)
-            .unwrap()
-            .unwrap_or_else(|| panic!("no document for {month}"))
+        match store::read_month(&self.state(), month).unwrap() {
+            Read::Document(document) => *document,
+            other => panic!("no document for {month}: {other:?}"),
+        }
     }
 
     fn bucket(&self, month: &str, hour: &str, model: &str) -> Bucket {
         self.month(month)
-            .hours
-            .get(hour)
+            .buckets(PROVIDER)
+            .and_then(|hours| hours.get(hour))
             .and_then(|models| models.get(model))
             .cloned()
             .unwrap_or_else(|| panic!("no bucket for {hour} / {model}"))
@@ -207,10 +208,11 @@ fn synthetic_messages_and_iteration_copies_are_not_counted() {
         "a truncated line, counted not guessed at"
     );
     assert_eq!(
-        summary.unattributable, 2,
-        "one line with no message id, one with no model"
+        summary.unattributable, 1,
+        "the line with no message id cannot be told apart from its own copies"
     );
-    assert_eq!(summary.credited, 1);
+    assert_eq!(summary.unnamed_model, 1);
+    assert_eq!(summary.credited, 2);
 
     let counted = machine.bucket("2026-09", "2026-09-03T08", "claude-opus-5");
     assert_eq!(counted.input, Some(7));
@@ -221,8 +223,14 @@ fn synthetic_messages_and_iteration_copies_are_not_counted() {
     );
     assert_eq!(counted.requests, 1);
 
+    // The line whose source named no model keeps its tokens under the one id this
+    // reader writes itself, rather than losing them to a missing field.
+    let unnamed = machine.bucket("2026-09", "2026-09-03T08", UNKNOWN_MODEL);
+    assert_eq!(unnamed.input, Some(321));
+    assert_eq!(unnamed.output, Some(654));
+
     // The nine-hundred-thousands of the synthetic line reached nothing.
-    assert_eq!(summary.credited_total, 77);
+    assert_eq!(summary.credited_total, 1052);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,11 +381,13 @@ fn a_commit_that_was_never_filed_is_filed_once_when_the_next_scan_finds_it() {
     // What the disk looks like after a crash between the commit and the filing: the
     // cursor still carries the block, and the month already carries its generation.
     let september = machine.month("2026-09");
+    let totals = &september.providers[PROVIDER];
     let mut cursors = store::read_cursors(&machine.state()).unwrap();
     let mut months = super::Months::new();
-    months.insert("2026-09".to_owned(), september.hours.clone());
+    months.insert("2026-09".to_owned(), totals.buckets.clone());
     cursors.pending = Some(store::Pending {
-        generation: september.applied_through,
+        provider: PROVIDER.to_owned(),
+        generation: totals.applied_through,
         scanned_at: september.scanned_at.clone().unwrap(),
         months,
     });
@@ -415,15 +425,24 @@ fn a_month_ends_where_utc_says_it_does() {
     );
     let august = machine.month("2026-08");
     assert_eq!(
-        august.hours.keys().collect::<Vec<_>>(),
+        august.buckets(PROVIDER).unwrap().keys().collect::<Vec<_>>(),
         vec!["2026-08-31T23"]
     );
     assert_eq!(august.since.as_deref(), Some("2026-08-31T23:00:00Z"));
 
     let september = machine.month("2026-09");
     assert_eq!(
-        september.hours.keys().collect::<Vec<_>>(),
+        september
+            .buckets(PROVIDER)
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
         vec!["2026-09-01T00", "2026-09-01T01", "2026-09-01T04"]
+    );
+    assert_eq!(
+        september.since.as_deref(),
+        Some("2026-08-31T23:00:00Z"),
+        "every month carries the earliest instant the whole store holds, not its own"
     );
 }
 
@@ -439,15 +458,13 @@ fn a_query_answers_in_hours_and_leaves_the_calendar_to_the_panel() {
         "2026-09-01T02:00:00Z",
     )
     .unwrap();
+    let claude = &view.providers[PROVIDER];
     assert_eq!(
-        view.hours.keys().collect::<Vec<_>>(),
+        claude.keys().collect::<Vec<_>>(),
         vec!["2026-09-01T00", "2026-09-01T01"],
         "half open: the hour at the end is not in the range"
     );
-    assert_eq!(
-        view.hours["2026-09-01T00"]["claude-opus-5"].output,
-        Some(700)
-    );
+    assert_eq!(claude["2026-09-01T00"]["claude-opus-5"].output, Some(700));
     assert_eq!(
         view.since.as_deref(),
         Some("2026-08-31T23:00:00Z"),
@@ -462,11 +479,12 @@ fn a_query_answers_in_hours_and_leaves_the_calendar_to_the_panel() {
         "2026-10-01T00:00:00Z",
     )
     .unwrap();
-    assert_eq!(wide.hours.len(), 4);
+    assert_eq!(wide.providers[PROVIDER].len(), 4);
+    assert!(wide.damaged.is_empty());
 
     // A range nobody can name draws nothing rather than failing.
     let nonsense = query(&machine.state(), "last week", "now").unwrap();
-    assert!(nonsense.hours.is_empty());
+    assert!(nonsense.providers.is_empty());
     assert_eq!(nonsense.since.as_deref(), Some("2026-08-31T23:00:00Z"));
 }
 
@@ -484,7 +502,7 @@ fn a_machine_with_no_transcripts_is_a_state_not_a_fault() {
         "2026-09-02T00:00:00Z",
     )
     .unwrap();
-    assert!(view.hours.is_empty());
+    assert!(view.providers.is_empty());
     assert_eq!(view.since, None);
 }
 
@@ -537,6 +555,35 @@ fn a_message_whose_blocks_straddle_the_cursor_is_still_one_message() {
         machine.bucket("2026-09", "2026-09-02T12", "claude-opus-5"),
         bucket(6, 649_213, 50, 500, 2),
         "the same totals as one pass over the whole file"
+    );
+}
+
+#[test]
+fn rebuilding_and_rescanning_reproduces_the_same_totals() {
+    let machine = Machine::new("usage-rebuild");
+    machine.put("l-project/session-l.jsonl", &fixture("known-totals.jsonl"));
+    machine.put(
+        "l-project/session-l/subagents/agent-one.jsonl",
+        &fixture("duplicates.jsonl"),
+    );
+    machine.scan();
+    let before: Vec<_> = ["2026-08", "2026-09"]
+        .iter()
+        .map(|month| machine.month(month).providers[PROVIDER].buckets.clone())
+        .collect();
+
+    // The escape hatch the contract points at: the cursor and the months go together.
+    assert!(store::rebuild(&machine.state()).unwrap() >= 3);
+    assert!(store::months(&machine.state()).unwrap().is_empty());
+
+    machine.scan();
+    let after: Vec<_> = ["2026-08", "2026-09"]
+        .iter()
+        .map(|month| machine.month(month).providers[PROVIDER].buckets.clone())
+        .collect();
+    assert_eq!(
+        before, after,
+        "a rebuild recounts the transcripts to exactly the same numbers"
     );
 }
 

@@ -56,6 +56,13 @@ pub const NEEDLE: &[u8] = b"\"input_tokens\"";
 /// The model name Claude Code writes for a message the server never billed.
 pub const SYNTHETIC_MODEL: &str = "<synthetic>";
 
+/// The one model id this reader writes itself, for a record whose source never named one.
+///
+/// Those tokens were spent and are counted; which model spent them is a thing nobody here
+/// knows, and saying so is cheaper than attributing them to whichever model came next.
+/// `docs/usage-contract.md` names this as the only id the store invents.
+pub const UNKNOWN_MODEL: &str = "unknown";
+
 /// Longest string accepted out of a transcript field.
 ///
 /// Ported from the sibling repository: a longer value means the field is not the field we
@@ -161,9 +168,6 @@ pub struct Record {
 pub enum Skipped {
     /// `model` was `<synthetic>`: a message the server never billed.
     Synthetic,
-    /// No `message.model`, so the record could not be attributed to anything. Counted
-    /// rather than filed under an invented name.
-    NoModel,
     /// No `message.id`, so the record cannot be told apart from its own copies.
     NoMessageId,
     /// No `timestamp` this crate can read, so the record belongs to no hour.
@@ -204,9 +208,9 @@ pub fn parse_line(line: &str) -> Outcome {
         return Outcome::Other;
     };
 
-    let Some(model) = message.model else {
-        return Outcome::Skipped(Skipped::NoModel);
-    };
+    // A source that named no model, or named something that is not a model name, gets the
+    // one id this reader writes itself rather than losing the tokens.
+    let model = message.model.unwrap_or_else(|| UNKNOWN_MODEL.to_owned());
     if model == SYNTHETIC_MODEL {
         return Outcome::Skipped(Skipped::Synthetic);
     }
@@ -676,17 +680,16 @@ pub struct FileScan {
     /// Lines that matched the needle and were not JSON.
     pub malformed: u64,
     /// Lines that were usage lines this crate deliberately does not count, by reason.
-    pub skipped: [u64; 5],
+    pub skipped: [u64; 4],
 }
 
 impl FileScan {
     fn note(&mut self, reason: Skipped) {
         let at = match reason {
             Skipped::Synthetic => 0,
-            Skipped::NoModel => 1,
-            Skipped::NoMessageId => 2,
-            Skipped::NoTimestamp => 3,
-            Skipped::NoNumbers => 4,
+            Skipped::NoMessageId => 1,
+            Skipped::NoTimestamp => 2,
+            Skipped::NoNumbers => 3,
         };
         self.skipped[at] += 1;
     }
@@ -696,10 +699,9 @@ impl FileScan {
     pub fn skipped(&self, reason: Skipped) -> u64 {
         match reason {
             Skipped::Synthetic => self.skipped[0],
-            Skipped::NoModel => self.skipped[1],
-            Skipped::NoMessageId => self.skipped[2],
-            Skipped::NoTimestamp => self.skipped[3],
-            Skipped::NoNumbers => self.skipped[4],
+            Skipped::NoMessageId => self.skipped[1],
+            Skipped::NoTimestamp => self.skipped[2],
+            Skipped::NoNumbers => self.skipped[3],
         }
     }
 }
@@ -1035,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn prose_in_an_identifier_field_is_refused() {
+    fn prose_in_the_model_field_is_refused_and_the_tokens_are_still_counted() {
         let text = line(
             "2026-09-11T15:00:00Z",
             "a model with spaces",
@@ -1043,7 +1045,7 @@ mod tests {
             "req_five",
             r#"{"input_tokens":1}"#,
         );
-        assert_eq!(parse_line(&text), Outcome::Skipped(Skipped::NoModel));
+        assert_eq!(usage(&text).model, UNKNOWN_MODEL);
     }
 
     #[test]
