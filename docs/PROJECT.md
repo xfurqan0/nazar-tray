@@ -1397,3 +1397,42 @@ its first two items belong in the same commit as the readers they describe, beca
   neither; whoever closes this should move the Rust headline and rewrite that section together,
   and keep the table — the measurement is still true, and it is now the argument for the
   **breakdown** rather than for the headline.
+- 2026-09-13 — **T-WP20b landed: the tooltip agrees with the panel.** The one thing T-WP20
+  wrote down as owed, and it was one thing rather than two.
+  **(1) `nazar_tray::usage::headline` is all four counters.** `input + output + cache_read +
+  cache_create`, the sum Claude Code's `/usage` calls *total tokens* and the sum the panel has
+  drawn since T-WP20. Between the two packages the tray answered one question with two
+  definitions — the tooltip's *This week* line and the view behind it, differing by two orders
+  of magnitude on the maintainer's own machine — which is a worse failure than either number
+  on its own, because it is the product contradicting itself where the user can see both at
+  once. **The busiest-model pick rides on the same sum**, which reorders it exactly as it
+  reordered the panel's rows: cache reads dominate, so the model the tooltip names is the one
+  that read the most, and that is the honest answer to *what did the tokens go on*.
+  **(2) A week of nothing but cache reads is now a week that spent something.** `fold` used to
+  return `None` for it and the tooltip said nothing at all while `/usage`, one keystroke away,
+  said 1.5 B. `None` now means exactly one thing — a week with no tokens of any kind — which
+  is the only reading a second line has nothing to add to.
+  **(3) The tooltip did not get longer, and that was checked rather than assumed.** `compact`
+  writes five characters or fewer below a trillion and nine at `u64::MAX`, and `headline`
+  saturates at `u64::MAX` either way, so the worst case was already being measured at the top
+  of the type: **en 110, tr 118, zh 89, ko 92, ru 114, es 119** of the 127 Windows shows,
+  byte for byte what T-WP17 measured. What did change is the reading a real machine produces:
+  the six-language picture test says `1.5B` where it said `22.3M`, because 1 514 068 891 is
+  the six-day table in `usage-contract.md` added up all four ways rather than three.
+  **(4) `docs/usage-contract.md` §*The headline number* states the four-way rule**, with the
+  breakdown line beside it and the six-day measurement kept — reframed as the reason the
+  **breakdown** exists rather than the reason the headline is smaller than `/usage`'s. The
+  section also says in so many words that both surfaces use one definition, so the next person
+  to read it does not have to check the Rust. The store is untouched and its `version` does not
+  move: it has never held a headline, only four counters per model per hour, and which sum is
+  drawn large is the view's decision rather than the document's.
+  **117 tray tests where there were 115**, workspace green at 615, `hygiene.rs` green, 106
+  panel tests and typecheck untouched and green. The README needed no edit — it describes the
+  tooltip as *this week's tokens with the model that spent most of them* and never wrote the
+  formula down — and neither did `pinned-internal-formats.md`, which pins the four counters as
+  the transcripts report them and has never had an opinion about how they are added.
+  **One loose end, and it is a comment.** `ui/src/snapshot.ts`'s `UsageBucket` doc still says
+  *the headline number is `input + output + cache_create`*; T-WP20 moved the panel and left
+  that block, and T-WP20b was scoped to Rust and docs. It is three lines of TypeScript
+  documentation with no behaviour behind it — the panel's arithmetic is in `usage.ts`, which is
+  right — and it should go with the next package that touches `ui/**`.

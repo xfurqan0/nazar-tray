@@ -56,6 +56,14 @@
 //! is the one described on [`week_window`], which is the only interesting problem in this
 //! file: this crate may not ask the machine which time zone it is in, and a week starts on
 //! a Monday somewhere.
+//!
+//! # T-WP20b changes one number
+//!
+//! [`headline`] is all four counters — `input + output + cache_read + cache_create` — which is
+//! what Claude Code's `/usage` calls *total tokens* and what the panel has shown since T-WP20.
+//! The tooltip and the view now answer the same question with the same number; the argument
+//! that once made this the narrower sum is on [`headline`], and what it argues for now is the
+//! panel's breakdown.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -552,11 +560,12 @@ const UTC_MONDAY_PHASE: i64 = 4 * 24 * 60 * 60;
 /// What the tooltip says about this week.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeekUsage {
-    /// `input + output + cache_create`, summed over the week and over both providers.
+    /// `input + output + cache_read + cache_create`, summed over the week and over both
+    /// providers.
     ///
-    /// Never `cache_read`: it was 98.5 % of the raw total over six days of real work, and a
-    /// headline that folded it in would be a number about cache behaviour. The same rule the
-    /// panel's headline follows, for the same reason.
+    /// All four counters, which is what Claude Code's `/usage` calls *total tokens* — the same
+    /// rule the panel's headline follows, for the same reason. The argument for the narrower
+    /// number, and why it became the panel's breakdown instead, is on [`headline`].
     pub headline: u64,
     /// The model with the largest headline, as the source spelled it.
     ///
@@ -654,24 +663,39 @@ pub fn compact(value: u64) -> String {
     }
 }
 
-/// `input + output + cache_create`.
+/// `input + output + cache_read + cache_create`.
 ///
-/// Never `cache_read`, which is the whole point of the number. All five counters are present
-/// on every stored bucket since T-WP13b — absent against zero is a distinction about one
-/// record, not about a sum over many — so this is an addition rather than a decision, and
-/// what "nothing here" means is decided once, in [`fold`], where it is a total of zero.
+/// **All four, which is what Claude Code's `/usage` calls *total tokens*.** T-WP16 left
+/// `cache_read` out here and in the panel, on a measurement that is still true: cache reads
+/// were 98.5 % of the raw total over six days of real work, so a headline with them folded in
+/// is a number about the cache. T-WP20 put the two windows side by side and found the other
+/// half of that argument — 1.4 M against 1.0 B, a tray answering `/usage`'s question with
+/// 0.1 % of `/usage`'s answer, which does not read as careful, it reads as broken. The panel
+/// moved then; this is the tooltip catching up, so that the two surfaces of this application
+/// cannot answer one question with two numbers.
+///
+/// What the measurement argued for is the panel's **four-way breakdown**, where a reader can
+/// see for themselves that the billion is the cache. A tooltip has 127 characters and no room
+/// for it; what it has instead is a number that matches the view one click away.
+///
+/// All five counters are present on every stored bucket since T-WP13b — absent against zero is
+/// a distinction about one record, not about a sum over many — so this is an addition rather
+/// than a decision, and what "nothing here" means is decided once, in [`fold`], where it is a
+/// total of zero.
 fn headline(bucket: &Bucket) -> u64 {
     bucket
         .input
         .saturating_add(bucket.output)
+        .saturating_add(bucket.cache_read)
         .saturating_add(bucket.cache_create)
 }
 
 /// The headline and the busiest model across a set of hourly buckets.
 ///
-/// `None` when the headline comes to zero, which covers both ways there is nothing to say: a
-/// week nothing was stored for, and a week whose buckets hold only cache reads. Either way
-/// the second line has nothing to add and the first is a whole sentence on its own.
+/// `None` when the headline comes to zero, which since T-WP20b means exactly one thing: a week
+/// with no tokens of any kind in it, because all four counters are in the sum now. A week of
+/// nothing but cache reads used to land here too and no longer does — it is a week that spent
+/// something, `/usage` says so, and the tooltip says the same.
 ///
 /// A tie goes to the model that sorts first, so the same store always produces the same
 /// tooltip. There is no honest tie-break between two models that spent the same amount, and
@@ -1258,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn the_headline_is_the_three_counters_that_are_not_the_cache() {
+    fn the_headline_is_all_four_counters_the_way_usage_totals_them() {
         let mut providers = BTreeMap::new();
         providers.insert(
             PROVIDER.to_owned(),
@@ -1272,8 +1296,8 @@ mod tests {
         let week = fold(&providers).expect("a week with work in it");
         assert_eq!(
             week.headline,
-            2 + 328 + 24_843,
-            "cache_read is beside the headline and never inside it"
+            2 + 328 + 24_843 + 35_613,
+            "cache_read is inside the headline, because /usage puts it there"
         );
         assert_eq!(week.model, "claude-opus-5");
     }
@@ -1295,7 +1319,7 @@ mod tests {
         );
 
         let week = fold(&providers).expect("two providers, one week");
-        assert_eq!(week.headline, 45);
+        assert_eq!(week.headline, 30 + 15 + 2 * 9_999);
         assert_eq!(week.model, "shared");
     }
 
@@ -1343,8 +1367,26 @@ mod tests {
     fn a_week_with_nothing_in_it_has_nothing_to_say() {
         assert_eq!(fold(&BTreeMap::new()), None, "an empty store");
 
-        // Buckets that hold nothing but cache reads. 1.5 billion of them is a fact about
-        // the machine and the panel shows it one line down; it is not what the week cost.
+        // A week that was genuinely idle. `0` is honest, but it is not worth a line the
+        // quota sentence above it has to make room for. Since T-WP20b this is the *only*
+        // way to reach `None`: every counter is in the sum, so a fold that comes to zero is
+        // a week nothing was stored for rather than a week whose spending was the wrong
+        // shape.
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            PROVIDER.to_owned(),
+            hours("2026-09-09T12", "claude-opus-5", spent(0, 0, 0, 0)),
+        );
+        assert_eq!(fold(&providers), None, "an idle week");
+    }
+
+    #[test]
+    fn a_week_of_nothing_but_cache_reads_is_a_week_that_spent_something() {
+        // T-WP16's case, decided the other way. 1.5 billion cache reads used to fold to
+        // `None`, on the argument that the number was about the cache rather than about the
+        // work — and the tooltip then said nothing at all while `/usage`, one keystroke
+        // away, said 1.5B. The panel's breakdown is where the cache is told apart now; the
+        // headline is the total both windows are comparing.
         let mut providers = BTreeMap::new();
         providers.insert(
             PROVIDER.to_owned(),
@@ -1358,16 +1400,37 @@ mod tests {
                 },
             ),
         );
-        assert_eq!(fold(&providers), None, "cache reads are not a headline");
 
-        // A week that was genuinely idle. `0` is honest, but it is not worth a line the
-        // quota sentence above it has to make room for.
-        let mut providers = BTreeMap::new();
-        providers.insert(
-            PROVIDER.to_owned(),
-            hours("2026-09-09T12", "claude-opus-5", spent(0, 0, 0, 0)),
+        let week = fold(&providers).expect("cache reads are tokens /usage counts");
+        assert_eq!(week.headline, 1_500_000_000);
+        assert_eq!(week.model, "claude-opus-5");
+        assert_eq!(
+            compact(week.headline),
+            "1.5B",
+            "and the tooltip can hold it"
         );
-        assert_eq!(fold(&providers), None, "an idle week");
+    }
+
+    #[test]
+    fn the_model_named_is_the_one_with_the_largest_four_way_total() {
+        // The pick rides on the same sum as the headline, which reorders it: T-WP20 found
+        // the same thing in the panel's rows. `heavy-cache` produces less than `all-work`
+        // does on the three narrow counters and reads far more, and the model the tooltip
+        // names is the one that moved the number the tooltip carries.
+        let mut claude = hours("2026-09-09T12", "all-work", spent(100, 100, 100, 0));
+        claude
+            .entry("2026-09-09T13".to_owned())
+            .or_default()
+            .insert("heavy-cache".to_owned(), spent(1, 1, 1, 100_000));
+        let mut providers = BTreeMap::new();
+        providers.insert(PROVIDER.to_owned(), claude);
+
+        let week = fold(&providers).expect("two models, one week");
+        assert_eq!(week.headline, 300 + 3 + 100_000);
+        assert_eq!(
+            week.model, "heavy-cache",
+            "the busiest model is the one with the largest total, cache included"
+        );
     }
 
     #[test]

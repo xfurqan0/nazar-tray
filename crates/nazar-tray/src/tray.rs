@@ -258,12 +258,18 @@ fn image(state: IconState, scale: f64) -> Image<'static> {
 ///
 /// ```text
 /// Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)
-/// This week 22.3M · claude-sonnet-5
+/// This week 1.5B · claude-sonnet-5
 /// ```
 ///
 /// or the "no data" line when nothing could be read. A provider whose numbers are unknown is
 /// left out rather than shown as `0 %` — the icon has already gone grey, and a tooltip
 /// repeating a number nobody read would undo that.
+///
+/// The week number is [`crate::usage::headline`]'s four-way total, the one Claude Code's
+/// `/usage` calls *total tokens* — T-WP20b, and the reason the reading above is a `B` where
+/// T-WP17 wrote an `M`. The line does not get longer for it: `compact` writes five characters
+/// or fewer for anything under a trillion and nine for `u64::MAX`, and the worst-case test
+/// below is still measured at `u64::MAX`.
 ///
 /// # Two lines in 127 characters
 ///
@@ -667,39 +673,44 @@ mod tests {
         // Two things are being checked beyond the words — the magnitude mark is the Latin
         // one this build writes itself rather than the one `Intl` would have chosen, and the
         // model id travels raw through all six catalogues.
+        //
+        // The number is the six-day measurement in `docs/usage-contract.md` added up all four
+        // ways — 1 514 068 891 — because that is the reading this build now produces on the
+        // machine that table was measured on. T-WP17 wrote `22.3M` here, which was the same
+        // week with `cache_read` left out of it.
         let view = crowded();
-        let week = week_of(22_345_678, "claude-sonnet-5");
+        let week = week_of(1_514_068_891, "claude-sonnet-5");
 
         for (locale, expected) in [
             (
                 "en",
                 "Claude Fable week 88 % · Codex week 70 % (resets in 2 h 10 m)\r\n\
-                 This week 22.3M · claude-sonnet-5",
+                 This week 1.5B · claude-sonnet-5",
             ),
             (
                 "tr",
                 "Claude Fable hafta %88 · Codex hafta %70 (2 sa 10 dk sonra sıfırlanır)\r\n\
-                 Bu hafta 22.3M · claude-sonnet-5",
+                 Bu hafta 1.5B · claude-sonnet-5",
             ),
             (
                 "zh",
                 "Claude Fable 周 88% · Codex 周 70% （2 小时 10 分后重置）\r\n\
-                 本周 22.3M · claude-sonnet-5",
+                 本周 1.5B · claude-sonnet-5",
             ),
             (
                 "ko",
                 "Claude Fable 주 88% · Codex 주 70% (2시간 10분 후 초기화)\r\n\
-                 이번 주 22.3M · claude-sonnet-5",
+                 이번 주 1.5B · claude-sonnet-5",
             ),
             (
                 "ru",
                 "Claude Fable нед. 88 % · Codex нед. 70 % (сброс через 2 ч 10 мин)\r\n\
-                 За неделю 22.3M · claude-sonnet-5",
+                 За неделю 1.5B · claude-sonnet-5",
             ),
             (
                 "es",
                 "Claude Fable sem. 88 % · Codex sem. 70 % (se restablece en 2 h 10 min)\r\n\
-                 Esta sem. 22.3M · claude-sonnet-5",
+                 Esta sem. 1.5B · claude-sonnet-5",
             ),
         ] {
             let text = super::tooltip(&view, &i18n::catalog(locale), Some(&week));
@@ -710,9 +721,14 @@ mod tests {
     #[test]
     fn the_worst_case_a_real_machine_can_produce_still_fits_in_all_six_languages() {
         // The fullest quota line this product draws; the largest number a `u64` can be,
-        // which is nine characters and four more than any real week could reach; and the
-        // longest model id measured on a real machine, a dated Claude one at twenty-five.
-        // If this passes, no reading a user can arrive at is cut.
+        // which is nine characters and five more than the four-way total of a real week
+        // measured over six days; and the longest model id measured on a real machine, a
+        // dated Claude one at twenty-five. If this passes, no reading a user can arrive at
+        // is cut.
+        //
+        // T-WP20b widened the headline and this bound did not move: `headline` saturates at
+        // `u64::MAX` either way, so the worst case was already being measured at the top of
+        // the type and adding a fourth counter cannot reach past it.
         let view = crowded();
         let week = week_of(u64::MAX, "claude-haiku-4-5-20251001");
 

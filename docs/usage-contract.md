@@ -182,11 +182,28 @@ alternative is splitting a bucket by a ratio, which invents numbers, and rule 2 
 
 ## The headline number
 
-**`input + output + cache_create`.** That is the number a bar is drawn from, the number the
-tray tooltip carries, and the number "this week" means without a qualifier.
+**`input + output + cache_read + cache_create` — all four.** That is the number the usage view
+shows large, the number the tray tooltip carries, the number a calendar cell is shaded from,
+and the number "this week" means without a qualifier. It is **the same definition Claude
+Code's own `/usage` calls *total tokens***, and that is the whole of the argument: a user who
+has both windows open is comparing two numbers, and two numbers that answer one question have
+to be one number.
 
-**`cache_read` is reported beside it and never folded into it.** Measured on the maintainer's
-machine over six days of real work, deduplicated:
+**The four parts are shown beside it, always.** Under the headline and under every model row,
+in the view itself rather than in a footnote:
+
+```text
+In 802K · Out 354K · Cache read 1B · Cache write 253K
+```
+
+An absent counter prints an em dash there rather than dropping out of the line, because a
+breakdown that does not add up to the number above it is worse than one with a hole named in
+it.
+
+### Why the breakdown exists
+
+Because the headline is overwhelmingly cache. Measured on the maintainer's machine over six
+days of real work, deduplicated:
 
 | | tokens | share |
 |---|---|---|
@@ -195,10 +212,24 @@ machine over six days of real work, deduplicated:
 | `output` | 2 145 844 | 0.14 % |
 | `input` | 43 724 | 0.003 % |
 
-A raw total is 98.5 % cache reads, so a chart of raw totals is a chart of cache behaviour with
-the work hidden inside the rounding. `input + output + cache_create` is the part that was
-actually produced or newly processed — 22.3 M against 1.5 B — and it is the one that moves when
-a day was busy. Both are in the file; only one is the headline.
+A total is 98.5 % cache reads, so a number on its own is a number about cache behaviour with
+the work lost inside the rounding: `input + output + cache_create` — the part that was actually
+produced or newly processed — is 22.3 M of that 1.5 B, and it is the one that moves when a day
+was busy. **That measurement is why the four parts are on screen.** It is no longer why the
+headline is smaller than `/usage`'s, which is what it used to argue for and what T-WP16 wrote
+down here: the arithmetic was right and the reader was not served by it. Side by side the two
+windows said 1.4 M and 1.0 B, and a tray answering `/usage`'s question with 0.1 % of `/usage`'s
+answer does not read as careful — it reads as broken. So the total is the total, and the reader
+can see for themselves, on the same screen, that the billion is the cache.
+
+Everything is in the file either way. The store has never held a headline: it holds four
+counters per model per hour, and which sum is drawn large is a decision the view makes, not a
+fact the document records.
+
+**Both surfaces use this definition.** `nazar_tray::usage::headline` — the tray tooltip's *This
+week* line, and the model it names as the busiest — is the same four-way sum as the panel's, so
+the tooltip and the view cannot disagree about a number the user can check against a third
+window. Between T-WP20 and T-WP20b they briefly did, which is written up in `PROJECT.md` §9.
 
 ## No cost, in v1
 
