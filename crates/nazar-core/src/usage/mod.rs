@@ -1,0 +1,363 @@
+//! Token usage history, read from Claude Code's own transcripts.
+//!
+//! # What this reads, and what it refuses to
+//!
+//! `~/.claude/projects/**/*.jsonl` is where Claude Code records a session, and every
+//! assistant message in it carries the token counts **the server reported for that
+//! message**. Six values are taken: `type`, `timestamp`, `requestId`, `message.id`,
+//! `message.model` and the four numbers under `message.usage`. Nothing else is named, and
+//! what is not named is not built — `message.content`, `cwd`, `gitBranch`, `sessionId` and
+//! the rest have no field in any struct here, so they are walked past by the deserialiser
+//! and never become a string, a value, or a borrowed slice. `docs/pinned-internal-formats.md`
+//! is the inventory; the leak test is the proof.
+//!
+//! This is the same discipline the Codex reader has had since the first commit, applied to
+//! a second file format, and it is a reading of *reported* numbers rather than an estimate
+//! of anything. The retired prototype that read this directory counted transcripts in order
+//! to **guess** at a quota percentage the server had already answered; that is the thing the
+//! project ruled out, and it is not this.
+//!
+//! # The shape of the thing
+//!
+//! ```text
+//! ~/.claude/projects/**/*.jsonl ──▶ scan ──▶ dedupe ──▶ UTC-hour buckets
+//!      (cursor: identity + byte offset)                        │
+//!                                          <state dir>/usage/YYYY-MM.json
+//!                                                              │
+//!                                       panel: the reader's own days and weeks
+//! ```
+//!
+//! * [`scan`] walks the transcripts, including the sub-agent ones three levels down that
+//!   are 78% of the bytes, and reads only what arrived since last time.
+//! * [`dedupe`] collapses the several lines Claude Code writes per message back into one
+//!   message. Skipping this inflates the answer by 1.81× on the maintainer's machine, and
+//!   the factor is not a constant that could be divided out afterwards.
+//! * [`store`] keeps the totals in monthly documents so that they survive the transcripts,
+//!   which Claude Code prunes, and states the invariant that keeps a crash from counting
+//!   anything twice.
+//!
+//! Everything here is UTC. A week that starts on Monday in the reader's own time zone is a
+//! drawing decision and belongs in the panel, where asking the operating system for an
+//! offset is one call; in this crate it is forbidden, and hourly rows are what make it
+//! possible to draw one without ever having stored one.
+
+pub mod dedupe;
+pub mod scan;
+pub mod store;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::Result;
+use crate::timefmt::{now_rfc3339, unix_seconds_from_rfc3339};
+
+pub use dedupe::{Credit, Credited, Deduper};
+pub use scan::{Record, Usage};
+pub use store::{Bucket, Hours, Models, Month, Months, PROVIDER, VERSION};
+
+/// `<home>/.claude/projects` — where Claude Code keeps its transcripts.
+///
+/// Derived from the home directory the caller passes rather than from the environment, so
+/// a test points the whole scan at a throwaway tree without touching the machine it runs
+/// on. A caller that honours `CLAUDE_CONFIG_DIR` has to resolve it itself; see
+/// [`crate::paths::claude_config_dir`].
+#[must_use]
+pub fn projects_dir(home: &Path) -> PathBuf {
+    home.join(".claude").join("projects")
+}
+
+/// What one scan added, and what it decided not to count.
+///
+/// Every field is a count of something that happened, which is why they are plain numbers
+/// rather than optional ones: a scan that read nothing read nothing, and that is a fact
+/// rather than an unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    /// Transcript files found under `projects/`.
+    pub files_seen: u64,
+    /// Files that had bytes nobody had read yet.
+    pub files_read: u64,
+    /// Files that could not be opened this time. Their cursors are kept as they were.
+    pub files_unreadable: u64,
+    /// Files that had been replaced or truncated and were read from the top again.
+    pub files_restarted: u64,
+    /// Bytes read.
+    pub bytes_read: u64,
+    /// Lines that carried a usage object.
+    pub lines: u64,
+    /// Lines that carried one and were not JSON this crate could read.
+    pub malformed: u64,
+    /// Copies of a message that had already been counted.
+    pub duplicates: u64,
+    /// Messages keyed on `message.id` alone, for want of a `requestId`.
+    pub dedupe_fallbacks: u64,
+    /// Messages the server never billed, `model` being `<synthetic>`.
+    pub synthetic: u64,
+    /// Usage lines dropped for want of a model, a message id, or a timestamp.
+    pub unattributable: u64,
+    /// Distinct messages credited.
+    pub credited: u64,
+    /// What the credited messages added up to.
+    pub credited_total: u64,
+    /// What the same lines would have added up to with no dedupe at all.
+    ///
+    /// Kept beside the real total so the inflation is observable rather than asserted:
+    /// `naive_total / credited_total` is the factor, and on this machine it is not the
+    /// same factor twice.
+    pub naive_total: u64,
+    /// The months whose documents this scan wrote.
+    pub months: Vec<String>,
+    /// The earliest instant the store holds anything for, RFC 3339 UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// When this scan ran, RFC 3339 UTC.
+    pub scanned_at: String,
+}
+
+/// Scan Claude Code's transcripts and fold what is new into the monthly documents.
+///
+/// `home` is the user's home directory; `state_dir` is where this product keeps the
+/// user's own files (`%APPDATA%\nazar` on Windows), under which the usage documents live
+/// in `usage/`.
+///
+/// Safe to call repeatedly and safe to interrupt. Calling it twice over an unchanged tree
+/// adds nothing the second time, because the cursor that says where each transcript was
+/// read up to is committed in the same write as the totals read from it — the invariant is
+/// spelled out in [`store`].
+pub fn scan_claude(home: &Path, state_dir: &Path) -> Result<UsageSummary> {
+    let mut cursors = store::read_cursors(state_dir)?;
+
+    // Anything the previous run committed but did not finish filing. Replaying it is a
+    // no-operation for every month that already carries its generation.
+    if let Some(block) = cursors.pending.take() {
+        store::apply(state_dir, &block)?;
+        store::write_cursors(state_dir, &cursors)?;
+    }
+
+    let mut summary = UsageSummary {
+        scanned_at: now_rfc3339(),
+        ..UsageSummary::default()
+    };
+    let mut months = Months::new();
+    let mut files: BTreeMap<String, store::FileCursor> = BTreeMap::new();
+
+    for path in scan::transcripts(&projects_dir(home)) {
+        summary.files_seen += 1;
+        let key = store::path_key(&path);
+        let previous = cursors.files.get(&key).cloned();
+
+        let pass = match scan::scan_file(
+            &path,
+            previous
+                .as_ref()
+                .map(|cursor| (cursor.identity.as_str(), cursor.offset)),
+        ) {
+            Ok(pass) => pass,
+            Err(_) => {
+                // A transcript that is locked, or gone between the walk and the read, is a
+                // moment rather than a state. Its cursor is kept exactly as it was so the
+                // next pass picks up where this one meant to.
+                summary.files_unreadable += 1;
+                if let Some(cursor) = previous {
+                    files.insert(key, cursor);
+                }
+                continue;
+            }
+        };
+
+        if pass.bytes > 0 {
+            summary.files_read += 1;
+        }
+        if pass.restarted {
+            summary.files_restarted += 1;
+        }
+        summary.bytes_read += pass.bytes;
+        summary.lines += pass.lines;
+        summary.malformed += pass.malformed;
+        summary.synthetic += pass.skipped(scan::Skipped::Synthetic);
+        summary.unattributable += pass.skipped(scan::Skipped::NoModel)
+            + pass.skipped(scan::Skipped::NoMessageId)
+            + pass.skipped(scan::Skipped::NoTimestamp)
+            + pass.skipped(scan::Skipped::NoNumbers);
+
+        // A file that was replaced is a different file: what the previous one had credited
+        // stays in the months, where it belongs, but its carried keys mean nothing here.
+        let carried = match (&previous, pass.restarted) {
+            (Some(cursor), false) => cursor.recent.clone(),
+            _ => Vec::new(),
+        };
+        let mut deduper = Deduper::with_recent(&carried);
+        for item in deduper.reduce(pass.records) {
+            let Some(month) = scan::month_of(&item.record.hour) else {
+                continue;
+            };
+            summary.credited += u64::from(item.fresh);
+            summary.credited_total = summary.credited_total.saturating_add(item.delta.total());
+            store::credit(
+                months.entry(month).or_default(),
+                &item.record.hour,
+                &item.record.model,
+                &item.delta,
+                item.fresh,
+            );
+        }
+        summary.duplicates += deduper.duplicates;
+        summary.dedupe_fallbacks += deduper.fallbacks;
+        summary.naive_total = summary.naive_total.saturating_add(deduper.naive_total);
+
+        files.insert(
+            key,
+            store::FileCursor {
+                identity: pass.identity,
+                offset: pass.offset,
+                recent: deduper.recent(),
+            },
+        );
+    }
+
+    // Cursors for files that have gone are dropped — but only when the walk found
+    // something. A walk that found nothing is far more likely to be a home directory that
+    // was not there for a moment than a machine whose transcripts all vanished, and
+    // forgetting every offset would count every surviving transcript a second time.
+    if summary.files_seen > 0 {
+        cursors.files = files;
+    }
+
+    // A generation is a batch of totals, so a pass that found none does not take one: the
+    // cursor document of a machine nothing has happened on stays byte for byte as it was.
+    let block = if months.is_empty() {
+        None
+    } else {
+        cursors.generation += 1;
+        Some(store::Pending {
+            generation: cursors.generation,
+            scanned_at: summary.scanned_at.clone(),
+            months,
+        })
+    };
+    cursors.pending = block.clone();
+
+    // The commit: the offsets and the totals read from them reach the disk together.
+    store::write_cursors(state_dir, &cursors)?;
+
+    if let Some(block) = block {
+        summary.months = store::apply(state_dir, &block)?;
+        cursors.pending = None;
+        store::write_cursors(state_dir, &cursors)?;
+    }
+
+    summary.since = earliest(state_dir)?;
+    Ok(summary)
+}
+
+/// The hourly buckets the store holds for `[from, to)`, both RFC 3339 UTC instants.
+///
+/// Hours, not days and not weeks: the panel knows which offset the reader is in and this
+/// crate is not allowed to, so the cutting into days and weeks that starts on a Monday
+/// happens there. An hour is in the answer when **its start** falls inside the half-open
+/// range.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageView {
+    /// Which provider these totals are for.
+    pub provider: String,
+    /// The earliest instant the store holds anything for, RFC 3339 UTC. The panel's
+    /// "since {date}" line, and the reason "all time" is an honest label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// When a scan last wrote to the store, RFC 3339 UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scanned_at: Option<String>,
+    /// The start of the range asked for, as it was asked for.
+    pub from: String,
+    /// The end of the range asked for, as it was asked for.
+    pub to: String,
+    /// UTC hour (`YYYY-MM-DDTHH`) to model to totals.
+    pub hours: Hours,
+}
+
+/// Read the store back for one UTC range.
+///
+/// Only the month documents the range touches are opened, plus the oldest and newest for
+/// `since` and `scannedAt`. A range whose ends are not instants this crate can read yields
+/// an empty view rather than an error: a panel asking for a week it cannot name is a bug
+/// in the panel, and it should draw "no data" rather than a stack trace.
+pub fn query(state_dir: &Path, from: &str, to: &str) -> Result<UsageView> {
+    let mut view = UsageView {
+        provider: PROVIDER.to_owned(),
+        from: from.to_owned(),
+        to: to.to_owned(),
+        ..UsageView::default()
+    };
+
+    let known = store::months(state_dir)?;
+    if let Some(first) = known.first()
+        && let Some(document) = store::read_month(state_dir, first)?
+    {
+        view.since = document.earliest().or(document.since);
+    }
+    if let Some(last) = known.last()
+        && let Some(document) = store::read_month(state_dir, last)?
+    {
+        view.scanned_at = document.scanned_at;
+    }
+
+    let (Some(start), Some(end)) = (
+        unix_seconds_from_rfc3339(from),
+        unix_seconds_from_rfc3339(to),
+    ) else {
+        return Ok(view);
+    };
+    if end <= start {
+        return Ok(view);
+    }
+
+    for month in &known {
+        if !touches(month, start, end) {
+            continue;
+        }
+        let Some(document) = store::read_month(state_dir, month)? else {
+            continue;
+        };
+        for (hour, models) in document.hours {
+            let Some(at) = unix_seconds_from_rfc3339(&format!("{hour}:00:00Z")) else {
+                continue;
+            };
+            if at < start || at >= end {
+                continue;
+            }
+            let into = view.hours.entry(hour).or_default();
+            for (model, bucket) in models {
+                into.entry(model).or_default().absorb(&bucket);
+            }
+        }
+    }
+    Ok(view)
+}
+
+/// Whether a `YYYY-MM` month can hold an hour inside `[start, end)`.
+fn touches(month: &str, start: i64, end: i64) -> bool {
+    let Some(first) = unix_seconds_from_rfc3339(&format!("{month}-01T00:00:00Z")) else {
+        return false;
+    };
+    // The last instant a month can hold is 31 days minus an hour after its first; being
+    // generous here costs one extra document read and never a missing row.
+    let last = first + 31 * 86_400;
+    first < end && last >= start
+}
+
+/// The earliest instant the store holds anything for.
+fn earliest(state_dir: &Path) -> Result<Option<String>> {
+    let known = store::months(state_dir)?;
+    let Some(first) = known.first() else {
+        return Ok(None);
+    };
+    Ok(store::read_month(state_dir, first)?
+        .and_then(|document| document.earliest().or(document.since)))
+}
+
+#[cfg(test)]
+mod tests;

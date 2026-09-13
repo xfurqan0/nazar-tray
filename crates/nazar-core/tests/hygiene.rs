@@ -356,6 +356,41 @@ fn the_claude_fixtures_carry_nothing_that_identifies_a_machine() {
     assert_eq!(settings, 3, "three settings shapes are pinned");
 }
 
+/// The usage fixtures are transcripts, and a transcript is made of the things this gate
+/// looks for.
+///
+/// Which is why not one line of them was copied off a machine: every shape in them was
+/// observed, and then written out again with nothing in it. The gate is what keeps that
+/// true when the next one is added — pasting a real line in to make a test pass would fail
+/// here rather than ship.
+#[test]
+fn the_usage_fixtures_carry_nothing_that_identifies_a_machine() {
+    let root = repo_root()
+        .join("crates")
+        .join("nazar-core")
+        .join("fixtures")
+        .join("usage");
+    let fixtures = files_under(&root, &["jsonl"]);
+    assert!(
+        fixtures.len() >= 4,
+        "expected the usage fixtures, found {}",
+        fixtures.len()
+    );
+
+    for path in &fixtures {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_carries_no_identity(path);
+
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.ends_with('\n'), "{name} has no trailing newline");
+        // A fixture is a shape, not a recording. Anything this size stopped being one.
+        assert!(
+            text.len() < 64 * 1024,
+            "{name} is too big to be a shape rather than a recording"
+        );
+    }
+}
+
 /// The captured fixtures are real files off a running installation, and the bar is higher.
 ///
 /// `crates/nazar-core/fixtures/captured/` holds `~/.nazar` as it stood on one machine on

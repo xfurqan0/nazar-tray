@@ -47,6 +47,7 @@ pub mod paths;
 pub mod refresh;
 pub mod state;
 pub mod timefmt;
+pub mod usage;
 pub mod writer;
 
 /// The readers, run against payloads a real installation produced rather than against
@@ -74,4 +75,5 @@ pub use lock::{Acquisition, LimitsLock};
 pub use refresh::{Cause, Engine, Event, LoopHandle, ReaderSet, Warnings};
 pub use state::{Freshness, Rules, Severity, Snapshot, SnapshotView};
 pub use timefmt::now_rfc3339;
+pub use usage::{UsageSummary, UsageView, scan_claude};
 pub use writer::{LimitsWriter, Written};
