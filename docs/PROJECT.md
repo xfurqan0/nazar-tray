@@ -1110,3 +1110,33 @@ its first two items belong in the same commit as the readers they describe, beca
   doing the thing it exists for. 91 tray tests where there were 76, 558 in the workspace,
   `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -D warnings` clean; 78
   panel tests where there were 76, and `npm run typecheck` clean.
+- 2026-09-13 — **T-WP14 landed: the Codex usage reader.** A second pass over the rollout logs
+  `crates/nazar-core::codex` already opens for quota, reading a different part of them: every
+  `token_count` event's `payload.info.last_token_usage`, bucketed by the event's own timestamp
+  into the same hourly UTC months under the provider key `codex`. Eight values leave a line and
+  nothing else does — allow-listed structs, the identifier shape check on the model id, and the
+  sentinel leak test extended to a rollout fixture whose every neighbouring string is a marker.
+  Measured here: **23 logs, 52.5 MB, 446 events, 88 ms** for a first full pass and **3.7 ms** for
+  the second over an unchanged tree; three models, no malformed line, `cache_write_input_tokens`
+  `0` on every event.
+  **Three things this package exists to get right.** *(1)* The per-turn counter, never the
+  cumulative one: `total_token_usage` falls back down mid-session in 3 of the 22 logs here, so
+  `rollout-reset.jsonl` reproduces a reset and asserts the sum (4 730 against the 1 430 the last
+  cumulative reading would have claimed). *(2)* The model is on another line — the session's last
+  `turn_context` — and is carried in the cursor, because the bytes that named it are behind the
+  offset; an event before the first one is `unknown`. *(3)* **There is no event id.** Codex writes
+  none, so the cursor's `(file identity, byte offset)` is the whole dedupe, plus one rule for the
+  shape that defeats it: a log whose *opening run* of events repeats another log's opening run,
+  event for event, is a fork of it and that run is skipped (bounded at 32 events, fixture
+  `rollout-fork.jsonl`). Nothing on this machine exercises it; it is a rule with a test rather
+  than a measurement.
+  **`archived_sessions/` stays unread, and now says why**: a cursor is keyed on a path, so a log
+  Codex *moves* there would arrive as a file nothing has read and be counted twice. The cost — a
+  session archived before it was ever scanned is never counted — is written down rather than
+  discovered. **Each reader has its own cursor document** (`cursors.json`, `cursors-codex.json`)
+  because a pass replaces the set of files it knows about; they share the month documents, each
+  with its own `applied_through` stamp. `docs/usage-contract.md` gains the three sections that
+  were wrong or missing — how a scan *adds* rather than recomputes, what the cursor documents are
+  and why deleting one alone double counts, and what Codex spells differently — and
+  `pinned-internal-formats.md` gains the fixtures and the version observed. 19 new tests, 407 in
+  the crate, workspace green.

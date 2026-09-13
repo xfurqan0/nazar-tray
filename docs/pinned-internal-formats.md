@@ -49,7 +49,7 @@ Rules that follow from this table, and that the tests enforce:
 | Path | Fields used | Version observed | Fixture | Notes |
 |---|---|---|---|---|
 | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
-| the same files — **usage history** | `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and the session's most recent `turn_context.model` — **seven values, and nothing else** | Codex 0.153.4, 2026-09-13 | `fixtures/codex/rollout-token-count*.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it. See "Usage history in a rollout log" below. |
+| the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. See "Usage history in a rollout log" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` — recursively, so the subagent transcripts under `subagents/` are **included** | `type`; `timestamp`; `message.model`; `message.id`; `requestId`; `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — **nine values, and nothing else**; two of them (the ids) are never written anywhere | Claude Code 2.1.268 – 2.1.269, 2026-09-13 | `fixtures/claude/transcript-*.jsonl` (T-WP13) | **Usage history only; no quota number is derived from these files.** See "The Claude Code transcript" below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` | **`statusLine` only**, read and written. Every other key is parsed as an opaque value and written back unchanged. | Claude Code 2.1.263 | `fixtures/claude/settings-no-statusline.json`, `settings-ccstatusline.json`, `settings-custom-node.json` | The one file this product writes on someone else's behalf. See "Claude Code's settings file" below. |
@@ -210,6 +210,22 @@ looks wrong.
 `unknown` rather than to the session's later model, because guessing here is guessing about
 which model burned what, and that is the one question the view exists to answer.
 
+**An event has no id, so the byte offset is the whole of the dedupe** — and one shape gets past
+it. A fork or a resume that copies a run of events into a new log arrives as a new path with a
+cursor that has read nothing, and the copied events carry the parent's timestamps and counters
+exactly. The reader therefore fingerprints the **first 32 events** of every log it has seen, in
+order, and skips the leading run of a log that repeats another log's leading run, event for
+event. Nothing on this machine exercises it — no log here shares a prefix with another, and the
+one file name carrying a second uuid shares none either — which is why it is a rule with a
+fixture (`rollout-fork.jsonl`) rather than a measurement. The rule, its bound and what it cannot
+catch are in [`usage-contract.md`](usage-contract.md).
+
+**Measured by T-WP14's reader on 2026-09-13**, on the maintainer's machine: **23 rollout logs,
+52.5 MB, 446 `token_count` events** under `sessions/`, three models, **88 ms** for a full first
+pass and **3.7 ms** for a second pass over the unchanged tree (release build). No event was
+malformed, none was unattributable, none was filed under `unknown`, and `cache_write_input_tokens`
+was `0` on every one of them.
+
 ### Not read, on purpose
 
 | Path | Why not |
@@ -219,7 +235,7 @@ which model burned what, and that is the one question the view exists to answer.
 | `$CODEX_HOME/*.sqlite`, `*.sqlite-wal`, `*.sqlite-shm` | Conversation history, memories, queues, logs. Not quota, and not ours to open. |
 | `$CODEX_HOME/session_index.jsonl` | Thread names and ids. Useful to Nazar's canvas; identity to a quota tray, so it stays unread here. |
 | `$CODEX_HOME/{attachments,dictation-history,transcription-history.jsonl,generated_images,…}` | The user's content. None of it is quota, and none of it is usage. |
-| `$CODEX_HOME/archived_sessions/` | Rollout logs of the same shape as `sessions/`, and therefore the one entry on this list that is a *scope* decision rather than a kind one: usage history does not read them today, so a conversation Codex archived leaves the totals unchanged. Reading them is T-WP14's to decide, in the open, with this row as the thing it has to change. |
+| `$CODEX_HOME/archived_sessions/` | Rollout logs of the same shape as `sessions/`, and the one entry on this list that is a *scope* decision rather than a kind one. **T-WP14 decided: still not read**, and for a mechanical reason rather than a squeamish one — a usage cursor is filed under a hash of the log's path, so a log Codex *moves* into this tree arrives as a file nothing has read and every event in it would be counted a second time. Not reading it is what makes archiving a session leave the totals exactly as they were. The cost is stated in `usage-contract.md`: a session archived before it was ever scanned is never counted. |
 | `~/.claude/projects/**` | **Moved into the inventory above on 2026-09-13** — see the row, and see [`PROJECT.md`](PROJECT.md) §8 for why. What was dropped stays dropped: no quota percentage is *estimated* from these files, which is what the retired prototype did with up to 400 of them when a fetch failed. Usage history reads nine fields, reports what the server already reported, and touches no window. |
 
 **The gate:** `crates/nazar-core/tests/hygiene.rs` greps every `.rs` file in the workspace

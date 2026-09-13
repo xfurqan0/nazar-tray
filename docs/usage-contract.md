@@ -201,27 +201,130 @@ If cost is ever added it is a `pricing.json` **data file**, a `version` bump her
 "estimated from list prices, not your bill" beside every figure, and a model that is not in the
 table showing **no cost** rather than a guess. That is T-WP19, and it is deliberately after v1.
 
-## Merging a scan, and why a bucket never goes down
+## How a scan adds to the store, and why a bucket never goes down
 
-A scan recomputes the buckets it can see. It **merges** into the store rather than replacing
-it, taking the **larger** of the two values per counter.
+A scan does not recompute the store and does not rescan the logs. It reads **the bytes
+nobody has read yet** — each log is followed by a cursor, `(file identity, byte offset)` —
+turns them into hourly buckets, and **adds** those to the months they belong to. Nothing
+already in a month is recomputed or compared away; a counter only ever grows, and it grows
+by exactly what this pass read.
 
-This is not caution, it is the point of the file. Claude Code prunes transcripts (30 days by
-default; six days of history survived on the maintainer's machine) and Codex sessions are the
-user's to delete. A scan run after a prune computes *smaller* numbers for an old hour, and a
-store that took the newest answer would quietly erase the history it exists to keep. Largest
-wins, so a pruned transcript costs nothing that was already counted.
+That is the point of the file rather than a detail of it. Claude Code prunes transcripts (30
+days by default; six days of history survived on the maintainer's machine) and Codex sessions
+are the user's to delete or archive. A store that recomputed from the logs would answer "all
+time" with "the last few days" and would answer differently every week. A store that adds
+keeps what the logs no longer hold, and a pruned transcript costs nothing that was already
+counted.
 
-Two consequences worth naming:
+Three consequences worth naming:
 
-- **A full rescan is safe and idempotent.** Deduplicating by `(message.id, requestId)` makes a
-  second scan of the same lines produce the same numbers, and largest-wins makes merging them a
-  no-op. "Rebuild from scratch" is therefore a real escape hatch: delete the month file and
-  rescan, and everything the transcripts still hold comes back.
-- **Numbers are never revised downwards, including a wrong one.** If a scan ever over-counts, a
-  later correct scan does not undo it; the fix is to delete the month and rebuild. That is the
-  price of not losing pruned history, and it is the right way round — an honest total that
-  cannot shrink beats a shrinking one nobody can explain.
+- **A second scan over unchanged logs adds nothing at all** — not because the numbers agree
+  but because there are no new bytes to read. Every offset is already past the end, no month
+  document differs from what is on disk, and nothing is rewritten: the directory is left byte
+  for byte as it was.
+- **Largest-wins is a rule about copies of one message, and it lives before the buckets.**
+  Claude Code writes a message once per content block and every copy carries the whole
+  `usage` object; the scan keeps the copy with the largest total, credits that one, and a
+  bucket never sees the others. Codex writes each event once and gives it no id, so there is
+  nothing to deduplicate there — and nothing to deduplicate *with*; see the Codex section
+  below for what stands in its place.
+- **Numbers are never revised, including a wrong one.** There is no pass that could revise
+  them: the scan that would have to notice is the one that already moved its cursor past
+  those bytes. If a scan ever over-counts, the fix is a **rebuild** — the cursors and the
+  months deleted together, and whatever the logs still hold counted again from the top.
+  Whatever they no longer hold is gone, which is why a rebuild is a decision somebody makes
+  rather than something a reader does to recover.
+
+## The cursor documents, and the one way to double count
+
+Beside the month documents, in the same directory: `cursors.json`, and `cursors-codex.json`
+beside it — **one per reader**. They are not part of this contract. They are the writer's own
+bookkeeping, nothing reads them but the scan that wrote them, and their shape may change in
+any release without a `version` bump here.
+
+What is worth writing down is what they are *for*, because deleting one has a consequence
+nobody would guess:
+
+- **They hold where each log was read up to**, filed under a hash of its path rather than the
+  path — `~/.claude/projects/` is named after every working directory somebody has opened a
+  session in, and none of that belongs in a file this product writes. A credited message is
+  filed under a hash of its identifiers, and a rollout's opening events under a hash of their
+  timestamps and counters. Nothing in these documents names anything on the machine.
+- **They are also the write-ahead half of the counting invariant.** A pass writes its new
+  offsets *and* the totals read from them in one atomic write, as a `pending` block, before
+  those totals reach any month; then each provider's block in a month document stamps the
+  scan `generation` it last absorbed in `applied_through`, so replaying a pending block is a
+  no-operation for a month that already carries it. A crash before that write loses a pass
+  that is simply repeated; a crash after it leaves a block the next pass files. There is no
+  state in which an offset moved past bytes whose totals were never recorded, and none in
+  which totals were recorded twice.
+- **A cursor document that no longer parses is an error, not a fresh start.** Treating it as
+  absent would reset every offset to zero and count every surviving log into months that
+  already hold it. The scan stops and says so instead.
+- **Deleting one by hand double counts, and nothing can detect it.** An absent cursor is
+  indistinguishable from a machine that has never scanned — which is what makes the only
+  supported reset `store::rebuild()`: the cursors **and** the month documents, removed
+  together. Removing the months alone leaves a store that will never read those logs again;
+  removing the cursors alone adds every surviving log to months that already hold it. Either
+  half on its own is the bug; both together is the escape hatch.
+
+## The two providers, and what Codex spells differently
+
+`claude` and `codex` file into the same month documents, under their own key, with their own
+`applied_through` stamp and their own cursor document. Neither reader can disturb the other's
+offsets, and a month may hold one, both, or neither.
+
+The Claude side is `message.usage` as the server reported it, deduplicated by
+`(message.id, requestId)`. The Codex side reads `payload.info.last_token_usage` on every
+`token_count` event and differs in four ways that are visible in the file:
+
+- **`input` has the cache taken out of it.** Codex's `input_tokens` **includes** the cached
+  part, so the store writes `input_tokens − cached_input_tokens` as `input` and
+  `cached_input_tokens` as `cache_read`. Adding the two as reported would count the cache
+  twice. (Claude Code reports them as separate numbers already, which is why only this side
+  subtracts.)
+- **`cache_create` is `0`.** It is `cache_write_input_tokens` when the event carries one —
+  the field is read rather than assumed, so the day Codex starts reporting cache writes the
+  store carries them — and it was `0` on every event observed on the maintainer's machine, all
+  446 the reader counted and the 438 in the archived tree beside them.
+  A missing one is read as `0` rather than as unknown: a turn that wrote no cache wrote none.
+- **The model comes from another line.** A `token_count` event does not name the model that
+  produced it; the session's `turn_context` lines do, and the store attributes an event to the
+  last model named before it. An event that arrives before any `turn_context` is filed under
+  **`unknown`** — the one id this file writes itself, and the reason it exists.
+- **The cumulative counter is never read.** `info.total_token_usage` looks like a session
+  total and is not: it falls back down mid-session when the context is compacted, in 3 of the
+  22 logs under `sessions/` here, and summing the per-turn counter disagreed with it in 8 of
+  30 files, once by a factor of 43. Nor are `reasoning_output_tokens`, which is already inside
+  `output_tokens`, and `total_tokens`, which is the sum of two counters that are already here.
+
+**Counting an event once, without an event id.** Claude Code's `(message.id, requestId)` has
+no counterpart in a rollout log, so *which bytes have been read* is the whole answer, and it
+is exact as long as a log is only appended to. One shape gets past it: a fork or a resume that
+copies a run of events into a **new** log, which arrives as a new path with a cursor that has
+read nothing. The rule, stated so it can be argued with:
+
+> A log whose **opening run** of events is, event for event — same timestamp to the
+> millisecond, same four counters — the opening run of a log already known is a copy of it up
+> to the point where the two diverge. That run is skipped; whichever of the two was read first
+> keeps the tokens, and it does not matter which, because exactly one copy is counted.
+
+Only a leading run, and only against another log's leading run: the same event in the middle
+of two sessions is a coincidence worth nothing, while the same event *first in both files* is
+not a coincidence at all. The guard is bounded — the first 32 events of each log are
+fingerprinted, because the fingerprints live in a document rewritten on every scan — so a copy
+longer than that is caught for its first 32 events and counted again for the rest. No fork on
+the maintainer's machine copied any events at all; the rule is there because a byte offset
+alone would have no answer if one did.
+
+**`archived_sessions/` is not read.** Codex keeps logs of exactly this shape in a second tree,
+and this store walks only `sessions/`. The reason is mechanical rather than squeamish: a cursor
+is filed under a hash of the path, so a log that Codex *moves* into `archived_sessions/`
+arrives as a file nothing has read, and every event in it would be counted a second time.
+Reading one tree and not the other is what makes archiving a session leave the totals exactly
+as they were. The cost, stated rather than discovered: **a session archived before it was ever
+scanned is never counted at all.** Changing that means reading both trees and telling them
+apart by something other than a path, and it is not a line this file can add on its own.
 
 ## A damaged month is left alone
 
@@ -232,6 +335,12 @@ visible rather than swallowed.
 That is the opposite of `alerts.json`'s rule, and for the opposite reason: a lost alert record
 costs one extra toast, while a lost month costs a month that may no longer exist anywhere else.
 Deleting it is a thing the user does, once they know.
+
+**What it costs in the pass that finds it**, stated because it is not obvious: the totals that
+scan had just read *for that month* are dropped rather than held. The bytes they came from are
+behind a cursor that has already moved, and a pending block is not kept waiting for a file
+somebody may never fix. Every month beside it keeps its own. A rebuild is what brings a damaged
+month back, and only as far back as the logs still reach.
 
 ## One writer
 
