@@ -10,6 +10,14 @@
 # Windows ships first, but nazar-core is built and tested on all three, and the macOS
 # build is a roadmap item. Checking every target now means the licence question is
 # already answered when that build arrives.
+#
+# `targets` is deliberately left unset, which means every target rather than three. That is
+# wider than `scripts/third-party-notices.mjs`, which names x86_64-pc-windows-msvc,
+# x86_64-unknown-linux-gnu and aarch64-apple-darwin — and the difference is on purpose:
+# the notices are an attribution for the binaries that ship, so they list what those three
+# actually contain, while this file is a gate on what may enter the lock file at all and has
+# no reason to stop looking at a target nobody builds yet. Narrowing it would be a rule that
+# only notices a copyleft crate once somebody adds a platform to the release.
 all-features = false
 
 [licenses]

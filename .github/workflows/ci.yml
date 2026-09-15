@@ -97,16 +97,18 @@ jobs:
   #
   # It is a near-copy of the Windows job rather than a matrix leg of it, for the same reason
   # `bundle` is its own job: the steps differ. Linux needs the GTK and WebKitGTK development
-  # packages before cargo can link anything, and `third-party-notices.mjs --check` cannot
-  # pass here — the notices file is resolved for one host triple, and Linux pulls in the
-  # gtk/webkit/dbus half of the tree that Windows never sees. Making that file tell the truth
-  # on both platforms is T-WP-L5; until then the check stays where it is generated, and the
-  # Linux job would only be red about a file it is not allowed to rewrite.
+  # packages before cargo can link anything.
   #
-  # `cargo fmt` and `check-licenses.mjs` read the source and the lock file, so they say the
-  # same thing on every operating system and are not worth a second runner. Clippy is the
-  # opposite: `#[cfg(unix)]` code is invisible to the Windows job, and a lint against it
-  # would have been found by a user rather than by CI.
+  # `third-party-notices.mjs --check` runs here as well as on Windows, which it could not do
+  # until T-WP-L5: the file used to be resolved for the host triple, so the Linux half of the
+  # tree — gtk, webkit, dbus, zbus — was missing from a Windows-generated file and the Windows
+  # half from a Linux-generated one, and the check could only ever gate the job that wrote it.
+  # It now resolves all three targets and the output does not depend on the machine, so the
+  # two jobs check the same bytes and a file generated on either one satisfies both.
+  #
+  # `cargo fmt` reads the source, so it says the same thing on every operating system and is
+  # not worth a second runner. Clippy is the opposite: `#[cfg(unix)]` code is invisible to
+  # the Windows job, and a lint against it would have been found by a user rather than by CI.
   #
   # ubuntu-22.04 and not ubuntu-latest: glibc 2.35 against 24.04's 2.39. What this job
   # compiles is what T-WP-L6 will eventually package, and a binary linked against the newer
@@ -169,6 +171,15 @@ jobs:
       # that produces the `.exe` on Windows.
       - name: Prepare the status-line sidecar
         run: node scripts/sidecar.mjs --debug
+
+      - name: Check dependency licences
+        run: node scripts/check-licenses.mjs
+
+      # The same file the Windows job checks, and that is the point: it is generated for all
+      # three targets and is byte-for-byte the same wherever it is generated, so this job
+      # would go red if somebody regenerated it on a machine that resolved only its own.
+      - name: Check the third-party notices are current
+        run: node scripts/third-party-notices.mjs --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

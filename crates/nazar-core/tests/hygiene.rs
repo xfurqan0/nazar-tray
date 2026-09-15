@@ -640,3 +640,44 @@ fn the_linux_packages_declare_what_a_desktop_and_the_opt_in_mode_need() {
         );
     }
 }
+
+/// The notices file tells the truth about **every** platform, not about the one that
+/// generated it.
+///
+/// T-WP-L5's whole finding is that the file used to be resolved for the host triple, so a
+/// Windows-built notices file was missing the gtk, webkit, dbus and zbus half of the Linux
+/// tree and a Linux-built one was missing the Windows half. `--check` catches a stale file;
+/// this catches a *correctly generated* file that was generated the old way, which is the
+/// failure `--check` cannot see because it would be consistent with itself.
+///
+/// One crate per section, each of them load-bearing on its own platform and impossible on
+/// the other two: the GTK bindings the panel is drawn with, the Win32 bindings underneath
+/// every Windows API call, and the Objective-C runtime AppKit is reached through.
+#[test]
+fn the_third_party_notices_cover_all_three_targets() {
+    let notices = std::fs::read_to_string(repo_root().join("THIRD-PARTY-NOTICES.md"))
+        .expect("THIRD-PARTY-NOTICES.md");
+
+    for section in ["## All platforms", "## Windows", "## Linux", "## macOS"] {
+        assert!(notices.contains(section), "no {section} section");
+    }
+    for (crate_name, platform) in [
+        ("gtk-sys", "Linux"),
+        ("windows-sys", "Windows"),
+        ("objc2", "macOS"),
+    ] {
+        let at = notices
+            .find(&format!("\n| {crate_name} |"))
+            .unwrap_or_else(|| panic!("{crate_name} is not in the notices at all"));
+        let section = notices[..at]
+            .rsplit("\n## ")
+            .next()
+            .and_then(|rest| rest.lines().next())
+            .unwrap_or_default();
+        assert_eq!(
+            section, platform,
+            "{crate_name} is listed under {section:?}; regenerate with \
+             `node scripts/third-party-notices.mjs`"
+        );
+    }
+}

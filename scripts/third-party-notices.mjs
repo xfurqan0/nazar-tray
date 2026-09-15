@@ -15,13 +15,25 @@
 // What is counted:
 //
 //   * The **normal** dependencies of the two binaries that ship, `nazar-tray` and
-//     `nazar-statusline`, resolved for the **target the installer is built for**. Build
+//     `nazar-statusline`, resolved for **each of the three targets in `TARGETS`**. Build
 //     dependencies are excluded because none of their code is in the binaries; dev
 //     dependencies are excluded for the same reason. Optional dependencies that the default
 //     features do not turn on are already absent from a `--filter-platform` resolve.
 //   * The panel's **runtime** npm dependencies — `@tauri-apps/api`, and nothing else. The
 //     two dev dependencies build the bundle and are not in it.
 //   * The panel's **image assets**, whose licence is a file rather than a manifest field.
+//
+// **Three targets, one file (T-WP-L5).** It used to resolve for the host triple, which was
+// fine while the only thing that shipped was built on Windows. It is not fine now: a Linux
+// build pulls in the gtk, webkit, dbus and zbus half of the tree that Windows never sees,
+// so a notices file resolved on one of them is wrong for the other, and `--check` could only
+// ever be a gate on the job that happened to generate it. Resolving all three and saying
+// which is which makes one file true everywhere and makes the check a gate on every job.
+//
+// **The output is byte-for-byte the same on every machine, and that is a requirement rather
+// than a nicety** — it is the whole reason two CI jobs can check one file. Nothing here may
+// read the host: not the triple, not the locale, not a directory's listing order. Every sort
+// is by code point and every tie is broken by something written down.
 //
 // Usage: node scripts/third-party-notices.mjs [--check]
 //
@@ -67,13 +79,37 @@ const PREFERENCE = [
 /** File names that hold a licence text, in the order a crate usually means them. */
 const LICENCE_FILE = /^(LICEN[CS]E|COPYING|NOTICE|UNLICEN[CS]E)/i;
 
-/** The host triple, so the resolve matches the binaries that are actually built. */
-function hostTriple() {
-  const verbose = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
-  const line = verbose.split(/\r?\n/).find((row) => row.startsWith("host: "));
-  if (!line) throw new Error("rustc -vV printed no host line");
-  return line.slice("host: ".length).trim();
-}
+/**
+ * The targets a shipped binary is resolved for, and what each section is called.
+ *
+ * Windows is what ships today, Linux is what T-WP-L0 put in CI and T-WP-L3 packaged, and
+ * macOS is the roadmap build — the same three `deny.toml` has been checking since WP0, for
+ * the same reason: the licence question is answered before the build that asks it arrives.
+ *
+ * `aarch64-apple-darwin` rather than the Intel one, because it is the Mac that gets built
+ * first and because the two resolve the same set anyway — the split in that tree is by
+ * operating system, not by word size.
+ *
+ * The order is the order of the sections in the file, and it is the order things shipped in.
+ */
+const TARGETS = [
+  { triple: "x86_64-pc-windows-msvc", section: "Windows" },
+  { triple: "x86_64-unknown-linux-gnu", section: "Linux" },
+  { triple: "aarch64-apple-darwin", section: "macOS" },
+];
+
+/** What a package is called when the three resolves are compared. */
+const identity = (pkg) => `${pkg.name}@${pkg.version}`;
+
+/**
+ * Ordering that does not depend on the machine that runs this.
+ *
+ * `localeCompare` was here, and it is exactly the kind of thing that makes one file into
+ * two: it collates by the host's rules, which decide whether `windows-sys` sorts before or
+ * after `windows_x86_64_msvc` depending on how much a runtime cares about hyphens. Code
+ * points are the same everywhere.
+ */
+const byCodePoint = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 
 /** Split an SPDX expression into the terms this project could choose between. */
 function terms(expression) {
@@ -105,7 +141,10 @@ function licenceTexts(manifestPath) {
       name: entry.name,
       text: readFileSync(join(directory, entry.name), "utf8").replace(/\r\n/g, "\n").trim(),
     }))
-    .sort((a, b) => b.text.length - a.text.length);
+    // Longest first -- the longest text is the licence and the rest is whatever somebody
+    // stapled to it -- and by name where two are the same length, because a directory
+    // listing is in whatever order the filesystem felt like.
+    .sort((a, b) => b.text.length - a.text.length || byCodePoint(a.name, b.name));
 }
 
 /**
@@ -168,7 +207,7 @@ function shippedCrates(metadata) {
     .filter((id) => !workspace.has(id))
     .map((id) => byId.get(id))
     .filter(Boolean)
-    .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+    .sort((a, b) => byCodePoint(a.name, b.name) || byCodePoint(a.version, b.version));
 }
 
 /** The panel's runtime npm dependencies, read from the tree that built `ui/dist`. */
@@ -199,8 +238,8 @@ function homepage(pkg) {
   return (pkg.repository ?? pkg.homepage ?? "").replace(/^git\+/, "").replace(/\.git$/, "");
 }
 
-function build() {
-  const triple = hostTriple();
+/** Every shipped crate for one target, with its licence, copyrights and texts. */
+function cratesFor(triple) {
   const metadata = JSON.parse(
     execFileSync(
       "cargo",
@@ -208,8 +247,7 @@ function build() {
       { cwd: REPO, encoding: "utf8", maxBuffer: 128 * 1024 * 1024 },
     ),
   );
-
-  const crates = shippedCrates(metadata).map((pkg) => {
+  return shippedCrates(metadata).map((pkg) => {
     const texts = licenceTexts(pkg.manifest_path);
     return {
       name: pkg.name,
@@ -221,6 +259,36 @@ function build() {
       texts,
     };
   });
+}
+
+/** One package's row in a table. */
+function row(pkg) {
+  const holders = pkg.copyrights.length > 0 ? pkg.copyrights.join("<br>") : "—";
+  const source = pkg.url ? `[${pkg.url}](${pkg.url})` : "—";
+  return `| ${pkg.name} | ${pkg.version} | ${holders.replace(/\|/g, "\\|")} | ${source} |`;
+}
+
+/** A section's packages, grouped by the licence each is used under. */
+function tables(lines, packages, depth) {
+  const heading = "#".repeat(depth);
+  for (const licence of [...new Set(packages.map((pkg) => pkg.licence))].sort(byCodePoint)) {
+    lines.push(`${heading} ${licence}`);
+    lines.push("");
+    lines.push("| Package | Version | Copyright | Source |");
+    lines.push("|---|---|---|---|");
+    for (const pkg of packages.filter((pkg) => pkg.licence === licence)) {
+      lines.push(row(pkg));
+    }
+    lines.push("");
+  }
+}
+
+function build() {
+  // One resolve per target. The three are compared by name and version, so a crate every
+  // one of them pulls in is written down once and the rest are written down where they
+  // come from -- which is also the answer to "why is gtk-sys in a Windows installer's
+  // notices", asked and answered before anybody has to ask it.
+  const perTarget = new Map(TARGETS.map(({ triple }) => [triple, cratesFor(triple)]));
 
   const npm = panelDependencies().map((pkg) => ({
     ...pkg,
@@ -229,8 +297,33 @@ function build() {
     copyrights: copyrights(pkg.texts),
   }));
 
-  const everything = [...crates, ...npm];
-  const licences = [...new Set(everything.map((pkg) => pkg.licence))].sort();
+  // The panel's own package is drawn by every target, so it belongs with the crates that
+  // are: it is JavaScript, and the webview that runs it is the only platform it has.
+  const common = [];
+  const only = new Map(TARGETS.map(({ triple }) => [triple, []]));
+  const everywhere = [...perTarget.values()]
+    .map((list) => new Set(list.map(identity)))
+    .reduce((left, right) => new Set([...left].filter((id) => right.has(id))));
+  const claimed = new Set();
+  for (const [triple, list] of perTarget) {
+    for (const pkg of list) {
+      if (!everywhere.has(identity(pkg))) {
+        only.get(triple).push(pkg);
+      } else if (!claimed.has(identity(pkg))) {
+        claimed.add(identity(pkg));
+        common.push(pkg);
+      }
+    }
+  }
+  common.push(...npm);
+  common.sort((a, b) => byCodePoint(a.name, b.name) || byCodePoint(a.version, b.version));
+
+  const sections = [
+    { title: "All platforms", packages: common },
+    ...TARGETS.map(({ triple, section }) => ({ title: section, packages: only.get(triple) })),
+  ];
+  const everything = sections.flatMap((section) => section.packages);
+  const licences = [...new Set(everything.map((pkg) => pkg.licence))].sort(byCodePoint);
 
   const lines = [];
   lines.push("# Third-party notices");
@@ -242,9 +335,9 @@ function build() {
   lines.push(
     "It is generated by `scripts/third-party-notices.mjs` from `Cargo.lock` and " +
       "`ui/package.json`, and it lists the dependencies that are **in the shipped binaries** " +
-      "— the normal dependencies of `nazar-tray` and `nazar-statusline` resolved for the " +
-      "build target, plus the panel's one runtime package and its image assets. Build-time " +
-      "and test-only dependencies are not listed, because none of their code is distributed.",
+      "— the normal dependencies of `nazar-tray` and `nazar-statusline`, plus the panel's one " +
+      "runtime package and its image assets. Build-time and test-only dependencies are not " +
+      "listed, because none of their code is distributed.",
   );
   lines.push("");
   lines.push(
@@ -253,9 +346,24 @@ function build() {
       "permissive, and `deny.toml` holds the same policy for `cargo deny`.",
   );
   lines.push("");
-  lines.push(`Generated for \`${triple}\`.`);
+  lines.push(
+    "**Resolved for " +
+      TARGETS.map(({ triple }) => `\`${triple}\``).join(", ").replace(/, (?=[^,]*$)/, " and ") +
+      ".** A package all three pull in is listed once under **All platforms**; the rest are " +
+      "listed under the platform that brings them in, so a reader can see what a Linux " +
+      "package contains that a Windows one does not. The file is byte-for-byte identical " +
+      "whichever of the three a machine generates it on, which is what lets " +
+      "`--check` gate more than one CI job.",
+  );
   lines.push("");
   lines.push("## Summary");
+  lines.push("");
+  lines.push("| Section | Packages |");
+  lines.push("|---|---|");
+  for (const section of sections) {
+    lines.push(`| ${section.title} | ${section.packages.length} |`);
+  }
+  lines.push(`| **Total** | **${everything.length}** |`);
   lines.push("");
   lines.push("| Licence | Packages |");
   lines.push("|---|---|");
@@ -265,28 +373,44 @@ function build() {
   lines.push(`| **Total** | **${everything.length}** |`);
   lines.push("");
 
-  for (const licence of licences) {
-    const group = everything.filter((pkg) => pkg.licence === licence);
-    lines.push(`## ${licence}`);
+  for (const section of sections) {
+    lines.push(`## ${section.title}`);
     lines.push("");
-    lines.push("| Package | Version | Copyright | Source |");
-    lines.push("|---|---|---|---|");
-    for (const pkg of group) {
-      const holders = pkg.copyrights.length > 0 ? pkg.copyrights.join("<br>") : "—";
-      const source = pkg.url ? `[${pkg.url}](${pkg.url})` : "—";
-      lines.push(`| ${pkg.name} | ${pkg.version} | ${holders.replace(/\|/g, "\\|")} | ${source} |`);
+    if (section.packages.length === 0) {
+      lines.push(`Nothing this target pulls in is absent from the other two.`);
+      lines.push("");
+      continue;
     }
-    lines.push("");
+    if (section.title !== "All platforms") {
+      lines.push(`Only what this target adds to **All platforms** above.`);
+      lines.push("");
+    }
+    tables(lines, section.packages, 3);
+  }
 
-    const representative = representativeFor(licence, group);
-    if (representative) {
-      lines.push(`### ${licence} — full text`);
-      lines.push("");
-      lines.push("```");
-      lines.push(representative.text);
-      lines.push("```");
-      lines.push("");
-    }
+  // The licence bodies, once each rather than once per section. They are the longest part
+  // of this file and they do not vary by platform; repeating them four times would make a
+  // 300 KB document out of an 85 KB one and would say nothing new in any of the copies.
+  lines.push("## Licence texts");
+  lines.push("");
+  lines.push(
+    "One copy of each licence named above. The copyright lines are in the tables, because " +
+      "those are the part that differs by package and the part a permissive licence actually " +
+      "asks to be carried.",
+  );
+  lines.push("");
+  for (const licence of licences) {
+    const representative = representativeFor(
+      licence,
+      everything.filter((pkg) => pkg.licence === licence),
+    );
+    if (!representative) continue;
+    lines.push(`### ${licence}`);
+    lines.push("");
+    lines.push("```");
+    lines.push(representative.text);
+    lines.push("```");
+    lines.push("");
   }
 
   lines.push("## Panel assets");
@@ -312,7 +436,8 @@ function build() {
       "1803 and later and of Windows 11. It is **not** redistributed in this installer: the " +
       "package uses Tauri's `downloadBootstrapper` mode, which fetches Microsoft's own " +
       "installer only on a machine that does not already have the runtime. It is licensed by " +
-      "Microsoft under its own terms.",
+      "Microsoft under its own terms. On Linux the panel is drawn by the system's WebKitGTK, " +
+      "which the `.deb` and the `.rpm` depend on and neither redistributes.",
   );
   lines.push("");
 
