@@ -89,6 +89,87 @@ jobs:
       - name: Test nazar-core with the opt-in mode compiled out
         run: cargo test -p nazar-core --no-default-features
 
+  # The same gate, on the operating system the tray had never been compiled for. Until this
+  # job existed the Linux half of the promise in `docs/PROJECT.md` section 2 — "Windows
+  # release first; macOS and Linux builds later from the same code", whose opposite is "a
+  # Windows-only codebase" — was checked by two library crates with no Tauri in them, and the
+  # tray itself could have stopped building on Linux months before anybody looked.
+  #
+  # It is a near-copy of the Windows job rather than a matrix leg of it, for the same reason
+  # `bundle` is its own job: the steps differ. Linux needs the GTK and WebKitGTK development
+  # packages before cargo can link anything, and `third-party-notices.mjs --check` cannot
+  # pass here — the notices file is resolved for one host triple, and Linux pulls in the
+  # gtk/webkit/dbus half of the tree that Windows never sees. Making that file tell the truth
+  # on both platforms is T-WP-L5; until then the check stays where it is generated, and the
+  # Linux job would only be red about a file it is not allowed to rewrite.
+  #
+  # `cargo fmt` and `check-licenses.mjs` read the source and the lock file, so they say the
+  # same thing on every operating system and are not worth a second runner. Clippy is the
+  # opposite: `#[cfg(unix)]` code is invisible to the Windows job, and a lint against it
+  # would have been found by a user rather than by CI.
+  #
+  # ubuntu-22.04 and not ubuntu-latest: glibc 2.35 against 24.04's 2.39. What this job
+  # compiles is what T-WP-L6 will eventually package, and a binary linked against the newer
+  # glibc does not start on Debian 12.
+  linux:
+    name: Linux — lint, test, build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # WebKitGTK and GTK3 are what tao, wry and tray-icon link against on Linux; dbus is
+      # what the notification plugin talks to; librsvg renders the icon the bundler installs;
+      # patchelf is the Tauri bundler's. `libayatana-appindicator3-dev` is the one that looks
+      # optional and is not: without it the tray icon has no library to dlopen at run time,
+      # and the application would build here and show nothing on a user's desktop.
+      - name: Install the GTK stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            patchelf
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      # tauri::generate_context! reads frontendDist at compile time, so the panel must be
+      # built before clippy or cargo test can even expand the macro.
+      - name: Build the panel
+        working-directory: ui
+        run: npm run build
+
+      # `bundle.externalBin` names the status-line wrapper and `tauri-build` checks it is on
+      # disk under its target-triple name while the tray crate compiles — which on this
+      # runner is `nazar-statusline-x86_64-unknown-linux-gnu`, produced by the same script
+      # that produces the `.exe` on Windows.
+      - name: Prepare the status-line sidecar
+        run: node scripts/sidecar.mjs --debug
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
   # nazar-core and nazar-statusline are pure Rust with no Tauri in them, so they compile
   # and test everywhere. The tray app itself is Windows-only in v1 on purpose: no toolkit
   # gives a reliable tray popup on Linux (even CodexBar closed its Linux tray issue as not

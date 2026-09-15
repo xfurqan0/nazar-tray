@@ -1,5 +1,10 @@
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-pc-windows-msvc"]
+# No target is named here. Every job builds for the machine it is running on, and rustup
+# installs the host's own standard library with the toolchain — so the Windows runner needs
+# no help, and naming `x86_64-pc-windows-msvc` only made the Linux and macOS jobs download a
+# standard library they would never link. A cross-compilation target, if one is ever wanted,
+# belongs to the workflow that asks for it rather than to every checkout of this repository.
+targets = []
 profile = "minimal"
