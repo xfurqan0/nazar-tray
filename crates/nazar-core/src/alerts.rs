@@ -93,7 +93,7 @@
 //! derived view and the rules, and answers with a list. [`crate::state`] is the same shape
 //! of idea: the numbers are somebody else's, the meaning is worked out here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,20 @@ pub struct AlertLog {
     /// One record per window that has fired something.
     #[serde(default)]
     pub windows: BTreeMap<String, WindowRecord>,
+    /// One-off notices already shown, by key.
+    ///
+    /// Not a threshold, and not about a window at all: a notice is something the
+    /// application has to say about **itself**, once, and then never again on this machine.
+    /// T-WP-L2 added the first one — a desktop with no tray host, where the honest answer
+    /// is a notification rather than an icon nobody can see.
+    ///
+    /// It lives here because this file is already the answer to "has the user been told
+    /// this?", and because the alternative was a second small file with the same lifetime,
+    /// the same atomic write and the same "damaged means empty" rule. Omitted from the
+    /// document when empty, so a machine that never raises one writes exactly the bytes it
+    /// wrote before this field existed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub notices: BTreeSet<String>,
     /// Keys a newer build wrote.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -221,6 +235,7 @@ impl Default for AlertLog {
         AlertLog {
             schema_version: ALERTS_SCHEMA_VERSION,
             windows: BTreeMap::new(),
+            notices: BTreeSet::new(),
             extra: Map::new(),
         }
     }
@@ -412,6 +427,23 @@ impl Alerts {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AlertLog::default()),
             Err(source) => Err(Error::io(path, source)),
         }
+    }
+
+    /// Claim a one-off notice: `true` exactly once per machine, `false` ever after.
+    ///
+    /// The caller shows the notice when this answers `true`, and the claim is recorded
+    /// before anything is shown — same order as [`Alerts::evaluate`], and for the same
+    /// reason: a notice that appeared and was then forgotten because the process died half
+    /// a second later would come back on the next launch, and "once" is the whole promise.
+    /// [`Alerts::save`] is what puts it on disk; an in-memory log claims it for this run
+    /// only, which is what `--demo` gets.
+    pub fn claim_notice(&mut self, key: &str) -> bool {
+        if self.log.notices.contains(key) {
+            return false;
+        }
+        self.log.notices.insert(key.to_owned());
+        self.dirty = true;
+        true
     }
 
     /// Look at a derived view and say what has just been crossed.

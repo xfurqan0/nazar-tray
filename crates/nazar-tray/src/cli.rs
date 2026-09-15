@@ -114,6 +114,9 @@ const WRITE_FLAG: &str = "--write";
 /// The flag that rasterises the tray bead into a directory and exits.
 const ICONS_FLAG: &str = "--icons";
 
+/// The flag that runs the engine and draws no tray icon.
+const HEADLESS_FLAG: &str = "--headless";
+
 /// Run a command-line mode if one was asked for.
 ///
 /// Returns `true` when the process has done its job and should exit without starting the
@@ -129,6 +132,19 @@ pub fn run_if_requested() -> bool {
         return false;
     }
     let asked = |flag: &str| arguments.iter().any(|argument| argument == flag);
+
+    // Before the document, and only when there is something to say: how a normal launch
+    // would draw itself on this desktop. A run that would show a tray icon says nothing —
+    // silence is the answer nobody needs — and a run that would not says why, which is the
+    // one place a user can find out that the application they "installed and nothing
+    // happened" is running the engine and writing the file.
+    //
+    // Standard **error**, because standard output is a JSON document a script parses and a
+    // sentence in front of it would be a breaking change.
+    let mode = crate::desktop::mode(asked(HEADLESS_FLAG));
+    if !mode.draws_an_icon() {
+        eprintln!("nazar-tray: {}", mode.status());
+    }
 
     let document = if asked(WRITE_FLAG) {
         write_once(asked(DETAILED_FLAG))
@@ -260,6 +276,16 @@ pub struct Options {
     ///
     /// Implies `--demo`. See the module note for the sequence and for what it proves.
     pub demo_cross: bool,
+    /// `--headless`: run the engine and build no tray icon, wherever this is running.
+    ///
+    /// The one flag here that is not a screenshot flag. T-WP-L2 made "no tray host on this
+    /// desktop" a measurement rather than an assumption ([`crate::desktop`]), and this is
+    /// the same answer asked for on purpose: a user who reads the numbers in Nazar's canvas,
+    /// in a Waybar module or in a GNOME extension wants the writer and not a second
+    /// indicator beside the first. Everything else — the refresh loop, the advisory lock,
+    /// `~/.nazar/limits.json`, the threshold notifications — runs exactly as it does with an
+    /// icon.
+    pub headless: bool,
     /// `--autostart on|off|status`: read or change the startup entry, then exit.
     pub autostart: Option<Autostart>,
 }
@@ -363,6 +389,7 @@ fn parse_options(arguments: &[String]) -> Options {
         demo: demo_cross || asked("--demo"),
         demo_cross,
         hidden: asked("--hidden"),
+        headless: asked(HEADLESS_FLAG),
         // A scale that is not a number, or one outside what a display can be set to, is
         // ignored rather than clamped: it is a typo, and a 0.1× panel would look like a bug.
         scale: value_of(arguments, "--scale")
@@ -604,11 +631,39 @@ mod tests {
         }
     }
 
+    /// `--headless` is the one flag here that changes the product rather than a picture of
+    /// it, so it gets its own test: it must be off unless asked for, it must not imply any
+    /// of the screenshot behaviour, and it must leave the settings alone.
+    #[test]
+    fn headless_asks_for_the_engine_and_nothing_else() {
+        assert!(!parse_options(&[]).headless);
+
+        let headless = parse_options(&words("--headless"));
+        assert!(headless.headless);
+        assert!(
+            !headless.demo,
+            "no icon is not no numbers: the engine reads real files and writes limits.json"
+        );
+        assert!(
+            !headless.hidden,
+            "it is about the tray, not about the panel"
+        );
+        assert!(
+            headless.may_persist(),
+            "a run with no icon is still the user's own run"
+        );
+        assert!(
+            !parse_options(&words("--hidden")).headless,
+            "the autostart entry asks for a quiet launch, not for a different product"
+        );
+    }
+
     #[test]
     fn the_startup_flags_parse_and_default_to_off() {
         let plain = parse_options(&[]);
         assert!(!plain.hidden);
         assert!(!plain.demo_cross);
+        assert!(!plain.headless);
 
         let hidden = parse_options(&words("--hidden"));
         assert!(hidden.hidden);

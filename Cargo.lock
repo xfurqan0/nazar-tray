@@ -2278,6 +2278,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-notification",
  "tauri-plugin-updater",
+ "zbus",
 ]
 
 [[package]]

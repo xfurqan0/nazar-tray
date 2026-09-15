@@ -123,6 +123,54 @@ fn show(app: &AppHandle, catalog: &Catalog, alert: &Alert) {
     }
 }
 
+/// Show a one-off notice about the application itself, at most once per machine.
+///
+/// Not a threshold and not about a window: a notice is something nazar-tray has to say
+/// about *itself*, and [`nazar_core::alerts::Alerts::claim_notice`] is what makes "once"
+/// mean once across restarts rather than once per process. The first caller is
+/// [`crate::desktop::announce`], on a Linux desktop with no tray host.
+///
+/// It goes through the same [`Notifier`] as the threshold toasts, which means it obeys the
+/// same two facts about that state: a `--demo` run claims it in memory and so never
+/// consumes a notice the user has not seen, and the claim is written before anything is
+/// shown, so a process that dies half a second later does not repeat itself on the next
+/// launch. It does **not** go through the quiet hours or the notifications switch: both are
+/// about the quota, and a user who turned off "warn me at 85 %" has not asked to be kept in
+/// the dark about the tray icon they cannot see.
+pub fn notice(app: &AppHandle, key: &str, title: &str, body: &str) {
+    let (Some(notifier), Some(strings)) =
+        (app.try_state::<Notifier>(), app.try_state::<Arc<Strings>>())
+    else {
+        return;
+    };
+
+    let claimed = {
+        let mut alerts = notifier
+            .alerts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let claimed = alerts.claim_notice(key);
+        if claimed && let Err(error) = alerts.save() {
+            eprintln!("nazar-tray: could not record the notice: {error}");
+        }
+        claimed
+    };
+    if !claimed {
+        return;
+    }
+
+    let catalog = strings.catalog();
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title(catalog.text(title))
+        .body(catalog.text(body))
+        .show()
+    {
+        eprintln!("nazar-tray: could not show the notification: {error}");
+    }
+}
+
 /// The two lines of a toast, in the user's language.
 ///
 /// `Claude Code · weekly window 85 %` over `Resets in 2 h 10 m`, and the Turkish of both.

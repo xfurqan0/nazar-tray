@@ -53,6 +53,9 @@
 mod alerts;
 mod cli;
 mod demo;
+// Whether this desktop has anywhere to put a tray icon, and what this process does when it
+// has not. Windows and macOS answer yes without asking; T-WP-L2 is the Linux answer.
+mod desktop;
 // Linux only, and glib only: it installs a GLib log writer, which is a symbol that exists
 // because GTK is linked. See the module for the six frames of somebody else's stack it is
 // there to keep out of the log.
@@ -275,8 +278,22 @@ fn main() {
             };
             app.manage(shared);
 
-            tray::install(app.handle(), &setup_strings)?;
-            tray::refresh(app.handle(), &setup_strings.catalog());
+            // The one question a Linux desktop has to be asked before an icon is built: is
+            // there a StatusNotifierItem host on the session bus to build it for? On a
+            // GNOME session without the AppIndicator extension there is not, and an icon
+            // handed over anyway is registered, accepted and drawn nowhere — the process
+            // runs, prints nothing and shows nothing. See `desktop`.
+            //
+            // The answer changes exactly one thing. Everything below and above this line —
+            // the refresh loop, the advisory lock, `~/.nazar/limits.json`, the threshold
+            // notifications — is what the engine mode keeps; the icon is what it drops.
+            let mode = desktop::mode(options.headless);
+            if mode.draws_an_icon() {
+                tray::install(app.handle(), &setup_strings)?;
+                tray::refresh(app.handle(), &setup_strings.catalog());
+            } else {
+                desktop::announce(app.handle(), mode);
+            }
 
             if let Some(scale) = options.scale {
                 panel::apply_scale(app.handle(), scale);

@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} %{percent}",
   "tray.tooltip.resets": "({time} sonra sıfırlanır)",
   "tray.tooltip.noData": "nazar-tray: veri yok",
+  "tray.hidden.title": "nazar-tray tepsi ikonu olmadan çalışıyor",
+  "tray.hidden.body": "Bu masaüstünde tepsi sunucusu yok, ikonun gidecek bir yeri kalmıyor — GNOME'da bunun karşılığı AppIndicator uzantısı. nazar-tray çalışmayı ve limits.json yazmayı sürdürüyor.",
   "window.short.fiveHour": "5 sa",
   "window.short.weekly": "hafta",
   "window.short.model": "{model} hafta",

@@ -63,6 +63,16 @@ application's own: `usage.mode.perLine` — the tag under the headline when the 
 per-line ones Claude Code's `/usage` shows — and `usage.reported`, which marks a day copied in
 from Claude Code's own statistics.
 
+**T-WP-L2 added two — 160 keys per file.** `tray.hidden.title` and `tray.hidden.body` are the
+one notification this product shows about **itself** rather than about a quota: on a Linux
+desktop with no StatusNotifier host — a stock GNOME, most often — the tray icon would be
+registered and drawn nowhere, so nazar-tray does not register one, says so once, and goes on
+writing `limits.json`. Two things a translator should know about them. **`GNOME`,
+`AppIndicator` and `limits.json` are names and are left alone**, like `nazar-tray` and
+`/usage`; the sentence is about them. And the body is read **in a notification bubble**, which
+several desktops truncate at two or three lines — so the first clause has to carry the whole
+message on its own, and everything after it is the explanation for somebody who expands it.
+
 Three notes for a translator. **`/usage` is a command name and is left alone**, like
 `nazar-tray` and `Claude Code`; it is the thing the sentence is about. **The 1.7 in
 `settings.usage.perLine.help` is a measurement, not a rounding to taste** — it is the ratio

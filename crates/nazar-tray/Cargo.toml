@@ -39,3 +39,15 @@ tauri-plugin-updater = "2"      # WP7: signed updates from GitHub Releases
 # end of a stack local rather than a compile error.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# T-WP-L2: one D-Bus question at start-up -- is there a StatusNotifierItem host on the
+# session bus? -- because a Linux tray icon handed to a desktop without one is registered,
+# accepted and drawn nowhere. Not a new dependency: `tauri-plugin-notification` already
+# pulls zbus in on Linux through `notify-rust`, at this same version, so the lock file does
+# not move and nothing extra is compiled. What is new is `blocking-api`, which is the API
+# that answers a question on the thread that asked it -- this one is asked once, before the
+# event loop exists, and the async form would need a runtime this process does not have.
+# `default-features = false` names the rest explicitly rather than inheriting whatever a
+# future default adds.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

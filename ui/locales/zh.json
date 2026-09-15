@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} {percent}%",
   "tray.tooltip.resets": "（{time}后重置）",
   "tray.tooltip.noData": "nazar-tray：暂无数据",
+  "tray.hidden.title": "nazar-tray 正在运行，但没有托盘图标",
+  "tray.hidden.body": "此桌面环境没有托盘宿主，图标无处显示——在 GNOME 上这意味着需要 AppIndicator 扩展。nazar-tray 仍在运行，并继续写入 limits.json。",
   "window.short.fiveHour": "5 小时",
   "window.short.weekly": "周",
   "window.short.model": "{model} 周",

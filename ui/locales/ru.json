@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} {percent} %",
   "tray.tooltip.resets": "(сброс через {time})",
   "tray.tooltip.noData": "nazar-tray: нет данных",
+  "tray.hidden.title": "nazar-tray работает без значка в трее",
+  "tray.hidden.body": "На этом рабочем столе нет хоста трея, поэтому значку некуда попасть — в GNOME для этого нужно расширение AppIndicator. nazar-tray продолжает работать и продолжает записывать limits.json.",
   "window.short.fiveHour": "5 ч",
   "window.short.weekly": "нед.",
   "window.short.model": "{model} нед.",

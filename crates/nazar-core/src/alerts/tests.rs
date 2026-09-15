@@ -1083,3 +1083,70 @@ fn the_period_after_an_expired_one_starts_from_nothing() {
         "and gets it once"
     );
 }
+
+#[test]
+fn a_one_off_notice_is_claimed_once_and_survives_a_restart() {
+    // The T-WP-L2 case: a desktop with no tray host is told so the first time nazar-tray
+    // starts there, and never again — not on the next refresh, and not on the next login.
+    let dir = TempDir::new("alerts-notice");
+    let path = dir.join("alerts.json");
+
+    let mut alerts = Alerts::open(&path);
+    assert!(
+        alerts.claim_notice("tray.hidden"),
+        "the first claim shows it"
+    );
+    assert!(!alerts.claim_notice("tray.hidden"), "the second does not");
+    assert!(alerts.is_dirty(), "a claim is worth writing");
+    alerts.save().unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"notices\""), "got {text}");
+    assert!(text.contains("tray.hidden"), "got {text}");
+
+    let mut after_restart = Alerts::open(&path);
+    assert!(
+        !after_restart.claim_notice("tray.hidden"),
+        "once means once per machine, not once per process"
+    );
+    assert!(
+        after_restart.claim_notice("something.else"),
+        "and it is per notice rather than a single flag"
+    );
+}
+
+#[test]
+fn a_log_with_no_notices_writes_exactly_the_bytes_it_used_to() {
+    // The field is omitted when empty, so a machine that never raises a notice — which is
+    // every Windows machine, where the tray always has somewhere to go — has the same
+    // `alerts.json` it had before the field existed.
+    let mut alerts = Alerts::in_memory();
+    alerts.evaluate(&view_at(86.0, RESET_A, NOW), &rules());
+    let text = alerts.log().to_json().unwrap();
+    assert!(!text.contains("notices"), "got {text}");
+
+    // And a log that does carry one still parses where the old one did.
+    assert_eq!(
+        AlertLog::from_json(r#"{ "schemaVersion": 1, "notices": ["tray.hidden"] }"#)
+            .unwrap()
+            .notices
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["tray.hidden".to_owned()]
+    );
+}
+
+#[test]
+fn a_notice_claimed_in_memory_is_forgotten_with_the_process() {
+    // What `--demo` gets: a screenshot run must not consume a notice the user has not been
+    // shown yet, and `Alerts::in_memory` is the whole of that guarantee.
+    let mut alerts = Alerts::in_memory();
+    assert!(alerts.claim_notice("tray.hidden"));
+    assert!(!alerts.claim_notice("tray.hidden"), "once within the run");
+    alerts.save().unwrap();
+
+    assert!(
+        Alerts::in_memory().claim_notice("tray.hidden"),
+        "and a fresh in-memory log knows nothing, because there was nowhere to write it"
+    );
+}

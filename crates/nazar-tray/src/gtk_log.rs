@@ -42,7 +42,15 @@
 //!
 //! The *complete* answer is not to take the fallback at all, which means knowing whether the
 //! desktop has a watcher before registering a tray icon and telling the user when it does
-//! not. That is T-WP-L2's question and its decision is not this package's to make.
+//! not. **T-WP-L2 did that**, in [`crate::desktop`]: a session with no
+//! `org.kde.StatusNotifierWatcher` never gets an icon registered, so libappindicator never
+//! reaches its timer and the message this filter exists for is never produced.
+//!
+//! The filter stays, narrower. A watcher that is there at start-up and gone afterwards —
+//! a plasmashell that crashed, an extension disabled in a running session — puts
+//! libappindicator back on the fallback path with an icon already registered, and that is
+//! the one case the start-up question cannot answer. Three lines of string match against a
+//! message nobody can act on is the right price for it.
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::sync::Once;

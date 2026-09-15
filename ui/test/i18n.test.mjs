@@ -388,8 +388,23 @@ test("the tray has no words of its own", () => {
    * `ui/src/main.ts`): it says which file said what, and no translation can know that in
    * advance. The real ones come from `nazar-core`; this is the demo's stand-in for one,
    * and it is the string in every `--demo` screenshot.
+   *
+   * `desktop.rs` — the three answers `Mode::status` gives. They are standard-error
+   * diagnostics, printed at start-up and by `--print`, and `ui/locales/README.md` states
+   * the rule they follow: anything on the command line stays in English, because standard
+   * output and standard error are a maintainer's surface rather than a user's. The thing
+   * the *user* is told when the tray has nowhere to go is a notification, and it comes from
+   * `tray.hidden.title` and `tray.hidden.body` like every other word this product shows.
+   * They are here rather than inside an `eprintln!` — which the regex below would have
+   * stripped — because two call sites read them and a sentence written twice is a sentence
+   * that will one day say two things.
    */
-  const ALLOWED = new Set(["no quota line in the newest session log"]);
+  const ALLOWED = new Set([
+    "no quota line in the newest session log",
+    "tray icon shown",
+    "engine mode (--headless): no tray icon, limits.json still written",
+    "engine mode: no StatusNotifierWatcher on the session bus; limits.json still written",
+  ]);
 
   const diagnostic =
     /(?:eprintln!|println!|panic!|unreachable!|todo!|unimplemented!|write!|writeln!|\.expect)\s*\(\s*(?:[^,()"]*,\s*)?"(?:[^"\\]|\\[\s\S])*"/g;

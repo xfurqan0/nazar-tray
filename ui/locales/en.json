@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} {percent} %",
   "tray.tooltip.resets": "(resets in {time})",
   "tray.tooltip.noData": "nazar-tray: no data",
+  "tray.hidden.title": "nazar-tray is running without a tray icon",
+  "tray.hidden.body": "This desktop has no tray host, so the icon has nowhere to go — on GNOME that means the AppIndicator extension. nazar-tray keeps running and keeps writing limits.json.",
   "window.short.fiveHour": "5h",
   "window.short.weekly": "week",
   "window.short.model": "{model} week",

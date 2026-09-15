@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} {percent} %",
   "tray.tooltip.resets": "(se restablece en {time})",
   "tray.tooltip.noData": "nazar-tray: sin datos",
+  "tray.hidden.title": "nazar-tray se está ejecutando sin icono en la bandeja",
+  "tray.hidden.body": "Este escritorio no tiene un anfitrión de bandeja, así que el icono no tiene adónde ir: en GNOME eso significa la extensión AppIndicator. nazar-tray sigue funcionando y sigue escribiendo limits.json.",
   "window.short.fiveHour": "5 h",
   "window.short.weekly": "sem.",
   "window.short.model": "{model} sem.",

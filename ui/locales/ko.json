@@ -31,6 +31,8 @@
   "tray.tooltip.entry": "{provider} {window} {percent}%",
   "tray.tooltip.resets": "({time} 후 초기화)",
   "tray.tooltip.noData": "nazar-tray: 데이터 없음",
+  "tray.hidden.title": "nazar-tray가 트레이 아이콘 없이 실행 중입니다",
+  "tray.hidden.body": "이 데스크톱에는 트레이 호스트가 없어 아이콘을 표시할 곳이 없습니다. GNOME에서는 AppIndicator 확장이 필요합니다. nazar-tray는 계속 실행되며 limits.json도 계속 기록합니다.",
   "window.short.fiveHour": "5시간",
   "window.short.weekly": "주",
   "window.short.model": "{model} 주",

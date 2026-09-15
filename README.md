@@ -323,9 +323,19 @@ explained somewhere in this repository.
 - **Clicking a notification does not open the panel.** Tauri's notification plugin does not
   hand the application the click, so there is nothing to hook. The toast names the window it is
   about, and the icon is one click away.
-- **Linux has no tray popup**, from any toolkit, reliably — even the 21k-star CodexBar closed
-  its Linux tray issue as not planned. The story there is `nazar-tray --print`, which emits the
-  same document as a file, and the Nazar canvas that reads it.
+- **On Linux the tray icon needs a desktop that speaks StatusNotifier.** KDE, XFCE, Cinnamon,
+  Budgie and Ubuntu's GNOME do; a stock GNOME does not, and wants the
+  [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/).
+  nazar-tray asks the session bus before it builds an icon, so it never registers one that
+  goes nowhere: with no host it says so once in a desktop notification and **keeps running as
+  the engine** — the refresh loop, the advisory lock, the threshold notifications and
+  `~/.nazar/limits.json` are exactly what they are with an icon. `--headless` asks for that
+  mode on purpose. Two things it does not do. It does not notice a watcher that appears
+  later, so install the extension and then restart nazar-tray — the extension needs the
+  session restarted on Wayland anyway, which is the heavier half of that step. And with no
+  icon there is nothing to click, so the panel opens only by running `nazar-tray` a second
+  time, which asks the instance that holds the lock to show it — wherever the compositor puts
+  it, since a Wayland client may not place its own window.
 - **One account.** `~/.nazar/limits.json` is a single file by design, frozen at v1 so that
   Nazar can depend on it. Multiple profiles are a v2 shape (`~/.nazar/limits/<profile>.json`)
   and are deliberately not squeezed into v1.
