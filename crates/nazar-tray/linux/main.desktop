@@ -1,0 +1,41 @@
+{{!
+  The desktop entry the .deb and the .rpm install as
+  /usr/share/applications/nazar-tray.desktop.
+
+  It is the bundler's own default with two keys added, and both of them are about the one
+  way this application is unusual: launching it opens nothing.
+
+    StartupNotify=false           There is no window to wait for. Without this a launcher
+                                  shows a busy cursor until it gives up, and a user who
+                                  clicked the menu entry is told the program did not
+                                  respond -- while it is running, in the tray, correctly.
+
+    X-GNOME-UsesNotifications=true  This is a notifier: threshold toasts are the reason it
+                                  is in the tray rather than in a terminal. The key is what
+                                  puts nazar-tray in GNOME's own Notifications settings, so
+                                  the user can silence it where they silence everything
+                                  else -- next to the quiet hours in the panel, not instead
+                                  of them.
+
+  Everything else is a template variable, so bundle.category, the short description and the
+  binary name stay in tauri.conf.json and cannot drift from what the Windows installer says.
+  No localised Name or Comment: the six languages live in ui/locales/*.json and this file
+  has no way to read them, and a translation kept in a second place is a translation that
+  goes stale.
+}}
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+StartupNotify=false
+X-GNOME-UsesNotifications=true
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}

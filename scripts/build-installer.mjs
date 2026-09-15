@@ -25,7 +25,13 @@
 //   node scripts/build-installer.mjs                 release build, NSIS installer
 //   node scripts/build-installer.mjs --debug         the same, unoptimised, for a quick check
 //   node scripts/build-installer.mjs --bundles nsis,msi
+//   node scripts/build-installer.mjs --bundles deb,rpm       on Linux
 //   node scripts/build-installer.mjs --skip-panel
+//
+// On Linux `--bundles` is not optional: `bundle.targets` names `nsis`, which no Linux
+// machine can produce, so the target has to come from the command line. That is the safer
+// half of the trade -- `"all"` would make a Windows release produce the MSI that WP7
+// deliberately does not ship.
 //
 // Nothing here signs, tags, uploads or installs anything. `docs/RELEASE.md` is the checklist
 // that does the rest, by hand.
@@ -104,6 +110,14 @@ function run(command, args, cwd, env) {
  * `crates/`, so a dependency panicking from `crates\serde_json-1.0.x\src\…` would read like
  * one of ours.
  *
+ * **`CFLAGS` is the same rule for the half of the tree that is not Rust**, and it is not
+ * hypothetical either: on Linux, `--remap-path-prefix` left 214 copies of
+ * `/home/<account>/.cargo/registry/.../ring` in the tray binary, because `ring` builds its
+ * assembly and C through `cc` and the compiler writes its own debug info, which a rustc
+ * flag never sees. Windows never showed it - the paths go to a `.pdb` there rather than
+ * into the image. `-ffile-prefix-map` is the C compiler's word for the same thing, and the
+ * caller's `CFLAGS` are kept in front of it as `RUSTFLAGS` are above.
+ *
  * **Every profile, not only release.** nazar applies its remap to release builds alone, to
  * keep `cargo test` and `cargo clippy` on one fingerprint; here the debug installer is a
  * downloadable CI artefact and, more to the point, the debug bundle job is where CI gets to
@@ -134,12 +148,30 @@ function remappedEnvironment() {
     ? process.env["CARGO_ENCODED_RUSTFLAGS"].split("\u001f")
     : (process.env["RUSTFLAGS"] ?? "").split(/\s+/);
 
+  // The same two prefixes for anything `cc` compiles. Windows is left alone: MSVC has no
+  // such flag, its debug information goes to a `.pdb` beside the binary rather than into
+  // it, and the checker measures zero there.
+  const compilerFlags =
+    process.platform === "win32"
+      ? undefined
+      : [
+          process.env["CFLAGS"] ?? "",
+          `-ffile-prefix-map=${join(cargoHome, "registry", "src")}=cargo`,
+          `-ffile-prefix-map=${REPO}=nazar-tray`,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
   // `CARGO_ENCODED_RUSTFLAGS` and not `RUSTFLAGS`: the unencoded variable is split on
   // whitespace, and a Windows home directory with a space in it would break every flag
   // above in a way that looks like a compiler bug.
   return {
     ...process.env,
     CARGO_ENCODED_RUSTFLAGS: [...inherited.filter(Boolean), ...remaps].join("\u001f"),
+    ...(compilerFlags ? { CFLAGS: compilerFlags } : {}),
+    // Read by `tauri-cli` on Linux and ignored everywhere else. See
+    // `requireAyatanaHeaders` below for what it decides and why it is not left to chance.
+    ...(process.platform === "linux" ? { TAURI_LINUX_AYATANA_APPINDICATOR: "true" } : {}),
   };
 }
 
@@ -159,6 +191,52 @@ function report(file) {
   const name = relative(REPO, file).padEnd(58);
   process.stdout.write(`${name} ${human(statSync(file).size).padStart(10)}  ${sha256(file)}\n`);
 }
+
+// 0. On Linux, the one thing about the packages that is decided by the machine building
+//    them rather than by this repository.
+//
+// `tauri-cli` writes the tray's dependency on the appindicator library from whichever
+// development package it can see through pkg-config. With `ayatana-appindicator3-0.1` the
+// `.deb` asks for `libayatana-appindicator3-1` and the `.rpm` for
+// `libayatana-appindicator3.so.1`; without it, both silently fall back to the 2018-era
+// `libappindicator3` names. The Debian one is the damaging half: that package was removed
+// in bookworm and in Ubuntu 24.04, so the `.deb` **cannot be installed** on any current
+// Debian or Ubuntu, and nothing about the build says so. It succeeds, it produces a file of
+// the right size, and the failure is the user's.
+//
+// Two lines answer it, and they belong together. The environment variable settles the
+// question for every builder rather than leaving it to what happens to be installed -- the
+// package says the same thing from a release runner, a maintainer's laptop and a machine
+// carrying both libraries -- and this check turns the missing headers into a sentence
+// naming the package to install, instead of the panic from inside `tauri-cli` that the
+// variable would otherwise produce.
+//
+// Ayatana rather than the original is the product decision behind both: it is the
+// maintained successor, it is what current distributions ship, and it is already the first
+// name `libappindicator-sys` tries to dlopen. Nothing at run time depends on this choice --
+// the tray loads whichever library is on the machine -- so it is a packaging requirement
+// and not a build one.
+function requireAyatanaHeaders() {
+  if (process.platform !== "linux" || !bundles) return;
+  if (spawnSync("pkg-config", ["--exists", "ayatana-appindicator3-0.1"]).status === 0) return;
+  process.stderr.write(
+    [
+      "",
+      "pkg-config cannot see ayatana-appindicator3-0.1. Packages built without it ask for",
+      "libappindicator3-1, which no longer exists in Debian 12 or Ubuntu 24.04 -- a",
+      ".deb that cannot be installed on any current Debian or Ubuntu.",
+      "",
+      "  Debian / Ubuntu   sudo apt install libayatana-appindicator3-dev",
+      "  Fedora            sudo dnf install libayatana-appindicator-gtk3-devel",
+      "",
+      "Nothing at run time needs it: the tray dlopens whichever library is present. This is",
+      "a requirement of the build machine, for the packages alone.",
+      "",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+requireAyatanaHeaders();
 
 // 1. The panel.
 if (!skipPanel) {
@@ -214,6 +292,8 @@ const artefacts = [
   join(TARGET, profile, `nazar-statusline${suffix}`),
   join(TARGET, profile, "bundle", "nsis"),
   join(TARGET, profile, "bundle", "msi"),
+  join(TARGET, profile, "bundle", "deb"),
+  join(TARGET, profile, "bundle", "rpm"),
 ];
 
 process.stdout.write("\n--- artefacts ---\n");

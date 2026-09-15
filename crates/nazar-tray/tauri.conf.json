@@ -53,6 +53,17 @@
       "../../LICENSE": "LICENSE.txt",
       "../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/main.desktop",
+        "section": "devel",
+        "depends": ["ca-certificates"]
+      },
+      "rpm": {
+        "desktopTemplate": "linux/main.desktop",
+        "depends": ["ca-certificates"]
+      }
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

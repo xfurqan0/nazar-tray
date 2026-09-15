@@ -574,3 +574,69 @@ fn the_hex_and_email_detectors_actually_detect() {
     assert!(!looks_like_an_email("a plain @ sign"));
     assert!(!looks_like_an_email("\"used_percent\":54.0"));
 }
+
+/// The Linux packages ask for the one thing the opt-in mode cannot work without, and the
+/// desktop entry they install tells the truth about a program that opens no window.
+///
+/// Four facts, none of which any other test would notice going wrong, and all four of which
+/// fail on a user's machine rather than on a runner:
+///
+/// * **`ca-certificates`.** `detailed-windows` reaches the Anthropic API through
+///   `rustls-native-certs`, which reads `/etc/ssl/certs`. On a minimal system without the
+///   trust store the request fails with no answer at all — the worst shape of error this
+///   product has, because it looks like the quota is unreadable rather than like a package
+///   is missing. One word in `depends` is the whole fix, and it belongs in both packages.
+/// * **The desktop template exists.** `desktopTemplate` is a path; a path that has been
+///   renamed is a bundler error on release day rather than here.
+/// * **`StartupNotify=false`.** Launching a tray application opens nothing, and a launcher
+///   that was not told so shows a busy cursor and then reports that the program did not
+///   respond — while it is running, correctly, in the tray.
+/// * **No text of its own.** `Name` and `Comment` are template variables, so the product
+///   name and the description stay in `tauri.conf.json` and cannot drift from what the
+///   Windows installer says. The six languages live in `ui/locales`, and a translation kept
+///   in a second place is a translation that goes stale.
+#[test]
+fn the_linux_packages_declare_what_a_desktop_and_the_opt_in_mode_need() {
+    let root = repo_root();
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("crates/nazar-tray/tauri.conf.json"))
+            .expect("tauri.conf.json"),
+    )
+    .expect("tauri.conf.json is JSON");
+
+    let mut templates = Vec::new();
+    for format in ["deb", "rpm"] {
+        let package = &config["bundle"]["linux"][format];
+        let depends = package["depends"]
+            .as_array()
+            .unwrap_or_else(|| panic!("bundle.linux.{format}.depends"));
+        assert!(
+            depends.iter().any(|name| name == "ca-certificates"),
+            "the {format} package has to pull the trust store the opt-in mode reads, got \
+             {depends:?}"
+        );
+        templates.push(
+            package["desktopTemplate"]
+                .as_str()
+                .unwrap_or_else(|| panic!("bundle.linux.{format}.desktopTemplate"))
+                .to_owned(),
+        );
+    }
+    assert_eq!(
+        templates[0], templates[1],
+        "one desktop entry, so a user cannot get a different one depending on their distro"
+    );
+
+    let template = std::fs::read_to_string(root.join("crates/nazar-tray").join(&templates[0]))
+        .unwrap_or_else(|error| panic!("{}: {error}", templates[0]));
+    assert!(
+        template.contains("StartupNotify=false"),
+        "a tray application opens no window, and a launcher has to be told"
+    );
+    for (key, variable) in [("Name", "{{name}}"), ("Comment", "{{comment}}")] {
+        assert!(
+            template.contains(&format!("{key}={variable}")),
+            "{key} belongs to tauri.conf.json and the locale files, not to this template"
+        );
+    }
+}
