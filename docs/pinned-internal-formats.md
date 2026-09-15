@@ -9,7 +9,11 @@ the two repositories read different files and keep separate inventories.
 
 **Codex row observed under Codex `cli_version` 0.153.4, Windows 11, 2026-09-07**, across
 **18 rollout logs** written between 2026-08-27 and 2026-09-07 and containing **329
-`rate_limits` lines** (652 window objects). **Claude rows observed under Claude Code
+`rate_limits` lines** (652 window objects). **Re-verified under Codex 0.154.0 on Fedora,
+2026-09-15**: a fresh session wrote the same shape — the same four top-level keys on every
+line, the same nine keys under `rate_limits`, the same three inside each window — and **all
+seven quota values this parser reads were unchanged**. What was new is a compression worker
+and two line types, and both are below. **Claude rows observed under Claude Code
 2.1.263, Windows 11, 2026-09-07**: one captured status-line payload and the maintainer's
 own `settings.json`. The **usage endpoint and sign-in rows were observed live on
 2026-09-07** in a single read-only request on the maintainer's own machine, and neither has
@@ -48,8 +52,8 @@ Rules that follow from this table, and that the tests enforce:
 
 | Path | Fields used | Version observed | Fixture | Notes |
 |---|---|---|---|---|
-| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
-| the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. See "Usage history in a rollout log" below. |
+| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4; re-verified 0.154.0, 2026-09-15 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
+| the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13; re-verified 0.154.0, 2026-09-15 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. A `.jsonl.zst` is **counted and not read**; see "Compression" below. See "Usage history in a rollout log" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` — recursively, so the subagent transcripts under `subagents/` are **included** | `type`; `timestamp`; `message.model`; `message.id`; `requestId`; `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — **nine values, and nothing else**; two of them (the ids) are never written anywhere | Claude Code 2.1.268 – 2.1.269, 2026-09-13 | `fixtures/claude/transcript-*.jsonl` (T-WP13) | **Usage history only; no quota number is derived from these files.** See "The Claude Code transcript" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/stats-cache.json` — **opt-in history backfill** | `version`; `lastComputedDate`; `dailyModelTokens[].{date, tokensByModel}` — **three keys, and nothing else** | Claude Code 2.1.269, `version: 5` (and `dailyModelTokensVersion: 5`), 2026-09-13 | `crates/nazar-core/fixtures/usage/stats-cache.json` (T-WP22) | **Off by default.** Undocumented, recomputed lazily, and holds the *per-line* sums. Read only for days older than the transcripts. See "Claude Code's statistics cache" below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
@@ -136,6 +140,41 @@ The reader therefore takes the newest line with **at least one non-null window**
 not filter on `limit_id` — the id is a name we do not control, and a rule written around
 it would break the day it is renamed. This is pinned by `rollout-premium-null.jsonl`.
 
+### Compression: `.jsonl.zst`
+
+**Shipped in Codex 0.153.4 and 0.154.0, and off by default in both.**
+`codex-rs/rollout/src/compression.rs` holds a worker that rewrites a rollout log as
+`<name>.jsonl.zst` — zstd level 3, mtime and permissions carried over — and then
+**deletes the plain `.jsonl`**. It walks `sessions/` **and** `archived_sessions/`
+recursively and takes every rollout whose **mtime is more than seven days old**
+(`MIN_ROLLOUT_AGE`); a sweep leaves `$CODEX_HOME/.tmp/rollout-compression.lock` behind and
+does not run again for six hours, and it holds `.tmp/rollout-maintenance.lock` so that it
+and the migration below cannot run at once. The reverse exists: continuing an old thread
+materialises the plain file again and removes the `.zst`.
+
+The switch is the feature flag **`local_thread_store_compression`**. Measured on
+2026-09-15 under Codex 0.154.0, `codex features list` reported it **`under development`,
+`false`** — nothing compresses anything today. The code that would is already installed on
+every machine running 0.153.4 or later, which is why this is written down rather than
+waited for: what separates a full `sessions/` tree from an unreadable one is one flag.
+
+**This reader does not decompress a `.jsonl.zst`. It recognises the name and says so.** A
+`sessions/` tree holding compressed rollouts and no plain ones reports
+`rollouts are zstd-compressed; nazar-tray cannot read them yet` on both windows, and never
+`no rollout log in the Codex session directory` — on a machine full of sessions that second
+sentence is a wrong answer rather than a missing one, and a user who reads it concludes
+they have not used Codex. The usage pass counts the same files as compressed and skips
+them, so a log it never scanned is a number on the pass rather than a silence. Decompressing
+one is T-WP26; recognising it was T-WP25.
+
+`codex migrate-rollouts --apply` (`legacy_to_paginated_v1`, staging directory
+`rollout-migrations/`) is the same class of risk under the same maintenance lock: it moves
+old rollouts into the paginated thread history and publishes by renaming over the rollout
+path. Without `--apply` it only reports, and on 2026-09-15 it reported `already_paginated`
+for the log 0.154.0 had just written — the `ordinal` field being the marker of the newer
+shape. Quota did **not** move into any of the SQLite files beside these logs: `rate_limits`
+is still a line in the rollout.
+
 ### Never read from a rollout line
 
 The parser names seven values and constructs a new object out of them. Everything below
@@ -159,6 +198,14 @@ appears in real logs on this machine and **none of it ever leaves the parser**:
   (`command`, `cwd`, `stdout`, `stderr`, `aggregated_output`, `parsed_cmd`, `changes`).
 - `rate_limits.{limit_id, limit_name, credits, individual_limit, spend_control_reached,
   rate_limit_reached_type}`.
+- **`world_state` and `token_usage_record` lines, in full.** Two line types observed under
+  Codex 0.154.0 on 2026-09-15 that the 0.153.4 reading did not list. Neither is at risk of
+  being read by accident and both are named here anyway: the quota parser asks a line for
+  its `type` rather than for its contents, and the usage pass pre-filters on the strings
+  `"token_count"` and `"turn_context"`, neither of which occurs in a `token_usage_record`
+  line — **measured, 0 matches**. Its `usage`, `turn_token_usage` and `thread_token_usage`
+  are a third spelling of counters the usage pass already takes once from
+  `last_token_usage`, so reading them would double-count rather than add anything.
 
 Two mechanical guards back the list. The two strings that *are* copied go through an
 allow-list first — a plan name must be a short ASCII identifier, a timestamp must have the
