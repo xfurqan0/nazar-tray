@@ -1032,6 +1032,39 @@ fn an_archived_session_is_not_read() {
 }
 
 #[test]
+fn a_compressed_rollout_is_counted_as_skipped_rather_than_passed_over_in_silence() {
+    // Codex rewrites a rollout it has not touched for seven days as `<name>.jsonl.zst` and
+    // deletes the plain file. This pass cannot read one — that is T-WP26 — and the cost is
+    // real and permanent: a log compressed before it was ever scanned is never counted, in
+    // exactly the way an archived one is not. The difference is that archiving was a
+    // written decision and this would have been an accident, so it is a number on the
+    // summary instead of a silence.
+    let machine = Machine::new("usage-codex-compressed");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+    // The bytes are not a zstd archive on purpose: nothing opens this file.
+    machine.put_rollout(
+        "2026/09/01/rollout-2026-09-01T08-00-00-cold.jsonl.zst",
+        "not an archive, and never opened",
+    );
+
+    let summary = machine.scan_codex();
+
+    assert_eq!(summary.files_seen, 1, "one file was read, not two");
+    assert_eq!(
+        summary.files_compressed, 1,
+        "and the one that was not is counted"
+    );
+    assert_eq!(summary.credited, 4, "the plain log is unaffected");
+    assert_eq!(
+        summary.files_unreadable, 0,
+        "a compressed log is not a file that failed to open"
+    );
+}
+
+#[test]
 fn a_machine_with_no_rollout_logs_is_a_state_not_a_fault() {
     let machine = Machine::new("usage-codex-empty");
     let summary = machine.scan_codex();

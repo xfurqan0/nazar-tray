@@ -157,6 +157,9 @@ test("T-WP15's command is there, and the panel's half of it matches the Rust hal
     // T-WP17: a pass is both readers, so the diagnostic says which ones ran.
     "providers_scanned",
     "skipped_api_errors",
+    // T-WP25: a rollout Codex compressed reaches no total, so the pass says how many it
+    // walked past. The two sides spell it the same way or this fails.
+    "files_compressed",
   ]) {
     assert.ok(types.includes(key), `ui/src/snapshot.ts does not name ${key}`);
     assert.ok(rustUsage.includes(key), `usage.rs does not name ${key}`);

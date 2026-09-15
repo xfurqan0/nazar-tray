@@ -125,6 +125,16 @@ enum Status {
     NoHome,
     /// The home directory is there but holds no session log.
     NoLogs,
+    /// The session directory holds rollout logs and every one of them is compressed.
+    ///
+    /// A state of its own rather than a kind of [`Status::NoLogs`], because it is the
+    /// opposite sentence. Codex rewrites a rollout it has not touched for seven days as
+    /// `<name>.jsonl.zst` and deletes the plain file, so a machine nobody has opened Codex
+    /// on for a fortnight can have a **full** `sessions/` tree that this reader cannot open
+    /// a single file of — and answering "no rollout log" there tells the user they have
+    /// never run Codex. Reading these files is T-WP26; saying out loud that they are there
+    /// is this.
+    CompressedOnly,
     /// Logs are there, but none of the ones we opened carried a usable quota line.
     NoQuotaLine,
     /// A reading, with the time the source produced it.
@@ -226,10 +236,15 @@ impl CodexReader {
             return Status::NoHome;
         }
 
-        let candidates = locate::newest_rollouts(&self.home, MAX_FILES_OPENED);
+        let found = locate::find_rollouts(&self.home, MAX_FILES_OPENED);
+        let candidates = found.candidates;
         let Some(newest) = candidates.first() else {
             self.tail = None;
-            return Status::NoLogs;
+            return if found.compressed > 0 {
+                Status::CompressedOnly
+            } else {
+                Status::NoLogs
+            };
         };
 
         // Follow the newest log incrementally; start over when a newer one appears.
@@ -342,6 +357,9 @@ fn provider(status: &Status, now: &str) -> Provider {
             ..Provider::default()
         },
         Status::NoLogs => unreadable("no rollout log in the Codex session directory"),
+        Status::CompressedOnly => {
+            unreadable("rollouts are zstd-compressed; nazar-tray cannot read them yet")
+        }
         Status::NoQuotaLine => unreadable(&format!(
             "no rate_limits line in the newest {MAX_FILES_OPENED} rollouts"
         )),

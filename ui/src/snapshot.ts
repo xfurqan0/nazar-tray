@@ -150,6 +150,13 @@ export interface UsageScan {
   readonly took_ms: number;
   /** Lines the server answered with an error and billed for none of. */
   readonly skipped_api_errors?: number;
+  /**
+   * Rollout logs Codex has compressed to `.jsonl.zst`, which this build cannot read.
+   *
+   * `0` on every machine until Codex turns its compression flag on. What it counts is
+   * history that is not in the numbers beside it and is not going to arrive later.
+   */
+  readonly files_compressed?: number;
   /** The readers that ran, in the order they ran: `claude`, then `codex`. */
   readonly providers_scanned?: readonly string[];
   /** Days copied in from Claude Code's statistics cache, or absent when that setting is off. */

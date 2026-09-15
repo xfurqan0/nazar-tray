@@ -111,6 +111,15 @@ const MAX_DEPTH: usize = 6;
 const ROLLOUT_PREFIX: &str = "rollout-";
 const ROLLOUT_SUFFIX: &str = ".jsonl";
 
+/// Suffix of a rollout Codex has compressed, and the third constant that module has.
+///
+/// The quota reader's trouble with these files is loud — it would report an empty machine.
+/// This reader's is quiet and worse: a log compressed before it was ever scanned is **never
+/// counted at all**, which is the permanent cost `archived_sessions/` carries and
+/// `usage-contract.md` states. So the walk counts them instead of passing them by, and a
+/// month missing a week has a number beside it saying how. Decompressing one is T-WP26.
+const ROLLOUT_COMPRESSED_SUFFIX: &str = ".jsonl.zst";
+
 /// `<home>/.codex` — where Codex keeps everything, unless `CODEX_HOME` says otherwise.
 ///
 /// Derived from the home directory the caller passes rather than from the environment, so
@@ -136,13 +145,28 @@ pub fn sessions_dir(codex_home: &Path) -> PathBuf {
 /// logs, and that is a state rather than a fault.
 #[must_use]
 pub fn rollouts(root: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
+    find_rollouts(root).paths
+}
+
+/// What the walk under `root` found: the logs it can read, and the ones it cannot.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Every `rollout-*.jsonl` under `root`, sorted.
+    pub paths: Vec<PathBuf>,
+    /// Compressed rollouts seen and not read. Their events are not in any total.
+    pub compressed: u64,
+}
+
+/// [`rollouts`], and how many compressed logs the same walk passed.
+#[must_use]
+pub fn find_rollouts(root: &Path) -> Found {
+    let mut found = Found::default();
     collect(root, 0, &mut found);
-    found.sort();
+    found.paths.sort();
     found
 }
 
-fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+fn collect(dir: &Path, depth: usize, found: &mut Found) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -158,12 +182,22 @@ fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         let path = entry.path();
         if kind.is_dir() {
             collect(&path, depth + 1, found);
-        } else if kind.is_file()
-            && entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with(ROLLOUT_PREFIX) && name.ends_with(ROLLOUT_SUFFIX)
-            })
-        {
-            found.push(path);
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(ROLLOUT_PREFIX) {
+            continue;
+        }
+        // `.jsonl.zst` does not end in `.jsonl`, so the two tests are exclusive.
+        if name.ends_with(ROLLOUT_COMPRESSED_SUFFIX) {
+            found.compressed = found.compressed.saturating_add(1);
+        } else if name.ends_with(ROLLOUT_SUFFIX) {
+            found.paths.push(path);
         }
     }
 }

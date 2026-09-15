@@ -40,6 +40,19 @@ fn plant(home: &Path, date: &str, label: &str, contents: &str) -> PathBuf {
     path
 }
 
+/// Write a few bytes to `<home>/sessions/<date>/rollout-<label>.jsonl.zst`.
+///
+/// The bytes are deliberately **not** a zstd archive. Nothing in this crate opens one, and
+/// a fixture that held a real archive would be pinning a decompressor this reader does not
+/// have — what is being tested is that the name is recognised and the file left alone.
+fn plant_compressed(home: &Path, date: &str, label: &str) -> PathBuf {
+    let dir = locate::sessions_dir(home).join(date.replace('/', std::path::MAIN_SEPARATOR_STR));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("rollout-{label}.jsonl.zst"));
+    std::fs::write(&path, b"not an archive, and never opened").unwrap();
+    path
+}
+
 /// Stamp a file's modification time, so "newest" is a fact rather than a race.
 fn age(path: &Path, seconds: u64) {
     let when = SystemTime::now() - std::time::Duration::from_secs(seconds);
@@ -166,6 +179,73 @@ fn logs_without_a_quota_line_report_the_reason_and_no_percentage() {
     for window in provider.windows.values() {
         assert_eq!(window.percent, None);
         assert_eq!(window.state, WindowState::Error);
+    }
+}
+
+// ---------------------------------------------------------------- compressed logs
+
+#[test]
+fn a_tree_of_plain_logs_reads_exactly_as_it_did() {
+    // The first of the three states, kept as a test of its own so that the other two are
+    // read against something rather than against memory.
+    let dir = TempDir::new("codex-plain-only");
+    plant(&dir.path, "2026/09/07", "session", SAMPLE);
+
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    assert!(provider.windows[WINDOW_PRIMARY].percent.is_some());
+    assert_eq!(provider.windows[WINDOW_PRIMARY].error, None);
+}
+
+#[test]
+fn a_compressed_log_beside_a_plain_one_changes_nothing() {
+    let dir = TempDir::new("codex-mixed");
+    let plain = plant(&dir.path, "2026/09/07", "session", SAMPLE);
+    let compressed = plant_compressed(&dir.path, "2026/09/07", "cold");
+    // The compressed one is the newer file, which is the case that would have mattered had
+    // it been a candidate: the walk sorts by modification time.
+    age(&plain, 600);
+
+    let mut reader = CodexReader::new(&dir.path);
+    let provider = reader.refresh_at(NOW);
+
+    assert!(
+        provider.windows[WINDOW_PRIMARY].percent.is_some(),
+        "the plain log is still the reading"
+    );
+    assert_eq!(provider.windows[WINDOW_PRIMARY].error, None);
+    assert_eq!(
+        reader.following(),
+        Some(plain.as_path()),
+        "the reader must follow the log it can read"
+    );
+    assert_ne!(reader.following(), Some(compressed.as_path()));
+}
+
+#[test]
+fn a_tree_of_only_compressed_logs_says_so_instead_of_claiming_there_are_none() {
+    // The scenario the risk report described: Codex's compression flag is on, nobody has
+    // opened Codex for more than a week, every rollout is cold. `sessions/` is full.
+    let dir = TempDir::new("codex-compressed-only");
+    plant_compressed(&dir.path, "2026/09/07", "cold-one");
+    plant_compressed(&dir.path, "2026/09/06", "cold-two");
+
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    assert!(provider.configured, "Codex is installed and has been used");
+    assert_eq!(provider.windows.len(), 2);
+    for key in [WINDOW_PRIMARY, WINDOW_SECONDARY] {
+        let error = provider.windows[key].error.clone().unwrap();
+        assert!(
+            error.contains("zstd-compressed"),
+            "the reason must name the compression: got {error}"
+        );
+        assert!(
+            !error.contains("no rollout log"),
+            "a full sessions directory is not an empty one: got {error}"
+        );
+        assert_eq!(provider.windows[key].percent, None);
+        assert_eq!(provider.windows[key].state, WindowState::Error);
     }
 }
 

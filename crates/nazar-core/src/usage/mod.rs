@@ -105,6 +105,16 @@ pub struct UsageSummary {
     pub files_read: u64,
     /// Files that could not be opened this time. Their cursors are kept as they were.
     pub files_unreadable: u64,
+    /// Rollout logs skipped because Codex has compressed them to `.jsonl.zst`.
+    ///
+    /// Neither a failure nor a file that went missing: Codex rewrites a rollout it has not
+    /// touched for seven days and deletes the plain one, and this reader has no
+    /// decompressor — that is T-WP26. **Their events are in no total and never will be**,
+    /// exactly as `archived_sessions/`'s are not, so the count belongs on the summary
+    /// rather than nowhere: a month short of a week should be able to say what it is short
+    /// of. Always `0` on the Claude side, which has no such format.
+    #[serde(default)]
+    pub files_compressed: u64,
     /// Files that had been replaced or truncated and were read from the top again.
     pub files_restarted: u64,
     /// Bytes read.
@@ -332,7 +342,10 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
         })
         .collect();
 
-    for path in codex::rollouts(&codex::sessions_dir(codex_home)) {
+    let walk = codex::find_rollouts(&codex::sessions_dir(codex_home));
+    summary.files_compressed = walk.compressed;
+
+    for path in walk.paths {
         summary.files_seen += 1;
         let key = store::path_key(&path);
         let previous = cursors.files.get(&key).cloned();

@@ -156,6 +156,26 @@ is a chain. **T-WP18 is this one** — the written decisions, the contract and t
 its first two items belong in the same commit as the readers they describe, because rule 4 of
 `pinned-internal-formats.md` says a fixture and its row land together.
 
+### The Codex-compression packages (T-WP25 – T-WP26)
+
+From a format audit on 2026-09-15 rather than from live use. Codex has shipped a worker since
+0.153.4 that rewrites a rollout whose mtime is more than seven days old as `<name>.jsonl.zst`
+and **deletes the plain file**, behind a feature flag that is off by default and measured off.
+Both readers here select a file with `ends_with(".jsonl")`, so on the day that flag turns on
+they stop seeing a full `sessions/` tree — silently, and in the quota reader's case while
+reporting that the directory is empty.
+
+| # | Package | Done when |
+|---|---|---|
+| T-WP25 ✅ | **Recognise `.jsonl.zst`**: one walk counts the compressed rollouts instead of stepping over them; the quota reader answers `rollouts are zstd-compressed; nazar-tray cannot read them yet` rather than "no rollout log"; the usage pass reports `files_compressed` | ~~A tree of only compressed logs says so, a compressed log beside a plain one changes nothing, and nothing is added to `Cargo.toml`~~ — **landed 2026-09-15**; seven tests, no dependency, `limits.json` unchanged |
+| T-WP26 | **Read `.jsonl.zst`**: stream-decode with `ruzstd` (pure Rust, no C toolchain, and a `deny.toml` review), whole file rather than a tail window — a compressed log is cold and small | The quota reader gets a percentage out of a compressed tree, the usage pass counts its events exactly once, and `scripts/check-licenses.mjs` passes |
+
+**The sibling repository has the same line** — `CODEX_ROLLOUT_SUFFIX` in Nazar's
+`packages/core/src/codex-rollout.ts` — and a much smaller problem behind it: Nazar's business
+is *live* threads, and a live thread's rollout is by definition far newer than the seven-day
+threshold, so it stays plain. The thread-writer locks it reads were unchanged under 0.154.0.
+That is a note for Nazar rather than work here.
+
 ## 8. Open decisions
 - ~~Does usage history mean reading Claude Code's transcripts, which §5 says are not read?~~ → **decided 2026-09-13 03:35, maintainer approved: yes, metadata only — and the §5 line above is corrected rather than quietly outgrown.** `~/.claude/projects/**` moves from "not read, on purpose" into the inventory in [`pinned-internal-formats.md`](pinned-internal-formats.md), with the nine fields it may read, the version observed and its fixtures.
   - **Why the old rule does not cover this.** The retired prototype read up to 400 transcripts to *estimate a quota percentage* when a fetch failed — it manufactured a number to stand in for one the server would not give. Usage history reads `message.usage`, which is **the server's own reported number**, written to disk by Claude Code rather than computed by it, and it replaces nothing: the quota view keeps coming from the status line and the endpoint, and no percentage is derived from a transcript. "No estimates, only reported numbers" is the rule this obeys, not the rule it breaks.
@@ -1680,3 +1700,43 @@ its first two items belong in the same commit as the readers they describe, beca
   minutes exactly as before. The crash-sweep test that was already there passes untouched,
   because `acquire_as` — the tests' way in, with invented pids that name nothing on the
   machine — probes blind by construction.
+- 2026-09-15 10:30 — **T-WP25 landed: a compressed rollout is a state, not an absence.** A
+  format audit re-read Codex's rollout log under 0.154.0 and found the format exactly where
+  0.153.4 left it — the same four keys on every line, the same nine under `rate_limits`, the
+  same three in each window, all seven quota values unmoved. What it also found is
+  `codex-rs/rollout/src/compression.rs`, **shipped since 0.153.4 and present in every build
+  since**: with `local_thread_store_compression` on, every rollout whose mtime is more than
+  seven days old is rewritten as `<name>.jsonl.zst` and **the plain file is deleted**. The
+  flag measured `under development` / `false` on 2026-09-15, so this has not happened to
+  anyone yet. It is one flag away.
+  **What it would have done to this application is the reason it is worth a package now.**
+  Both readers pick their files with `ends_with(".jsonl")`, and a `.jsonl.zst` does not end in
+  `.jsonl`. So a machine whose owner had not opened Codex for eight days would have had a
+  `sessions/` tree full of history and a tray saying *"no rollout log in the Codex session
+  directory"* — not a number missing, **a wrong sentence**, and one the user has no way to
+  disbelieve. The failing test written first said exactly that, in those words.
+  **The new state is the smallest one that could be honest.** `locate::find_rollouts` returns
+  the readable candidates and a count of the compressed ones from the same `read_dir`, and the
+  cap and the walk's stop conditions still count candidates alone — so a week of cold logs
+  above a plain one cannot push it out of reach, which is its own test. When there are no
+  candidates and the count is not zero the reader answers `Status::CompressedOnly`, and the
+  windows carry `rollouts are zstd-compressed; nazar-tray cannot read them yet`. **The
+  `limits.json` contract does not change and does not need to**: `error` is free text a
+  consumer renders as written — the panel has drawn it that way since WP4, *"the reader's own
+  sentence, not a message key"* — both windows still arrive with their lengths and no
+  `percent`, and `state` is still `error`. No `schemaVersion` bump, and **no new locale key**,
+  because no new key was invented: the one string added is the reader's, in the one place the
+  panel already shows the reader's strings.
+  **The quieter half is the usage pass.** There the wrong answer is not a sentence, it is a
+  silence: a log compressed before it was ever scanned is never counted, exactly as an
+  archived one is not — and *that* one is a decision written in `usage-contract.md`, while
+  this would have been an accident. So `UsageSummary::files_compressed` counts them, the
+  bridge's `UsageScan` carries the sum, `ui/src/snapshot.ts` names it, and `bridge.test.mjs`
+  now fails if the two sides ever spell it differently. Nothing is decompressed: **no
+  dependency was added**, and `ruzstd` belongs to T-WP26.
+  **451 core tests where there were 444**, fmt and clippy clean, `--no-default-features`
+  builds, panel tests and typecheck green. The seven are the three states the package exists
+  to tell apart — plain only, plain beside compressed, compressed only — the three bounds on
+  the walk that keep the first two true, and the usage pass's counted skip. The fixtures are a
+  handful of bytes that are deliberately **not** a zstd archive: nothing opens them, and a
+  real archive in a test would be pinning a decompressor this build does not have.

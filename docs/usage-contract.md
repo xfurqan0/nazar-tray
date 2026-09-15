@@ -580,6 +580,19 @@ as they were. The cost, stated rather than discovered: **a session archived befo
 scanned is never counted at all.** Changing that means reading both trees and telling them
 apart by something other than a path, and it is not a line this file can add on its own.
 
+**A compressed rollout is counted and not read.** Codex has shipped a worker since 0.153.4
+that rewrites every rollout whose mtime is more than seven days old as `<name>.jsonl.zst` and
+deletes the plain file; it sits behind the `local_thread_store_compression` flag, measured
+`under development` and `false` on 2026-09-15 under 0.154.0. This pass has no decompressor, so
+such a log costs exactly what an archived one costs — **its events are in no total and are not
+going to arrive later** — with one difference, and that difference is the whole of T-WP25:
+archiving is a decision written down here, and this would have been a week of history
+disappearing with nothing anywhere to say so. So the scan counts them.
+`UsageSummary::files_compressed`, summed into the bridge's `UsageScan.files_compressed`, is how
+many rollouts a pass walked past for this reason, and it is `0` on every machine whose Codex
+has the flag off. Reading them is T-WP26; the format is in
+[`pinned-internal-formats.md`](pinned-internal-formats.md) under "Compression".
+
 ## A damaged month is left alone
 
 A file that does not parse is **reported and kept**, never replaced by an empty one and never

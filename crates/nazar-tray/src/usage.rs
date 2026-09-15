@@ -164,6 +164,14 @@ pub struct UsageScan {
     pub duplicates: u64,
     /// How long the whole pass took, in milliseconds.
     pub took_ms: u64,
+    /// Rollout logs skipped because Codex has compressed them, both readers together.
+    ///
+    /// Codex's only, and `0` until Codex turns its compression flag on. A log it has
+    /// rewritten as `.jsonl.zst` is one this build cannot read — that is T-WP26 — and the
+    /// events in it reach no total, so a pass that walked past a week of history says how
+    /// many files that was rather than leaving the gap to be discovered in a chart.
+    #[serde(default)]
+    pub files_compressed: u64,
     /// Lines the server answered with an error and billed for none of, skipped by name.
     ///
     /// T-WP13b's finding: an `isApiErrorMessage` line carries a full set of counters. All
@@ -187,6 +195,9 @@ impl UsageScan {
         self.files_seen = self.files_seen.saturating_add(summary.files_seen);
         self.lines = self.lines.saturating_add(summary.lines);
         self.duplicates = self.duplicates.saturating_add(summary.duplicates);
+        self.files_compressed = self
+            .files_compressed
+            .saturating_add(summary.files_compressed);
         self.skipped_api_errors = self
             .skipped_api_errors
             .saturating_add(summary.skipped_api_errors);
@@ -1314,6 +1325,7 @@ mod tests {
                 lines: 90_210,
                 duplicates: 51_344,
                 took_ms: 1_840,
+                files_compressed: 0,
                 skipped_api_errors: 11,
                 providers_scanned: vec![PROVIDER.to_owned(), PROVIDER_CODEX.to_owned()],
                 reported_days: 0,
