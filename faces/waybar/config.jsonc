@@ -1,0 +1,44 @@
+// An example Waybar module for nazar-tray. Copy the "custom/nazar" block into your own
+// ~/.config/waybar/config.jsonc and add "custom/nazar" to one of the module lists.
+//
+// The one rule worth reading twice is on "format".
+{
+  "modules-right": ["custom/nazar", "clock"],
+
+  "custom/nazar": {
+    // Where you put nazar-waybar.sh. It is a plain POSIX script; ~/.config/waybar/scripts
+    // is the usual home for one.
+    "exec": "~/.config/waybar/scripts/nazar-waybar.sh",
+
+    // The script prints {text, alt, tooltip, class, percentage} on one line, which is the
+    // contract waybar-custom(5) documents for a custom module.
+    "return-type": "json",
+
+    // How often the bar asks. The tray writes limits.json only when the numbers move, and
+    // a quota window is five hours or a week long, so thirty seconds is already generous.
+    "interval": 30,
+
+    // Also refresh on demand: `pkill -RTMIN+8 waybar`, after `nazar-tray --print --write`
+    // for instance. Any free real-time signal will do; 8 is only what this example picked.
+    "signal": 8,
+
+    // {} and {text} are the script's own text -- "nazar 70%", or "nazar ?" when nothing
+    // could be read.
+    //
+    // **Do not write {percentage} here.** Waybar's percentage field has to be a number, so
+    // the script puts 0 there when nothing is known -- and a bar that says "0 %" to
+    // somebody about to start a long task has told them the opposite of the truth. The
+    // honest answer is in {text} ("?") and in the class ("unknown"); percentage exists to
+    // index format-icons and for nothing else. Same reason, same trap: format-icons as an
+    // **array** is indexed by percentage. Use the object form, keyed by alt, which the
+    // README shows.
+    "format": "{}",
+
+    // A click asks the running tray to show its panel. On a desktop with no tray host that
+    // is the only way to open it; drop this line if you do not want the panel at all.
+    "on-click": "nazar-tray",
+
+    // The tooltip is one line per window, with \r between them.
+    "tooltip": true
+  }
+}

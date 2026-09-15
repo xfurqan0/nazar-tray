@@ -136,6 +136,11 @@ jobs:
       # patchelf is the Tauri bundler's. `libayatana-appindicator3-dev` is the one that looks
       # optional and is not: without it the tray icon has no library to dlopen at run time,
       # and the application would build here and show nothing on a user's desktop.
+      #
+      # `jq` is the Waybar face's only dependency and this is the only job that can run it —
+      # `ui/test/waybar.test.mjs` needs a POSIX shell, so it skips itself on the Windows
+      # runner. It is already in the runner image; naming it here is what stops a quiet
+      # change to that image from turning a test into a skip.
       - name: Install the GTK stack
         run: |
           sudo apt-get update
@@ -145,7 +150,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libdbus-1-dev \
-            patchelf
+            patchelf \
+            jq
 
       - name: Install panel dependencies
         working-directory: ui
@@ -169,6 +175,16 @@ jobs:
 
       - name: Test the workspace
         run: cargo test --workspace
+
+      # The same panel suite the Windows job runs, for the eleven tests in it that only
+      # this runner can execute: `ui/test/waybar.test.mjs` drives `faces/waybar` through a
+      # POSIX shell and jq, and skips itself where there is neither. Running the whole suite
+      # twice costs half a second and means the face is checked against
+      # `fixtures/limits.sample.json` in the same run as the code that writes that shape —
+      # which is the only reason the face lives in this repository at all.
+      - name: Test the panel and the faces
+        working-directory: ui
+        run: npm test
 
   # nazar-core and nazar-statusline are pure Rust with no Tauri in them, so they compile
   # and test everywhere. The tray app itself is Windows-only in v1 on purpose: no toolkit

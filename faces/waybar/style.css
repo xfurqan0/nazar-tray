@@ -1,0 +1,49 @@
+/* An example stylesheet for the nazar-tray Waybar module.
+ *
+ * Copy what you want into ~/.config/waybar/style.css. The script sets exactly one class per
+ * reading, and there are five of them:
+ *
+ *   ok       below the warning threshold
+ *   warn     at 60 % or above
+ *   crit     at 85 % or above
+ *   stale    nazar-tray is not running, so the number is the last one it wrote
+ *   unknown  nothing could be read -- not "nothing has been used"
+ *
+ * The last two are the pair worth styling differently from each other and from ok. `stale`
+ * is a real number that has stopped moving; `unknown` is the absence of one, and the bar
+ * says "nazar ?" beside it. A stylesheet that paints both of them the colour of ok is a
+ * stylesheet that lies twice.
+ *
+ * Colours below are the bead's own: deep blue rim, amber, red, and the grey nazar-tray uses
+ * for "nothing could be read".
+ */
+
+#custom-nazar {
+  padding: 0 10px;
+  color: #cfd6e4;
+}
+
+#custom-nazar.ok {
+  color: #cfd6e4;
+}
+
+#custom-nazar.warn {
+  color: #f0b429;
+}
+
+#custom-nazar.crit {
+  color: #e5484d;
+  font-weight: bold;
+}
+
+/* The tray is not running. The number is real and is no longer being maintained, so it is
+ * dimmed rather than recoloured -- recolouring would say something about the quota. */
+#custom-nazar.stale {
+  color: #7c8598;
+}
+
+/* Nothing could be read. Grey, like the bead, and never the colour of a low reading. */
+#custom-nazar.unknown {
+  color: #7c8598;
+  font-style: italic;
+}

@@ -295,6 +295,26 @@ The whole contract — what a capture holds, where it lives, why it is keyed by 
 what is deliberately *not* in `limits.json` — is in
 [docs/statusline-wrapper.md](docs/statusline-wrapper.md).
 
+## Faces
+
+`~/.nazar/limits.json` has one writer and any number of readers, and a reader does not have to
+be this application. [`faces/`](faces/) holds the small ones — no build step, no package, no
+store listing:
+
+- **[Waybar](faces/waybar/)** — `nazar 70%` in the bar and every window in the tooltip, from a
+  60-line POSIX script and `jq`. It reads `limits.json`, writes nothing, opens no socket and
+  runs no other program. Most useful on a desktop where nazar-tray has no tray to draw in; on
+  one where it does, it goes **beside** the bead rather than instead of it, and gives you the
+  number without hovering.
+
+**The tray is the only writer.** A face reads: it does not fetch, does not cache a "last good
+value" and does not notify, because a second source of threshold warnings would double every
+one of them. It is also why the face is in this repository rather than in one of its own — it
+is checked against `fixtures/limits.sample.json` in the same CI run as the code that writes
+that shape, so the two cannot drift.
+
+The contract a face reads is [docs/limits-contract.md](docs/limits-contract.md), frozen at v1.
+
 ## Known limits
 
 Written down rather than discovered. Every one of these is a consequence of a decision that is
