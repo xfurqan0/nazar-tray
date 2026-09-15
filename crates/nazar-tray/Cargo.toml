@@ -29,3 +29,13 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2" # WP5: threshold toasts at 60 / 85 / 100 %
 tauri-plugin-autostart = "2"    # WP5: "start with Windows" toggle
 tauri-plugin-updater = "2"      # WP7: signed updates from GitHub Releases
+
+# T-WP-L1: `localtime_r`, `tzset` and the layout of `struct tm`, for the quiet hours the
+# tray could not read on Linux. Not a new dependency in any sense that costs anything --
+# libc is already in Cargo.lock and already compiled for this target, several crates deep
+# in the Tauri tree, and it is in THIRD-PARTY-NOTICES.md either way. What it buys is the
+# one thing hand-written FFI cannot: `struct tm` has two trailing fields that are a glibc
+# and BSD extension, and a declaration that gets them wrong is a function writing past the
+# end of a stack local rather than a compile error.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

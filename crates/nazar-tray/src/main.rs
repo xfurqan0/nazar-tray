@@ -53,6 +53,11 @@
 mod alerts;
 mod cli;
 mod demo;
+// Linux only, and glib only: it installs a GLib log writer, which is a symbol that exists
+// because GTK is linked. See the module for the six frames of somebody else's stack it is
+// there to keep out of the log.
+#[cfg(target_os = "linux")]
+mod gtk_log;
 mod i18n;
 mod icon;
 mod panel;
@@ -76,6 +81,11 @@ use panel::PanelState;
 use state::{AppState, Overrides, SNAPSHOT_CHANGED};
 
 fn main() {
+    // First, before anything can log: GLib takes one writer per process and installing it
+    // after a message has been written does not unwrite it.
+    #[cfg(target_os = "linux")]
+    gtk_log::install();
+
     // Checked before anything is created: `--print` and `--icons` must not open a window,
     // touch the tray, or leave a process behind.
     if cli::run_if_requested() {

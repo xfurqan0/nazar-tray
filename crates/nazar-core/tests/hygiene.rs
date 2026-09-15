@@ -231,13 +231,23 @@ fn the_token_is_exposed_in_one_place_in_the_shipping_code() {
     );
 }
 
-/// Nothing derives a time from the machine's time zone.
+/// Nothing derives a time from the machine's time zone, except the one file that must.
 ///
 /// The contract stores UTC and the state model counts down between two instants, so a
 /// countdown is the same number wherever it is computed. `state/tests.rs` proves the
 /// arithmetic; this proves there is no second path — nothing reads `TZ`, and nothing calls a
 /// local-time conversion — because a property test cannot see a dependency that has not been
 /// written yet. Rendering local time is the panel's job, in JavaScript, where it is one call.
+///
+/// **There is exactly one exception and it is named.** `nazar-tray`'s `system.rs` asks the
+/// operating system what hour it is locally, because quiet hours are wall-clock hours: "do
+/// not interrupt me between eleven and seven" means eleven where the user is, and no UTC
+/// instant can answer that. It is not reset arithmetic. What comes back is minutes since
+/// local midnight, it is handed to [`nazar_core::Config::is_quiet_at`] as a value, and this
+/// crate still asks nobody — which is why that method takes the answer rather than the
+/// question. Naming the file rather than dropping the rule keeps its teeth: any *other* file
+/// that starts converting to local time turns this red, and so does deleting or renaming the
+/// exception, because the test also fails if it stops being there.
 #[test]
 fn nothing_in_the_workspace_asks_the_machine_what_time_zone_it_is_in() {
     // Assembled at run time so this file does not match itself.
@@ -249,17 +259,24 @@ fn nothing_in_the_workspace_asks_the_machine_what_time_zone_it_is_in() {
         format!("{}{}", "utc_", "offset"),
     ];
 
+    // Quiet hours, and nothing else. See the note above.
+    let permitted = "system.rs";
+
     let mut hits = Vec::new();
+    let mut the_exception_is_still_there = false;
     for path in workspace_sources() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
         for needle in &needles {
-            if text.contains(needle.as_str()) {
-                hits.push(format!(
-                    "{} mentions {needle:?}",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
+            if !text.contains(needle.as_str()) {
+                continue;
+            }
+            if name == permitted {
+                the_exception_is_still_there = true;
+            } else {
+                hits.push(format!("{name} mentions {needle:?}"));
             }
         }
     }
@@ -268,6 +285,12 @@ fn nothing_in_the_workspace_asks_the_machine_what_time_zone_it_is_in() {
         "reset arithmetic happens on UTC instants and nowhere else; these files say \
          otherwise:\n  {}",
         hits.join("\n  ")
+    );
+    assert!(
+        the_exception_is_still_there,
+        "{permitted} is the one file allowed to read the local clock, and it no longer does \
+         — either quiet hours have lost their only source of wall-clock time, or the \
+         exception has moved and this rule is now pointing at nothing"
     );
 }
 

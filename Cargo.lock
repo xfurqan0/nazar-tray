@@ -2269,6 +2269,7 @@ dependencies = [
 name = "nazar-tray"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "nazar-core",
  "serde",
  "serde_json",
