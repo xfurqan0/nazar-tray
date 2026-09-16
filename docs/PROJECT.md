@@ -194,6 +194,9 @@ into a decision.
 | T-WP-L3 ✅ | **Two packages and the files a desktop expects**: `bundle.linux.{deb,rpm}`, the `.desktop` template, the Ayatana dependency settled at build time rather than by whatever `pkg-config` happened to see | ~~Both packages install, the launcher shows the icon, uninstalling keeps `~/.nazar`, and `check-binary-paths.mjs` finds nothing~~ — **landed 2026-09-15** |
 | T-WP-L4 | **The wrapper, installed like a program**: `nazar-statusline` into `/usr/bin` from the package, Linux path rules in `install.rs`, and the uninstall hook that puts a status line back | A packaged machine installs the status line and removing the package restores the user's own, byte for byte |
 | T-WP-L5 ✅ | **Notices that tell the truth on every platform**: three targets resolved rather than the host triple, one file with a section each, and an output that does not depend on the machine that wrote it | ~~`--check` is green in both CI jobs, `check-licenses.mjs` rejects nothing, and the Linux half of the tree is in the file a Linux package ships~~ — **landed 2026-09-15** |
+| T-WP-L7 ✅ | **The first-run hint belongs to the platform that has the flyout**: `desktop::OVERFLOW_HINT`, the settings row that brings it back, and a per-platform list of what a fresh machine is told once | ~~A Linux or macOS first run is never told to drag a bead onto a taskbar it has not got; Windows is unchanged; every message the list names resolves in all six languages~~ — **landed 2026-09-17** |
+| T-WP-L8 ✅ | **The menu is the face on Linux**: live quota rows in the dbusmenu, rewritten on every refresh; no placement where placement is ignored; `config.window.x11Positioning` for anybody who wants the popup through XWayland; one notice pointing GNOME at nazar-gnome | ~~The menu carries a row per provider with the binding window, its percentage and its reset; the rows change while the menu is open; a provider with nothing to report says why and never `0 %`; a Windows `config.json` does not change a byte~~ — **landed 2026-09-17** |
+| T-WP-L9 ✅ | **A reason a user can act on**: `panel.provider.notConfigured.<name>` in the panel and in the menu row, the sentence that names the command, and the measurement that says there is no second source to read instead | ~~Claude Code with no wrapper reads as "status line wrapper not installed" and the card says what to run; the transcripts and the statistics cache are searched for a rate-limit field and the answer is written down~~ — **landed 2026-09-17** |
 | T-WP-L6 ◐ | **A Linux artefact on the release draft**: `verify-linux` and `build-linux` on `ubuntu-22.04` for the wider glibc base, attestation, `SHA256SUMS` across both platforms, and the README's Windows-first paragraphs rewritten to what was measured | A tag produces a draft carrying the `-setup.exe`, the `.deb` and the `.rpm`, and `gh attestation verify` passes on all three. **The pipeline landed 2026-09-16** and was rehearsed by `workflow_dispatch`, which builds everything and cannot reach the draft. **Two halves are a maintainer's:** the README rewrite, which is public text, and the tag, which is one-way. Until a tag is pushed the criterion is unproven by construction. |
 
 **The faces are not in this list on purpose.** `faces/waybar/` reads `limits.json` and touches
@@ -223,6 +226,10 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   - **The tray, where there is a tray.** The leaning's premise was that no toolkit does this reliably. Measured on 2026-09-15: it builds, it runs, and it is drawn on KDE, XFCE, Cinnamon, Budgie and Ubuntu's GNOME. Where it is not drawn — a stock GNOME, which is most of the installed base — the cause is not the toolkit but the absence of a StatusNotifier host, and libappindicator reports success either way, which is why an application cannot find out by trying. T-WP-L2 asks the session bus first and runs as the engine when the answer is no, saying so once in a notification. **"Ship an AppIndicator without popup" is therefore not the second option: the popup works wherever the icon does.**
   - **Faces, for the desktops that draw somebody else's indicator.** `limits.json` was written as one writer and many readers, and `faces/waybar/` is the first reader that is not this application — 60 lines of POSIX shell and `jq`, tested against `fixtures/limits.sample.json` in the same CI run as the writer. A GNOME Shell extension is the same shape of answer and is deliberately **not** in this repository: it has its own store, its own review and its own version number, which is the test for whether a face belongs in `faces/` or in a repository of its own. It was written on 2026-09-16 and is [nazar-gnome](https://github.com/xfurqan0/nazar-gnome) — the bead and the binding window in the GNOME panel, every window in the menu, `--headless` underneath it. The contract admitted a third reader without changing.
   - **What stays open**, and is not this decision: packaging beyond the `.deb` and `.rpm` T-WP-L3 produced, a Linux artefact on the release draft (T-WP-L6, which also rewrites the README's Windows-first paragraphs), and the panel's position on Wayland — a client may not place its own window, so a panel opened without a tray icon to anchor it lands where the compositor puts it.
+- ~~The panel's position on Wayland.~~ → **closed 2026-09-17 by T-WP-L8: it is not placed, and the numbers move to the surface that is.** The measurement first, on Fedora 44 / GNOME 50: `set_position` returns `Ok(())` twice and `outer_position()` never leaves `(0, 0)`; `cursor_position()` returns `Ok((0, 0))` rather than an error, so the arithmetic about which side of the cursor to open on was running on a lie. Under `GDK_BACKEND=x11` the identical run landed the window on exactly `(700, 400)` and read a real pointer — so XWayland is the lever, and it is `config.window.x11Positioning`, off by default, because it puts the whole application including the webview on an X11 translation layer to move one window.
+  - **It turned out not to be the interesting half.** `tray-icon 0.24.2`'s GTK backend sends no `TrayIconEvent` at all (`TrayIconEvent::send` is called from the Windows and macOS backends and nowhere else), `rect()` is `{ None }`, and `set_tooltip` is `Ok(())` and nothing else. So on Linux the left button was never ours, there was never an icon rectangle to open a panel beside, and everything the tooltip says on Windows reached a Linux user nowhere. Fixing the position would have fixed the third-best surface.
+  - **The menu is what the shell places beside the icon**, on every desktop that draws a `StatusNotifierItem`, so that is where the numbers went: a row per provider, rewritten through `muda`'s `set_text`, which reaches a `dbusmenu` property update — read back over D-Bus from a running process, rows and all, to prove it changes rather than going stale. The panel is then an ordinary centred window opened from `Open`, which is an honest outcome; one in a computed position that was never honoured is a bug with extra steps.
+  - **What stays open:** a `StatusNotifierWatcher` that appears *later*. It is not only the AppIndicator extension being installed — GNOME disables extensions while the session is locked, and the watcher's bus name goes with them, so a nazar-tray started during a locked session falls into engine mode and stays there. Observed on 2026-09-17 at 00:25, on a machine whose watcher had been on the bus twenty minutes earlier. A running tray recovers on its own, because libappindicator re-registers; only a *start* in that window is stuck, and the fix would be the `NameOwnerChanged` subscription T-WP-L2 decided not to hold.
 
 ## 9. Log
 - 2026-09-07 01:55 — Repo opened, first spec (C# migration plan). Decisions: separate downloadable app; nazar identity; English everywhere.
@@ -1911,3 +1918,52 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   692 tests, fmt and clippy clean, `check-licenses.mjs` green, notices current. CI does not
   run `cargo deny`; it still does not, and that is the next question rather than this
   package's answer.
+- 2026-09-17 — **T-WP-L7, L8 and L9 landed: three things a Linux first run got wrong.** Reported
+  by the maintainer at 23:40 on 2026-09-16, on Fedora 44 / GNOME 50 / Wayland with the
+  AppIndicator extension enabled — the first time this application had been opened on Linux by
+  somebody using it rather than testing it.
+  **(1) The panel told a GNOME user to drag a bead into a taskbar.** The Windows 11 overflow
+  hint is shown on first run from `firstRunHintDismissed`, which is `false` on every fresh
+  machine of every platform, and nothing above it had ever asked whose desktop this was.
+  `desktop::OVERFLOW_HINT` is a `cfg!` — the answer is the shell's and cannot change while the
+  process runs — and it takes the banner out, takes `--hint on` out with it, and hides the
+  settings row that offers to bring the tip back. `desktop::first_run_notices` is the list it
+  leaves behind: what a fresh machine of each platform is told once, tested against all six
+  catalogues so a renamed key fails here rather than shipping a notification that says
+  `tray.hidden.title`.
+  **(2) The click opened a window in the middle of the screen.** Three measurements, none of
+  them a bug in this repository: `tray-icon 0.24.2`'s GTK backend sends no `TrayIconEvent`
+  (`TrayIconEvent::send` is called from the Windows and macOS backends and nowhere else), its
+  `rect()` is `{ None }`, and its `set_tooltip` is `Ok(())` and nothing else. The left button
+  was never ours on Linux — libappindicator opens the menu — there was never an icon rectangle
+  to anchor a panel to, and the tooltip that carries the binding window, the percentage, the
+  countdown and the week reached a Linux user nowhere. Nor could the panel have been placed:
+  `set_position` returned `Ok(())` twice while `outer_position()` never left `(0, 0)`, and
+  `cursor_position()` answered `Ok((0, 0))` rather than an error, so the arithmetic ran on a
+  lie. **So the numbers moved to the surface the shell does place beside the icon.** The Linux
+  menu opens with a live row per provider above the actions — `Claude week 88 % (resets in
+  2 h 10 m)`, from the same three keys the tooltip uses — rewritten on every refresh through
+  `muda`'s `set_text`, which reaches a `dbusmenu` property update; read back over D-Bus from a
+  running process to prove the rows change under an open pointer rather than going stale.
+  `panel::place` is no longer called where the answer will be ignored. `config.window.x11Positioning`
+  is the lever for the popup, off by default and skipped while off so no Windows settings file
+  changes a byte: under `GDK_BACKEND=x11` the identical run landed on exactly `(700, 400)`, at
+  the price of the whole application including the webview on an X11 translation layer. And
+  one notice, once per GNOME machine, points at [nazar-gnome](https://github.com/xfurqan0/nazar-gnome),
+  which is nearer the icon than any window of ours can get.
+  **(3) "Claude Code — not set up on this machine", on a machine whose whole workload is Claude
+  Code.** True, and useless: `configured: false` for Claude means there is no capture in
+  `~/.nazar/statusline`, because the wrapper is not in Claude Code's `settings.json`. The
+  reason is per provider now, in the panel card and in the menu row, and the card carries the
+  sentence that names the command. Whether there was a second source to read instead was
+  measured rather than assumed — 71 transcript files, 23 020 lines, every top-level key and
+  every key one level down, plus `stats-cache.json` at every depth: **no rate-limit field
+  anywhere.** The only quota-shaped names are `message.usage`, which counts spend, and
+  `modelUsage.<model>.contextWindow`, which is a property of a model. Written down in
+  `pinned-internal-formats.md` so the question is not asked a third time; no new read path was
+  added.
+  **One thing found and left open:** GNOME disables extensions while the session is locked, and
+  `org.kde.StatusNotifierWatcher` goes with them — so a nazar-tray *started* during a locked
+  session falls into engine mode and stays there. A running one recovers on its own. The fix is
+  the `NameOwnerChanged` subscription T-WP-L2 decided not to hold, and it is now a better idea
+  than it was.

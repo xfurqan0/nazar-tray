@@ -355,7 +355,9 @@ explained somewhere in this repository.
 - **Unsigned.** SmartScreen warns on a browser download. See
   [Install](#install) and [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md).
 - **Windows 11 hides new tray icons** in the `^` overflow. The first run says so and asks you
-  to drag the bead onto the taskbar; the tip can be brought back from the settings page.
+  to drag the bead onto the taskbar; the tip can be brought back from the settings page. It is
+  **shown on Windows only** — no other desktop has an overflow flyout to be behind or a
+  taskbar to be dragged onto, and the settings row that brings it back is hidden there too.
 - **Clicking a notification does not open the panel.** Tauri's notification plugin does not
   hand the application the click, so there is nothing to hook. The toast names the window it is
   about, and the icon is one click away.
@@ -372,6 +374,25 @@ explained somewhere in this repository.
   icon there is nothing to click, so the panel opens only by running `nazar-tray` a second
   time, which asks the instance that holds the lock to show it — wherever the compositor puts
   it, since a Wayland client may not place its own window.
+- **On Linux the menu is the tray, and the panel is an ordinary window.** `tray-icon`'s GTK
+  backend sends no click event, reports no icon rectangle and shows no tooltip — the left
+  button belongs to libappindicator, which opens the menu — so the menu is where the numbers
+  are: a live row per provider above `Open`, rewritten on every refresh, positioned beside the
+  bead by the desktop rather than by us. `Open` then shows the panel wherever the compositor
+  decides, because a Wayland client can neither read the pointer nor move its own window
+  (both calls succeed and do nothing). If you would rather have the popup beside the cursor,
+  `{ "window": { "x11Positioning": true } }` in `config.json` puts GTK on XWayland, where the
+  position is honoured — at the price of running the whole application, webview included,
+  through an X11 translation layer. It is ignored on a session that is already X11, and
+  ignored with no `DISPLAY`. On GNOME the closer answer is
+  [nazar-gnome](https://github.com/xfurqan0/nazar-gnome), which the first run points at:
+  the shell places a panel indicator, and no window of ours can get nearer than that.
+- **Claude Code's quota needs the wrapper, on every platform.** Claude Code reports its rate
+  limits to its status-line command and to the usage endpoint, and writes them nowhere else on
+  disk — measured across 71 transcript files and `stats-cache.json` in
+  [docs/pinned-internal-formats.md](docs/pinned-internal-formats.md). So a machine without
+  `nazar-statusline install` shows Claude Code as *status line wrapper not installed* rather
+  than at zero. The installer chains: whatever status line you had keeps running after ours.
 - **One account.** `~/.nazar/limits.json` is a single file by design, frozen at v1 so that
   Nazar can depend on it. Multiple profiles are a v2 shape (`~/.nazar/limits/<profile>.json`)
   and are deliberately not squeezed into v1.
@@ -407,7 +428,8 @@ left in English.
 - Next: a code-signing certificate through SignPath Foundation, which asks that a project
   already be released — [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md)
 - v2: macOS build, multiple accounts, more providers
-- Linux: CLI output and the Nazar canvas; a tray popup is not reliably possible on Linux today
+- Linux: the tray icon, the menu that carries the numbers, `--print` and the Nazar canvas; a
+  tray *popup* beside the icon is not possible on Wayland and is opt-in through XWayland
 - Anything else that is wanted but not scheduled is [docs/FUTURE.md](docs/FUTURE.md)
 
 ## Development
