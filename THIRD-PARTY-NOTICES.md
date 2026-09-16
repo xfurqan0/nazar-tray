@@ -211,7 +211,7 @@ Where a crate offers a choice of licences, the one named below is the one it is 
 | regex-syntax | 0.8.11 | Copyright (c) 2014 The Rust Project Developers | [https://github.com/rust-lang/regex](https://github.com/rust-lang/regex) |
 | reqwest | 0.13.4 | Copyright 2016 Sean McArthur<br>Copyright (c) 2016-2026 Sean McArthur | [https://github.com/seanmonstar/reqwest](https://github.com/seanmonstar/reqwest) |
 | rustc-hash | 2.1.3 | — | [https://github.com/rust-lang/rustc-hash](https://github.com/rust-lang/rustc-hash) |
-| rustls | 0.23.43 | Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com> | [https://github.com/rustls/rustls](https://github.com/rustls/rustls) |
+| rustls | 0.23.45 | Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com> | [https://github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | rustls-pki-types | 1.15.1 | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> | [https://github.com/rustls/pki-types](https://github.com/rustls/pki-types) |
 | rustls-platform-verifier | 0.7.0 | Copyright (c) 2022 1Password | [https://github.com/rustls/rustls-platform-verifier](https://github.com/rustls/rustls-platform-verifier) |
 | ruzstd | 0.9.0 | Copyright (c) 2019 Moritz Borcherding | [https://github.com/KillingSpark/zstd-rs](https://github.com/KillingSpark/zstd-rs) |
