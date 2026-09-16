@@ -20,6 +20,27 @@
 //! the blur-suppression that keeps it alive then leaves a panel nobody can dismiss. The
 //! deviation is written up in `docs/PROJECT.md` section 9.
 //!
+//! **T-WP-L8 makes the menu the surface on Linux, because nothing else can be.** Three
+//! measurements, all of them in `tray-icon 0.24.2` and in a run on Fedora 44 / GNOME 50:
+//!
+//! * `platform_impl/gtk` **sends no `TrayIconEvent` at all** — `TrayIconEvent::send` is
+//!   called from the Windows and macOS backends and from nowhere else. The left-click
+//!   handler below is dead code on Linux, and the click is handled by libappindicator: it
+//!   opens the menu.
+//! * `TrayIcon::rect()` on GTK is `fn rect(&self) -> Option<Rect> { None }`. There is no
+//!   icon geometry to open a panel next to even if a click arrived.
+//! * `set_tooltip` on GTK is `Ok(())` and nothing else. Everything the tooltip says on
+//!   Windows — the binding window, the percentage, the countdown, the week — reaches a
+//!   Linux user nowhere.
+//!
+//! Put together with the Wayland placement problem in [`crate::panel`], the answer is not to
+//! fix the click but to move the content: the **menu** is positioned beside the icon, by the
+//! shell, on every desktop that draws a `StatusNotifierItem`. So on Linux the menu opens
+//! with a live quota row per provider above the actions, rewritten on every refresh through
+//! `muda`'s `set_text` — which reaches a `dbusmenu` property update, so an open menu changes
+//! under the pointer rather than going stale. Windows and macOS keep the four-item menu they
+//! had, byte for byte: [`QUOTA_IN_MENU`] is a `cfg!`.
+//!
 //! **WP5 adds `Settings` and makes the menu rebuildable.** A menu item's text is set when the
 //! item is *built*, so a menu built in English stays in English however the settings change —
 //! which was WP4's open risk, written down at the time and closed here. [`rebuild_menu`]
@@ -27,9 +48,9 @@
 //! `set_config`, and only when the language actually moved, because replacing a menu the user
 //! may have open is not a thing to do for nothing.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use nazar_core::state::{SnapshotView, WindowView};
+use nazar_core::state::{ProviderView, SnapshotView, WindowView};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -51,6 +72,21 @@ const MENU_REFRESH: &str = "nazar-refresh";
 const MENU_SETTINGS: &str = "nazar-settings";
 /// Menu item: stop the loop, release the lock, exit.
 const MENU_QUIT: &str = "nazar-quit";
+/// Id prefix of a live quota row: the provider name is appended.
+const MENU_QUOTA: &str = "nazar-quota-";
+
+/// Whether the menu carries the numbers as well as the actions.
+///
+/// **Linux only, and it is the tray's whole face there.** See the module note for the three
+/// measurements: no click event, no icon rectangle, no tooltip. Where the shell will not
+/// tell us where the icon is and will not show a tooltip, the one surface it does put beside
+/// the icon is the menu it opens itself.
+///
+/// On Windows the tooltip already says all of this on hover and the panel opens on a left
+/// click beside the icon, so rows in the menu would be a third copy of the same two numbers
+/// — and a menu that changes height while the user is reading it. macOS gets the tooltip
+/// and the popover for the same reason.
+const QUOTA_IN_MENU: bool = cfg!(target_os = "linux");
 
 /// Longest tooltip Windows will show. `NOTIFYICONDATA::szTip` holds 128 characters
 /// including the terminator, and a tooltip that is silently dropped is worse than a short
@@ -66,11 +102,91 @@ const TOOLTIP_LIMIT: usize = 127;
 /// tooltip.
 const TOOLTIP_BREAK: &str = "\r\n";
 
+/// The live quota rows, kept so that a refresh can rewrite them without rebuilding the menu.
+///
+/// Empty on Windows and macOS, where [`QUOTA_IN_MENU`] is `false` and the tooltip carries
+/// the numbers instead. Managed state rather than a field on anything, because the two
+/// things that touch it — [`install`] and [`rebuild_menu`] on one side, [`refresh`] on the
+/// other — are reached through an `AppHandle` and nothing else.
+///
+/// A `Mutex` because [`refresh`] runs on the refresh loop's thread. `MenuItem` is `Send` and
+/// `Sync` in Tauri and every method on it hops to the main thread, so the lock is guarding
+/// the `Vec` rather than GTK.
+#[derive(Default)]
+pub struct QuotaRows {
+    items: Mutex<Vec<MenuItem<tauri::Wry>>>,
+}
+
+impl QuotaRows {
+    fn replace(&self, items: Vec<MenuItem<tauri::Wry>>) {
+        *self.items.lock().unwrap_or_else(PoisonError::into_inner) = items;
+    }
+
+    /// Rewrite every row from a view. Silent about failures: a menu row that could not be
+    /// updated is a row showing the previous reading, which is a far smaller problem than a
+    /// tray that stopped refreshing because a menu item went away.
+    fn write(&self, view: &SnapshotView, catalog: &Catalog) {
+        let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+        for (item, provider) in items.iter().zip(&view.providers) {
+            let _ = item.set_text(quota_row(provider, catalog));
+        }
+    }
+}
+
+/// One provider as a line of menu: `Claude 5h 62 % (resets in 2 h 10 m)`.
+///
+/// The same three keys the tooltip uses, so the two surfaces cannot drift into two ways of
+/// saying one number — and the same rule about what is *not* said: a provider whose binding
+/// window carries no percentage gets a sentence about why, never a reassuring `0 %`.
+fn quota_row(provider: &ProviderView, catalog: &Catalog) -> String {
+    if let Some((entry, _, remaining)) = binding_entry(provider, catalog) {
+        return match resets_clause(catalog, remaining) {
+            Some(resets) => format!("{entry} {resets}"),
+            None => entry,
+        };
+    }
+    let reason = if provider.configured {
+        catalog.text("tray.menu.noReading")
+    } else {
+        not_configured(catalog, &provider.name)
+    };
+    catalog.format(
+        "tray.menu.provider",
+        &[
+            (
+                "provider",
+                &catalog.text(&format!("tray.provider.{}", provider.name)),
+            ),
+            ("reason", &reason),
+        ],
+    )
+}
+
+/// Why a provider has no numbers, in as much detail as this build has for that provider.
+///
+/// `panel.provider.notConfigured.<name>` when there is one and the generic sentence when
+/// there is not, which is the same lookup `ui/src/main.ts` does for the panel's own card.
+/// "Not set up" is a true sentence and a useless one: the two providers are not set up in
+/// two different ways, and a user who is told which one theirs is can act on it.
+fn not_configured(catalog: &Catalog, provider: &str) -> String {
+    let specific = format!("panel.provider.notConfigured.{provider}");
+    let text = catalog.text(&specific);
+    if text == specific {
+        return catalog.text("panel.provider.notConfigured");
+    }
+    text
+}
+
 /// Build the context menu in one language.
 ///
 /// Four entries and a separator, in the order a Windows user looks for them: the thing they
-/// came for, the thing they might want next, the settings, and the way out.
-fn build_menu(app: &AppHandle, catalog: &Catalog) -> tauri::Result<Menu<tauri::Wry>> {
+/// came for, the thing they might want next, the settings, and the way out. On Linux a row
+/// per provider goes above them, and a second separator: see [`QUOTA_IN_MENU`].
+fn build_menu(
+    app: &AppHandle,
+    catalog: &Catalog,
+    view: &SnapshotView,
+) -> tauri::Result<(Menu<tauri::Wry>, Vec<MenuItem<tauri::Wry>>)> {
     let open = MenuItem::with_id(
         app,
         MENU_OPEN,
@@ -100,7 +216,40 @@ fn build_menu(app: &AppHandle, catalog: &Catalog) -> tauri::Result<Menu<tauri::W
         true,
         None::<&str>,
     )?;
-    Menu::with_items(app, &[&open, &refresh_item, &settings, &separator, &quit])
+
+    if !QUOTA_IN_MENU {
+        let menu = Menu::with_items(app, &[&open, &refresh_item, &settings, &separator, &quit])?;
+        return Ok((menu, Vec::new()));
+    }
+
+    // Enabled rather than greyed out, and clicking one opens the panel. A disabled item is
+    // the conventional way to draw a label in a menu, and it is drawn in the disabled
+    // colour — which is the wrong colour for the one number this application exists to
+    // show. The gesture a user makes on a percentage they want more of is a click.
+    let mut rows = Vec::with_capacity(view.providers.len());
+    for provider in &view.providers {
+        rows.push(MenuItem::with_id(
+            app,
+            format!("{MENU_QUOTA}{}", provider.name),
+            quota_row(provider, catalog),
+            true,
+            None::<&str>,
+        )?);
+    }
+    let under_the_numbers = PredefinedMenuItem::separator(app)?;
+
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+    for row in &rows {
+        items.push(row);
+    }
+    items.push(&under_the_numbers);
+    items.push(&open);
+    items.push(&refresh_item);
+    items.push(&settings);
+    items.push(&separator);
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
+    Ok((menu, rows))
 }
 
 /// Replace the menu and the tooltip with ones written in the current language.
@@ -113,9 +262,22 @@ pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    match build_menu(app, &catalog) {
-        Ok(menu) => {
+    let view = app
+        .try_state::<AppState>()
+        .map(|state| state.view())
+        .unwrap_or_else(|| SnapshotView {
+            updated_at: String::new(),
+            now: String::new(),
+            providers: Vec::new(),
+        });
+    match build_menu(app, &catalog, &view) {
+        Ok((menu, rows)) => {
             let _ = tray.set_menu(Some(menu));
+            // The old rows belong to a menu that has just been thrown away; keeping them
+            // would leave every refresh writing into a menu nobody can open.
+            if let Some(state) = app.try_state::<QuotaRows>() {
+                state.replace(rows);
+            }
         }
         // A menu that could not be rebuilt is a menu in the old language, which is a much
         // smaller problem than no menu at all — and `Quit` is in the old one too.
@@ -149,7 +311,11 @@ fn week(app: &AppHandle) -> Option<WeekUsage> {
 /// Create the tray icon, its menu, and the mouse bindings.
 pub fn install(app: &AppHandle, strings: &Arc<Strings>) -> tauri::Result<()> {
     let catalog = strings.catalog();
-    let menu = build_menu(app, &catalog)?;
+    let view = app.state::<AppState>().view();
+    let (menu, rows) = build_menu(app, &catalog, &view)?;
+    let quota = QuotaRows::default();
+    quota.replace(rows);
+    app.manage(quota);
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(image(IconState::default(), 1.0))
@@ -162,6 +328,8 @@ pub fn install(app: &AppHandle, strings: &Arc<Strings>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             MENU_OPEN => crate::panel::show(app),
+            // A quota row is a reading, and the gesture on a reading is "show me the rest".
+            id if id.starts_with(MENU_QUOTA) => crate::panel::show(app),
             MENU_REFRESH => {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.refresh();
@@ -211,6 +379,21 @@ pub fn refresh(app: &AppHandle, catalog: &Catalog) {
 
     let _ = tray.set_icon(Some(image(IconState::from_view(&view), scale_factor(app))));
     let _ = tray.set_tooltip(Some(tooltip(&view, catalog, week(app).as_ref())));
+    write_quota_rows(app, &view, catalog);
+}
+
+/// Rewrite the menu's quota rows, where there are any.
+///
+/// Called from both refresh paths, because on Linux these rows are what the tooltip is on
+/// Windows — and `set_tooltip` there is a GTK no-op, so a Linux run that only rewrote the
+/// tooltip would have rewritten nothing at all.
+fn write_quota_rows(app: &AppHandle, view: &SnapshotView, catalog: &Catalog) {
+    if !QUOTA_IN_MENU {
+        return;
+    }
+    if let Some(rows) = app.try_state::<QuotaRows>() {
+        rows.write(view, catalog);
+    }
 }
 
 /// Rewrite the tooltip and leave the icon alone.
@@ -235,7 +418,9 @@ pub fn refresh_tooltip(app: &AppHandle) {
         return;
     };
     let catalog = strings.catalog();
-    let _ = tray.set_tooltip(Some(tooltip(&state.view(), &catalog, week(app).as_ref())));
+    let view = state.view();
+    let _ = tray.set_tooltip(Some(tooltip(&view, &catalog, week(app).as_ref())));
+    write_quota_rows(app, &view, &catalog);
 }
 
 /// The scale factor the tray icon should be drawn for.
@@ -359,26 +544,12 @@ fn quota_line(view: &SnapshotView, catalog: &Catalog) -> Option<(String, Option<
     let mut worst: Option<(f64, Option<i64>)> = None;
 
     for provider in &view.providers {
-        let Some(window) = provider.windows.iter().find(|window| window.binding) else {
+        let Some((entry, percent, remaining)) = binding_entry(provider, catalog) else {
             continue;
         };
-        let Some(percent) = window.percent.filter(|value| value.is_finite()) else {
-            continue;
-        };
-        entries.push(catalog.format(
-            "tray.tooltip.entry",
-            &[
-                (
-                    "provider",
-                    &catalog.text(&format!("tray.provider.{}", provider.name)),
-                ),
-                ("window", &short_label(catalog, window)),
-                // Floored, never rounded up: 99.6 % has not run out (finding B15).
-                ("percent", &percent.floor().to_string()),
-            ],
-        ));
+        entries.push(entry);
         if worst.is_none_or(|(highest, _)| percent > highest) {
-            worst = Some((percent, window.remaining_ms));
+            worst = Some((percent, remaining));
         }
     }
 
@@ -386,14 +557,45 @@ fn quota_line(view: &SnapshotView, catalog: &Catalog) -> Option<(String, Option<
         return None;
     }
 
-    let resets = match worst {
-        Some((_, Some(remaining))) if remaining > 0 => Some(catalog.format(
-            "tray.tooltip.resets",
-            &[("time", &i18n::duration(catalog, remaining))],
-        )),
-        _ => None,
-    };
+    let resets = worst.and_then(|(_, remaining)| resets_clause(catalog, remaining));
     Some((entries.join(" · "), resets))
+}
+
+/// One provider's binding window as a phrase, its percentage, and what it has left.
+///
+/// `None` when the provider has no binding window or its binding window carries no
+/// percentage — a provider nobody could read is left out of the tooltip rather than shown at
+/// zero, which is finding B03, and the menu row says why instead.
+///
+/// Shared by the tooltip and by [`quota_row`] so that the two surfaces are one sentence with
+/// two frames around it. The percentage comes back as well as the text because the tooltip
+/// needs it to pick the worst window, and re-deriving it there would be the second opinion
+/// this function exists to prevent.
+fn binding_entry(provider: &ProviderView, catalog: &Catalog) -> Option<(String, f64, Option<i64>)> {
+    let window = provider.windows.iter().find(|window| window.binding)?;
+    let percent = window.percent.filter(|value| value.is_finite())?;
+    let entry = catalog.format(
+        "tray.tooltip.entry",
+        &[
+            (
+                "provider",
+                &catalog.text(&format!("tray.provider.{}", provider.name)),
+            ),
+            ("window", &short_label(catalog, window)),
+            // Floored, never rounded up: 99.6 % has not run out (finding B15).
+            ("percent", &percent.floor().to_string()),
+        ],
+    );
+    Some((entry, percent, window.remaining_ms))
+}
+
+/// `(resets in 2 h 10 m)`, or nothing when the source named no reset or it is already due.
+fn resets_clause(catalog: &Catalog, remaining: Option<i64>) -> Option<String> {
+    let remaining = remaining.filter(|left| *left > 0)?;
+    Some(catalog.format(
+        "tray.tooltip.resets",
+        &[("time", &i18n::duration(catalog, remaining))],
+    ))
 }
 
 /// A window's name in a tooltip: `5h`, `week`, `Fable week`.
@@ -478,6 +680,88 @@ mod tests {
             updated_at: String::new(),
             now: String::new(),
             providers,
+        }
+    }
+
+    /// A provider the tray could not read at all: the key stays, the windows do not.
+    fn unread(name: &str, configured: bool) -> ProviderView {
+        ProviderView {
+            configured,
+            binding: None,
+            severity: Severity::Unknown,
+            windows: Vec::new(),
+            ..provider(name, Vec::new())
+        }
+    }
+
+    /// Where the numbers go on this platform, and why.
+    #[test]
+    fn the_menu_carries_the_numbers_exactly_where_the_tooltip_cannot() {
+        assert_eq!(
+            QUOTA_IN_MENU,
+            cfg!(target_os = "linux"),
+            "tray-icon's GTK backend makes set_tooltip a no-op and sends no click event, \
+             so the menu is the only surface the shell puts beside the icon"
+        );
+    }
+
+    /// The row and the tooltip entry are one sentence with two frames around it.
+    ///
+    /// Not "they look similar": the row **is** the tooltip's entry for that provider, plus
+    /// the reset clause the tooltip only has room for once. A second way of writing
+    /// `Claude week 88 %` is a second opinion about a number, which is finding B14 wearing
+    /// a different hat.
+    #[test]
+    fn a_readable_provider_reads_the_same_in_the_menu_as_in_the_tooltip() {
+        let catalog = i18n::catalog("en");
+        let claude = provider("claude", vec![window("seven_day", Some(88.4), 10080, true)]);
+
+        let row = quota_row(&claude, &catalog);
+        assert_eq!(row, "Claude week 88 % (resets in 2 h 10 m)");
+        assert!(
+            tooltip(&view(vec![claude]), &catalog).starts_with("Claude week 88 %"),
+            "the tooltip and the menu row disagree about the same reading"
+        );
+    }
+
+    /// A provider nobody could read says why. It never says `0 %`.
+    ///
+    /// The whole argument of finding B03, in the surface T-WP-L8 added: a row is a place a
+    /// zero could appear, and a zero is the most reassuring number this application can
+    /// print about a quota nobody measured.
+    #[test]
+    fn a_provider_with_no_reading_says_so_rather_than_showing_zero() {
+        let catalog = i18n::catalog("en");
+
+        let not_set_up = quota_row(&unread("claude", false), &catalog);
+        assert!(not_set_up.starts_with("Claude "), "{not_set_up}");
+        assert!(!not_set_up.contains('0'), "{not_set_up}");
+
+        let silent = quota_row(&unread("codex", true), &catalog);
+        assert_eq!(silent, "Codex — no reading yet");
+
+        // And a provider that is configured and merely unreadable is a different sentence
+        // from one that was never set up: the first is a wait, the second is a step.
+        assert_ne!(not_set_up, silent.replace("Codex", "Claude"));
+    }
+
+    /// Every language can write a row, and none of them leaves a placeholder in it.
+    #[test]
+    fn the_menu_row_reads_as_a_sentence_in_all_six_languages() {
+        for locale in nazar_core::config::LOCALES {
+            let catalog = i18n::catalog(locale);
+            for view in [
+                provider("codex", vec![window("secondary", Some(70.0), 10080, true)]),
+                unread("claude", false),
+                unread("codex", true),
+            ] {
+                let row = quota_row(&view, &catalog);
+                assert!(!row.is_empty(), "{locale}: an empty row");
+                assert!(
+                    !row.contains('{') && !row.contains('}'),
+                    "{locale}: a placeholder survived: {row}"
+                );
+            }
         }
     }
 

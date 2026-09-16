@@ -628,6 +628,7 @@ they wrote.
 | `notifications` | The master switch above the thresholds and the quiet hours. |
 | `quietHours` | `HH:MM` **local** wall-clock times; the range wraps midnight when `to` is earlier than `from`, and equal endpoints are an empty range. Absent means there are none. |
 | `providers` | Which providers are read at all. A provider switched off has **no reader built for it**: its files are never opened. |
+| `window` | **Linux only, and absent until it is turned on.** `{ "x11Positioning": true }` asks GTK for the X11 backend (`GDK_BACKEND=x11`) so that the panel can open beside the cursor: a Wayland client can neither read the global pointer nor move its own toplevel, and both calls succeed while doing nothing. Ignored on a session that is already X11, and ignored with no `DISPLAY` — there would be no XWayland to fall back to. The key is skipped while it holds its default, so a Windows or macOS `config.json` is byte-identical to one this build's predecessor wrote. |
 
 Three rules, and each is a way a settings file gets lost:
 

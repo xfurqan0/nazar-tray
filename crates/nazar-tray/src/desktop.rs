@@ -43,9 +43,21 @@
 //! icon that had nowhere to go. It is also what the contract was designed for — one writer,
 //! many readers — so a desktop that cannot draw our icon can still draw somebody's.
 //!
+//! **The second question this desktop answers is where a window goes**, and on Wayland the
+//! answer is "not where you asked". A Wayland client cannot read the global pointer and
+//! cannot move its own toplevel; Tauri's `cursor_position()` returns `Ok((0, 0))` rather
+//! than an error and `set_position` returns `Ok(())` and does nothing, so the panel's
+//! careful arithmetic about which side of the cursor to open on runs on a lie and the
+//! compositor centres the window anyway. That is [`window_placement`], and what it means
+//! for the tray is in [`crate::tray`]: where the panel cannot be put beside the icon, the
+//! numbers go **into the menu**, which the shell does position beside the icon.
+//!
 //! **And the user is told, once.** [`announce`] shows one desktop notification the first
 //! time a machine runs in engine mode, because "I installed it and nothing happened" is the
-//! failure mode a silent fallback produces. `org.freedesktop.Notifications` is implemented
+//! failure mode a silent fallback produces. It shows a second one on GNOME, where the tray
+//! icon works but the panel cannot be placed: `nazar-gnome` draws the numbers in the panel
+//! the shell owns, which is the only surface on a GNOME session that can be beside the
+//! icon at all. `org.freedesktop.Notifications` is implemented
 //! by GNOME itself and needs no extension, which is what makes this the one channel that is
 //! certain to reach the user whose tray does not work. It is claimed in `alerts.json` like
 //! every other thing this product says once.
@@ -116,14 +128,24 @@ pub fn first_run_notices() -> Vec<FirstRun> {
             message: "panel.hint.overflow",
         });
     }
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
         notices.push(FirstRun {
             claim: Some(HIDDEN_NOTICE),
             message: "tray.hidden.title",
         });
+        notices.push(FirstRun {
+            claim: Some(GNOME_NOTICE),
+            message: "tray.gnome.title",
+        });
     }
     notices
 }
+
+/// The `alerts.json` key under which the "there is a GNOME indicator for this" notice is
+/// claimed. Namespaced like [`HIDDEN_NOTICE`], and for the same reason.
+#[cfg(target_os = "linux")]
+const GNOME_NOTICE: &str = "notice.gnomeIndicator";
 
 /// The bus name a `StatusNotifierItem` host takes. KDE's spelling is the one everybody
 /// implements, GNOME's AppIndicator extension included.
@@ -197,11 +219,102 @@ pub fn mode(headless: bool) -> Mode {
 ///
 /// Called from the setup, after the notifier is managed and instead of building the tray.
 pub fn announce(app: &AppHandle, mode: Mode) {
-    eprintln!("nazar-tray: {}", mode.status());
-    if mode != Mode::Engine(Reason::NoHost) {
+    // Silence is the answer nobody needs: a run that drew its icon has said everything it
+    // has to say by drawing it. `cli::run_if_requested` prints the line under the same rule.
+    if !mode.draws_an_icon() {
+        eprintln!("nazar-tray: {}", mode.status());
+    }
+    if mode == Mode::Engine(Reason::NoHost) {
+        crate::alerts::notice(app, HIDDEN_NOTICE, "tray.hidden.title", "tray.hidden.body");
         return;
     }
-    crate::alerts::notice(app, HIDDEN_NOTICE, "tray.hidden.title", "tray.hidden.body");
+    announce_gnome_indicator(app, mode);
+}
+
+/// On GNOME, once: the numbers can live in the panel, where the shell places them.
+///
+/// **This is a different failure from the one above, and it is the one qarpus hit.** The
+/// AppIndicator extension was installed, the icon was drawn, and the click still did not
+/// behave like a tray popup — because on GNOME Wayland nothing this process owns can be put
+/// beside that icon. The menu is as close as the tray gets (the shell positions it, and
+/// [`crate::tray`] fills it with the numbers for exactly that reason); a panel *indicator*
+/// is closer still, and it is a GNOME Shell extension rather than anything a window can do.
+///
+/// Only on GNOME, only in tray mode, and only once. On KDE, XFCE, Cinnamon and Budgie the
+/// tray is native and a second face would be two indicators saying the same thing; in engine
+/// mode the notice above has already been shown and adding a second interruption to the same
+/// start-up would be this application talking over itself.
+#[cfg(target_os = "linux")]
+fn announce_gnome_indicator(app: &AppHandle, mode: Mode) {
+    if mode != Mode::Tray || !is_gnome() {
+        return;
+    }
+    crate::alerts::notice(app, GNOME_NOTICE, "tray.gnome.title", "tray.gnome.body");
+}
+
+/// Nothing to say: neither other platform has a GNOME Shell to have an extension for.
+#[cfg(not(target_os = "linux"))]
+fn announce_gnome_indicator(_app: &AppHandle, _mode: Mode) {}
+
+/// Whether this session is GNOME Shell.
+///
+/// `XDG_CURRENT_DESKTOP` rather than the bus, because unlike the tray host this is not a
+/// service that can be up or down — it is which shell is drawing the screen, and the only
+/// thing that answers it is the session's own environment. The value is colon-separated and
+/// often prefixed (`ubuntu:GNOME`), so it is split rather than compared.
+#[cfg(target_os = "linux")]
+fn is_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|value| {
+        value
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("GNOME"))
+    })
+}
+
+/// Whether a window this process opens can be put where this process wants it.
+///
+/// Called once, from `main`, **before anything creates a GTK display** — it may set
+/// `GDK_BACKEND`, and a backend chosen after GTK has initialised is a backend nobody uses.
+///
+/// | Session | `asked` | Answer |
+/// |---|---|---|
+/// | Windows, macOS | — | `true`; the shell has always let a window say where it goes |
+/// | `GDK_BACKEND` already set | ignored | whatever the user typed |
+/// | X11 (no `WAYLAND_DISPLAY`) | ignored | `true`; nothing to force |
+/// | Wayland | `false` | `false`; the panel opens where the compositor puts it |
+/// | Wayland, no `DISPLAY` | `true` | `false`; there is no XWayland to fall back to |
+/// | Wayland | `true` | `true`, and `GDK_BACKEND=x11` is set |
+///
+/// `asked` is `config.window.x11Positioning`. An environment variable outranks it: somebody
+/// who typed `GDK_BACKEND=wayland` in front of the command has made a decision, and a
+/// settings file is not the place to overrule it.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn window_placement(asked: bool) -> bool {
+    if let Ok(chosen) = std::env::var("GDK_BACKEND") {
+        return chosen.split(',').any(|name| name == "x11");
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        // GTK takes X11 when there is no Wayland to prefer — and nothing at all when there
+        // is no display either, in which case the placement question never comes up.
+        return std::env::var_os("DISPLAY").is_some();
+    }
+    if !asked || std::env::var_os("DISPLAY").is_none() {
+        return false;
+    }
+    // SAFETY: `main` calls this before the Tauri builder and before any thread of ours
+    // exists, which is the same window `force_device_scale_factor` writes in.
+    unsafe {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+    true
+}
+
+/// Windows and macOS place a window where they are told, and always have.
+#[cfg(not(target_os = "linux"))]
+#[must_use]
+pub fn window_placement(_asked: bool) -> bool {
+    true
 }
 
 /// Whether a `StatusNotifierItem` host is on the session bus.
@@ -315,8 +428,9 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(
             messages,
-            ["tray.hidden.title"],
-            "Linux has a tray host that may be absent and no overflow flyout"
+            ["tray.hidden.title", "tray.gnome.title"],
+            "Linux has a tray host that may be absent, a shell that may have a better \
+             face than ours, and no overflow flyout"
         );
         #[cfg(target_os = "macos")]
         assert!(

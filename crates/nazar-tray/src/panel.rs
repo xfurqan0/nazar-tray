@@ -17,6 +17,18 @@
 //!    on the first run. WP0's report measured it; [`OPEN_GRACE`] is the fix, and it takes
 //!    the focus back rather than merely ignoring the blur, so the *next* click elsewhere
 //!    still closes the panel.
+//!
+//! **The first of those four things is not available everywhere.** A Wayland client cannot
+//! read the global pointer and cannot move its own toplevel, and neither call fails loudly:
+//! `cursor_position()` answers `Ok((0, 0))` and `set_position` answers `Ok(())` and does
+//! nothing. Placing the panel from those two answers puts it at the top-left corner of the
+//! arithmetic and in the middle of the screen in fact — which is what a Fedora 44 GNOME
+//! session showed on 2026-09-16, and what [`crate::desktop::window_placement`] now asks
+//! about before this module does any of it. Where the answer is no, [`place`] is not called
+//! at all: an ordinary centred window is an honest outcome, and one that lands in a
+//! computed position that was never honoured is a bug with extra steps. What replaces the
+//! popup on Linux is the tray menu, which the shell does place beside the icon — see
+//! [`crate::tray`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -66,15 +78,21 @@ pub struct PanelState {
     /// capture tool, and a capture tool takes the focus; a panel that hid itself first
     /// would be unphotographable.
     sticky: bool,
+    /// Whether this desktop honours a position at all.
+    ///
+    /// [`crate::desktop::window_placement`]'s answer, taken once at start-up because it
+    /// cannot change while the process runs: it is the windowing protocol GTK opened with.
+    places: bool,
 }
 
 impl PanelState {
     /// The state, with the screenshot overrides if any were asked for.
     #[must_use]
-    pub fn new(scale: Option<f64>, sticky: bool) -> Self {
+    pub fn new(scale: Option<f64>, sticky: bool, places: bool) -> Self {
         PanelState {
             scale,
             sticky,
+            places,
             ..PanelState::default()
         }
     }
@@ -130,8 +148,11 @@ pub fn toggle_near(app: &AppHandle, cursor: PhysicalPosition<f64>) {
     }
 
     // A failure to place the window is not a reason to refuse to show it; it opens
-    // wherever it last was instead.
-    let _ = place(&window, cursor);
+    // wherever it last was instead. On a desktop that does not honour a position the call
+    // is not made at all — see the module note.
+    if state.places {
+        let _ = place(&window, cursor);
+    }
     state.mark_opened(Some(cursor));
     let _ = window.show();
     let _ = window.set_focus();
@@ -148,12 +169,15 @@ pub fn show(app: &AppHandle) {
         return;
     };
     // A cursor position we cannot read is not a reason to refuse to open: the panel then
-    // appears wherever it last was, which is still an answer.
-    let cursor = app.cursor_position().ok();
+    // appears wherever it last was, which is still an answer. On Wayland it is worse than
+    // unreadable — it reads `Ok((0, 0))` — so the question is asked of the desktop rather
+    // than of the return value.
+    let state = app.state::<PanelState>();
+    let cursor = state.places.then(|| app.cursor_position().ok()).flatten();
     if let Some(cursor) = cursor {
         let _ = place(&window, cursor);
     }
-    app.state::<PanelState>().mark_opened(cursor);
+    state.mark_opened(cursor);
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -211,8 +235,10 @@ pub fn resize(app: &AppHandle, css_height: f64) {
     let _ = window.set_size(wanted);
 
     // The panel is anchored above the cursor, so growing it downwards would push it over
-    // the taskbar. Re-placing keeps the bottom edge where the user pointed.
-    if window.is_visible().unwrap_or(false) {
+    // the taskbar. Re-placing keeps the bottom edge where the user pointed. Where nothing
+    // was placed there is no anchor to keep still, and the window manager has already
+    // decided where a window of the new size goes.
+    if state.places && window.is_visible().unwrap_or(false) {
         if let Some(anchor) = state.anchor() {
             let _ = place(&window, anchor);
         }
@@ -408,7 +434,7 @@ mod tests {
     fn opening_without_a_cursor_still_starts_the_grace_period() {
         // A machine that cannot report a cursor position still opens the panel — it just
         // opens it where it last was, and the flyout race applies exactly the same.
-        let state = PanelState::new(Some(1.5), true);
+        let state = PanelState::new(Some(1.5), true, true);
         state.mark_opened(None);
         assert!(state.opened_just_now());
         assert_eq!(state.anchor(), None);
@@ -417,6 +443,24 @@ mod tests {
         assert!(
             !PanelState::default().sticky,
             "the shipped panel always hides on blur"
+        );
+    }
+
+    /// A desktop that does not honour a position gets no arithmetic done on its behalf.
+    ///
+    /// The anchor is what `resize` re-places from, and on Wayland there is nothing to
+    /// re-place: remembering a corner that was never honoured would make the panel jump
+    /// every time the content changed height, which is worse than a window that simply
+    /// stays where the compositor put it.
+    #[test]
+    fn a_desktop_that_places_nothing_remembers_no_anchor() {
+        let state = PanelState::new(None, false, false);
+        assert!(!state.places);
+        state.mark_opened(None);
+        assert_eq!(state.anchor(), None);
+        assert!(
+            state.opened_just_now(),
+            "the grace period is about focus, not about position"
         );
     }
 }

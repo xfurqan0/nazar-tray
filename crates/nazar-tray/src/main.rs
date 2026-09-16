@@ -104,6 +104,11 @@ fn main() {
     // damaged `config.json` is not a reason to refuse to start, and certainly not a reason
     // to turn the opt-in mode on.
     let config = Config::load().unwrap_or_default();
+    // Before the Tauri builder, and before anything opens a GTK display: this may set
+    // `GDK_BACKEND`, and a backend chosen after GTK has initialised is one nobody uses. The
+    // answer decides whether the panel is placed beside the cursor at all — on Wayland it
+    // cannot be, and `crate::panel` stops pretending otherwise.
+    let places_windows = desktop::window_placement(config.window.x11_positioning);
     // One answer about the language, for the panel and the tray alike: the `--locale`
     // override, then the settings, then the operating system's UI language, then English.
     // WP4 had two answers and they could disagree; see `i18n::resolve`.
@@ -228,7 +233,7 @@ fn main() {
                 cli::run_autostart(app.handle(), action);
             }
 
-            app.manage(PanelState::new(options.scale, options.demo));
+            app.manage(PanelState::new(options.scale, options.demo, places_windows));
             app.manage(Arc::clone(&setup_strings));
             // The usage scan's own state: whether this instance may write, and when it last
             // did. Managed here rather than inside the refresh loop because the scan is
@@ -288,11 +293,10 @@ fn main() {
             // the refresh loop, the advisory lock, `~/.nazar/limits.json`, the threshold
             // notifications — is what the engine mode keeps; the icon is what it drops.
             let mode = desktop::mode(options.headless);
+            desktop::announce(app.handle(), mode);
             if mode.draws_an_icon() {
                 tray::install(app.handle(), &setup_strings)?;
                 tray::refresh(app.handle(), &setup_strings.catalog());
-            } else {
-                desktop::announce(app.handle(), mode);
             }
 
             if let Some(scale) = options.scale {

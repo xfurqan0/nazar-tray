@@ -108,6 +108,13 @@ pub struct Config {
     /// The two choices about how the usage history is counted and how far back it goes.
     #[serde(default)]
     pub usage: UsageSwitches,
+    /// How the panel window behaves. One switch, and it belongs to Linux.
+    ///
+    /// **Skipped when it is off**, which it is on every machine that has not turned it on:
+    /// a Windows or macOS `config.json` written by this build is byte-identical to one
+    /// written by the build before it.
+    #[serde(default, skip_serializing_if = "WindowSwitches::is_default")]
+    pub window: WindowSwitches,
     /// Keys a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -285,6 +292,43 @@ pub struct UsageSwitches {
     pub fill_history_from_stats: bool,
 }
 
+/// How the panel window is placed, where the desktop gives anybody a choice.
+///
+/// **Wayland does not.** A Wayland client cannot read the global pointer and cannot tell the
+/// compositor where to put its own window: `gtk_window_move` is a documented no-op there, and
+/// Tauri's `cursor_position()` answers `Ok((0, 0))` rather than an error, so the arithmetic
+/// that would place the panel beside the tray icon runs on a lie and the compositor centres
+/// the window regardless. Measured on Fedora 44 / GNOME 50 on 2026-09-17: two
+/// `set_position` calls, both `Ok(())`, and `outer_position()` never left `(0, 0)`.
+///
+/// XWayland is the one lever that exists. Under `GDK_BACKEND=x11` the identical run placed
+/// the window exactly where it was asked to — `(700, 400)` — and `cursor_position()`
+/// returned real coordinates. What it costs is the whole application, webview included, on
+/// an X11 translation layer: fractional scaling is the compositor's to redo, and the window
+/// is no longer a native Wayland surface. That is a trade to offer, not one to make for
+/// somebody, so it is off by default and documented in the README rather than put in the
+/// settings form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSwitches {
+    /// Ask GTK for the X11 backend, so the panel can open beside the cursor on Wayland.
+    ///
+    /// Ignored where it would change nothing — a session that is already X11 places the
+    /// panel without being asked — and ignored where it would break the application: with
+    /// no `DISPLAY` there is no XWayland to fall back to, and forcing the backend anyway
+    /// would leave GTK with no display to open at all.
+    #[serde(default)]
+    pub x11_positioning: bool,
+}
+
+impl WindowSwitches {
+    /// Whether this is the shipped default, and so nothing `config.json` needs to carry.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == WindowSwitches::default()
+    }
+}
+
 /// Something wrong with a settings document, in the vocabulary the panel translates.
 ///
 /// Returned by [`Config::validate`], which is what the settings form is checked against
@@ -335,6 +379,7 @@ impl Default for Config {
             quiet_hours: None,
             providers: ProviderSwitches::default(),
             usage: UsageSwitches::default(),
+            window: WindowSwitches::default(),
             extra: Map::new(),
         }
     }
@@ -485,6 +530,40 @@ impl Config {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    /// The new switch costs a machine that has not turned it on exactly nothing.
+    ///
+    /// `windowSwitches` is skipped while it holds its default, so a Windows or macOS
+    /// `config.json` written by this build is byte-for-byte the document the build before
+    /// it wrote. The switch is Linux's — see [`WindowSwitches`] — and a settings file that
+    /// grew a Linux-only key on every machine in the world would be this repository writing
+    /// to a user's disk to record a decision nobody made.
+    #[test]
+    fn the_window_switch_is_absent_until_somebody_turns_it_on() {
+        let untouched = Config::default().to_json().unwrap();
+        assert!(
+            !untouched.contains("window"),
+            "a default document must not carry the key: {untouched}"
+        );
+
+        let turned_on = Config {
+            window: WindowSwitches {
+                x11_positioning: true,
+            },
+            ..Config::default()
+        };
+        let text = turned_on.to_json().unwrap();
+        assert!(text.contains("\"x11Positioning\": true"), "{text}");
+        assert_eq!(Config::from_json(&text).unwrap(), turned_on);
+
+        // And a document from before the key existed reads as off rather than as damaged.
+        assert!(
+            !Config::from_json(&untouched)
+                .unwrap()
+                .window
+                .x11_positioning
+        );
+    }
 
     #[test]
     fn the_default_is_everything_off() {

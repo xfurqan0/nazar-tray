@@ -73,6 +73,14 @@ writing `limits.json`. Two things a translator should know about them. **`GNOME`
 several desktops truncate at two or three lines — so the first clause has to carry the whole
 message on its own, and everything after it is the explanation for somebody who expands it.
 
+**T-WP-L8 added four — 164 keys per file.** `tray.menu.provider` and `tray.menu.noReading`
+build the live quota rows the Linux tray menu carries, because `tray-icon`'s GTK backend shows
+no tooltip at all: `{provider} — {reason}` is a label and a clause, and the em dash can become
+whatever your language uses to join them. `tray.gnome.title` and `tray.gnome.body` are the
+second notification about this product itself, shown once on a GNOME session — `GNOME`,
+`Wayland`, `nazar-gnome` and the address are **names**, and the body follows the same
+first-clause-carries-it rule as `tray.hidden.body` above.
+
 Three notes for a translator. **`/usage` is a command name and is left alone**, like
 `nazar-tray` and `Claude Code`; it is the thing the sentence is about. **The 1.7 in
 `settings.usage.perLine.help` is a measurement, not a rounding to taste** — it is the ratio
