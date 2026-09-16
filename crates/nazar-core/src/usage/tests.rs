@@ -61,9 +61,14 @@ impl Machine {
 
     /// Put text at `relative` under `.codex/sessions/`, the tree the rollout reader walks.
     fn put_rollout(&self, relative: &str, text: &str) -> PathBuf {
+        self.put_rollout_bytes(relative, text.as_bytes())
+    }
+
+    /// The same, for an archive: a rollout's bytes are not always text.
+    fn put_rollout_bytes(&self, relative: &str, bytes: &[u8]) -> PathBuf {
         let path = codex::sessions_dir(&codex::codex_dir(&self.home())).join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
+        std::fs::write(&path, bytes).unwrap();
         path
     }
 
@@ -1031,37 +1036,172 @@ fn an_archived_session_is_not_read() {
     );
 }
 
+/// One rollout's text as a zstd archive.
+///
+/// Compressed here rather than committed, because what a committed archive would pin —
+/// that a file the real `zstd` writes decodes to the file it was made from — is already
+/// pinned by `fixtures/codex/rollout-sample.jsonl.zst` and the test beside it in
+/// `crate::codex::zst`. What these tests need is the same log in both states, and building
+/// one from the other is the only way to say "the same log" and mean it.
+fn archived(text: &str) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)
+}
+
 #[test]
-fn a_compressed_rollout_is_counted_as_skipped_rather_than_passed_over_in_silence() {
+fn a_compressed_rollout_is_read_and_counted_like_any_other() {
     // Codex rewrites a rollout it has not touched for seven days as `<name>.jsonl.zst` and
-    // deletes the plain file. This pass cannot read one — that is T-WP26 — and the cost is
-    // real and permanent: a log compressed before it was ever scanned is never counted, in
-    // exactly the way an archived one is not. The difference is that archiving was a
-    // written decision and this would have been an accident, so it is a number on the
-    // summary instead of a silence.
-    let machine = Machine::new("usage-codex-compressed");
-    machine.put_rollout(
+    // deletes the plain file. Until T-WP26 those events were never counted at all — the
+    // permanent cost `archived_sessions/` carries, arrived at by accident. Now the log is
+    // opened, and `files_compressed` says how much of the total came out of an archive.
+    let plain = Machine::new("usage-codex-plain-twin");
+    plain.put_rollout(
         &rollout("12", "2026-09-12T09-59-58-session-a"),
         &fixture("rollout-known-totals.jsonl"),
     );
-    // The bytes are not a zstd archive on purpose: nothing opens this file.
-    machine.put_rollout(
-        "2026/09/01/rollout-2026-09-01T08-00-00-cold.jsonl.zst",
-        "not an archive, and never opened",
+    let expected = plain.scan_codex();
+
+    let machine = Machine::new("usage-codex-compressed");
+    machine.put_rollout_bytes(
+        &format!("{}.zst", rollout("12", "2026-09-12T09-59-58-session-a")),
+        &archived(&fixture("rollout-known-totals.jsonl")),
     );
 
     let summary = machine.scan_codex();
 
-    assert_eq!(summary.files_seen, 1, "one file was read, not two");
+    assert_eq!(summary.files_seen, 1);
     assert_eq!(
         summary.files_compressed, 1,
-        "and the one that was not is counted"
+        "and it says where it came from"
     );
-    assert_eq!(summary.credited, 4, "the plain log is unaffected");
+    assert_eq!(summary.files_unreadable, 0);
     assert_eq!(
-        summary.files_unreadable, 0,
-        "a compressed log is not a file that failed to open"
+        summary.credited, expected.credited,
+        "four token_count events"
     );
+    assert_eq!(
+        summary.credited_total, expected.credited_total,
+        "an archived log adds up to what the plain log adds up to"
+    );
+    for (hour, model) in [
+        ("2026-09-12T10", UNKNOWN_MODEL),
+        ("2026-09-12T10", "gpt-5.6-sol"),
+        ("2026-09-12T11", "gpt-6-astra"),
+    ] {
+        assert_eq!(
+            machine.codex_bucket("2026-09", hour, model),
+            plain.codex_bucket("2026-09", hour, model),
+            "and files the same hours under the same models"
+        );
+    }
+}
+
+/// A rollout with `events` `token_count` lines, each with its own timestamp and counters.
+///
+/// More than [`codex::PREFIX_EVENTS`] of them on purpose. The fork rule compares a log's
+/// **opening run** against the opening runs it already knows, and that run is bounded at
+/// thirty-two events — so a fixture with four would be caught by the fork rule whether the
+/// cursor recognised the file or not, and would prove nothing about the cursor.
+fn long_rollout(events: usize) -> String {
+    let mut text = String::from(
+        r#"{"timestamp":"2026-09-12T10:00:00.000Z","ordinal":0,"type":"turn_context","payload":{"cwd":"/w/project","model":"gpt-5.6-sol","effort":"high"}}"#,
+    );
+    text.push('\n');
+    for index in 0..events {
+        let minute = index % 60;
+        let input = 100 + index;
+        text.push_str(&format!(
+            r#"{{"timestamp":"2026-09-12T10:{minute:02}:00.000Z","ordinal":{},"type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{input},"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1}}}}}}}}"#,
+            index + 1
+        ));
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn the_compression_sweep_does_not_credit_a_session_a_second_time() {
+    // The regression this package could most easily have introduced. The cursor is filed
+    // under a hash of the path; compression **renames** the log, so a cursor keyed on the
+    // name on disk would meet the archive as a file it had never seen and count every event
+    // in it again. Filed under the plain name, the sweep is what it is — the same log,
+    // replaced — and the events already credited are matched off one by one.
+    const EVENTS: usize = 40;
+    let machine = Machine::new("usage-codex-sweep");
+    let name = rollout("12", "2026-09-12T09-59-58-session-a");
+    let text = long_rollout(EVENTS);
+    let path = machine.put_rollout(&name, &text);
+
+    let first = machine.scan_codex();
+    assert_eq!(first.credited, EVENTS as u64);
+    let counted = machine.codex_bucket("2026-09", "2026-09-12T10", "gpt-5.6-sol");
+
+    // Exactly what the sweep does: write the archive, delete the plain file.
+    machine.put_rollout_bytes(&format!("{name}.zst"), &archived(&text));
+    std::fs::remove_file(&path).unwrap();
+
+    let second = machine.scan_codex();
+
+    assert_eq!(second.files_seen, 1);
+    assert_eq!(second.files_compressed, 1);
+    assert_eq!(second.credited, 0, "nothing here is new");
+    assert_eq!(
+        second.duplicates, EVENTS as u64,
+        "every event was recognised, including the ones past the fork rule's reach"
+    );
+    assert_eq!(
+        second.files_restarted, 1,
+        "the log was replaced, and the cursor has to have noticed"
+    );
+    assert_eq!(
+        second.credited_total, 0,
+        "and the month is left exactly as the first pass wrote it"
+    );
+    assert_eq!(
+        machine.codex_bucket("2026-09", "2026-09-12T10", "gpt-5.6-sol"),
+        counted,
+        "the bucket the first pass wrote, unmoved"
+    );
+}
+
+#[test]
+fn an_archive_beside_the_plain_file_it_came_from_is_one_log_not_two() {
+    // The moment inside the sweep, and the moment after Codex reopens an archived thread:
+    // both names on disk at once. The plain one is the log; the archive is the same session
+    // and is passed over.
+    let machine = Machine::new("usage-codex-both-names");
+    let name = rollout("12", "2026-09-12T09-59-58-session-a");
+    let text = fixture("rollout-known-totals.jsonl");
+    machine.put_rollout(&name, &text);
+    machine.put_rollout_bytes(&format!("{name}.zst"), &archived(&text));
+
+    let summary = machine.scan_codex();
+
+    assert_eq!(summary.files_seen, 1, "one session, one log");
+    assert_eq!(summary.files_compressed, 0, "the archive was not taken");
+    assert_eq!(summary.credited, 4);
+}
+
+#[test]
+fn an_archive_that_will_not_decode_is_a_file_that_failed_to_open() {
+    // Not a silence and not a zero: the same treatment a locked transcript gets. Its cursor
+    // is kept as it was, so a file that is damaged today and readable tomorrow is read
+    // tomorrow.
+    let machine = Machine::new("usage-codex-damaged");
+    machine.put_rollout(
+        &rollout("12", "2026-09-12T09-59-58-session-a"),
+        &fixture("rollout-known-totals.jsonl"),
+    );
+    machine.put_rollout_bytes(
+        "2026/09/01/rollout-2026-09-01T08-00-00-cold.jsonl.zst",
+        b"not an archive at all",
+    );
+
+    let summary = machine.scan_codex();
+
+    assert_eq!(summary.files_seen, 2, "both logs were walked");
+    assert_eq!(summary.files_compressed, 1);
+    assert_eq!(summary.files_unreadable, 1, "and one of them refused");
+    assert_eq!(summary.credited, 4, "the plain log is unaffected");
 }
 
 #[test]

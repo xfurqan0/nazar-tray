@@ -105,14 +105,14 @@ pub struct UsageSummary {
     pub files_read: u64,
     /// Files that could not be opened this time. Their cursors are kept as they were.
     pub files_unreadable: u64,
-    /// Rollout logs skipped because Codex has compressed them to `.jsonl.zst`.
+    /// Rollout logs Codex had compressed to `.jsonl.zst`, and this pass decoded.
     ///
-    /// Neither a failure nor a file that went missing: Codex rewrites a rollout it has not
-    /// touched for seven days and deletes the plain one, and this reader has no
-    /// decompressor — that is T-WP26. **Their events are in no total and never will be**,
-    /// exactly as `archived_sessions/`'s are not, so the count belongs on the summary
-    /// rather than nowhere: a month short of a week should be able to say what it is short
-    /// of. Always `0` on the Claude side, which has no such format.
+    /// Not a count of what was missed. T-WP25 added this field while it was one — the
+    /// reader knew the name and could not open the file — and T-WP26 gave it a decoder, so
+    /// these logs are now walked, parsed and credited like any other. The number stays
+    /// because it is still worth knowing how much of a machine's history is archived: it is
+    /// the part of a total that came out of a file nobody can `grep`. Always `0` on the
+    /// Claude side, which has no such format.
     #[serde(default)]
     pub files_compressed: u64,
     /// Files that had been replaced or truncated and were read from the top again.
@@ -347,7 +347,11 @@ pub fn scan_codex_home(codex_home: &Path, state_dir: &Path) -> Result<UsageSumma
 
     for path in walk.paths {
         summary.files_seen += 1;
-        let key = store::path_key(&path);
+        // Filed under the name the log has when it is **not** compressed, so that Codex's
+        // sweep — and Codex putting the plain file back to append to it — is a file that
+        // was replaced rather than a file nobody has ever read. The second reading is what
+        // would count the session twice; see [`codex::cursor_path`].
+        let key = store::path_key(&codex::cursor_path(&path));
         let previous = cursors.files.get(&key).cloned();
 
         let pass = match codex::scan_file(

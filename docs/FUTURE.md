@@ -19,7 +19,7 @@ the canvas has no use for. Recognising the name, and marking such a thread unrea
 than absent, is an hour of work **in that repository**. It is written down here because this
 is where it was measured, not because it is work in this one.
 
-*Reading a compressed rollout **is** scheduled here: it is T-WP26 in
-[PROJECT.md](PROJECT.md) §7, and it is not on this list for that reason.*
+*Reading a compressed rollout was T-WP26 in [PROJECT.md](PROJECT.md) §7 and **landed on
+2026-09-16**, so this repository opens one. The line above is still open in Nazar.*
 
 Nothing else is on this list yet.

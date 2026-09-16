@@ -215,7 +215,13 @@ fn memchr(haystack: &[u8], byte: u8) -> Option<usize> {
 }
 
 /// Whether `haystack` contains `needle`.
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+/// Crate-visible because the archived logs go through the same filter.
+///
+/// [`super::zst`] hands out the lines of a decompressed rollout and the caller applies this
+/// to them, so an archive and the plain file it was made from reach the parser with exactly
+/// the same lines. A second implementation of "does this line matter" is a second answer
+/// waiting to happen.
+pub(super) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || needle.len() > haystack.len() {
         return needle.is_empty();
     }

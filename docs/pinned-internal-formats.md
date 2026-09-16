@@ -52,8 +52,8 @@ Rules that follow from this table, and that the tests enforce:
 
 | Path | Fields used | Version observed | Fixture | Notes |
 |---|---|---|---|---|
-| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl` — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4; re-verified 0.154.0, 2026-09-15 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl` | See the section below. |
-| the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13; re-verified 0.154.0, 2026-09-15 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. A `.jsonl.zst` is **counted and not read**; see "Compression" below. See "Usage history in a rollout log" below. |
+| `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>[_<uuid>].jsonl`, **and the same name with `.zst`** — **quota** | `timestamp`; `payload.rate_limits.{plan_type, primary, secondary}`; and inside each window `{used_percent, window_minutes, resets_at}` — **seven values, and nothing else** | Codex 0.153.4; re-verified 0.154.0, 2026-09-15 | `fixtures/codex/rollout-sample.jsonl`, `rollout-premium-null.jsonl`, `rollout-no-rate-limits.jsonl`, `rollout-malformed.jsonl`, and `rollout-sample.jsonl.zst` — the first of those compressed by the `zstd` command line (T-WP26) | See the section below, and "Compression" for the archived name. |
+| the same files under `sessions/` — **usage history** | the line's `type` and `timestamp`; `payload.type`; `payload.info.last_token_usage.{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens}`; and `payload.model` on a `turn_context` line — **eight values, and nothing else** | Codex 0.153.4, 2026-09-13; re-verified 0.154.0, 2026-09-15 | `crates/nazar-core/fixtures/usage/rollout-known-totals.jsonl`, `rollout-reset.jsonl`, `rollout-fork.jsonl`, `rollout-sentinel.jsonl` (T-WP14) | A different pass over the same log, reading a different part of it, and `archived_sessions/` is not part of it. A `.jsonl.zst` is read too, since T-WP26; see "Compression" below. See "Usage history in a rollout log" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` — recursively, so the subagent transcripts under `subagents/` are **included** | `type`; `timestamp`; `message.model`; `message.id`; `requestId`; `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` — **nine values, and nothing else**; two of them (the ids) are never written anywhere | Claude Code 2.1.268 – 2.1.269, 2026-09-13 | `fixtures/claude/transcript-*.jsonl` (T-WP13) | **Usage history only; no quota number is derived from these files.** See "The Claude Code transcript" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/stats-cache.json` — **opt-in history backfill** | `version`; `lastComputedDate`; `dailyModelTokens[].{date, tokensByModel}` — **three keys, and nothing else** | Claude Code 2.1.269, `version: 5` (and `dailyModelTokensVersion: 5`), 2026-09-13 | `crates/nazar-core/fixtures/usage/stats-cache.json` (T-WP22) | **Off by default.** Undocumented, recomputed lazily, and holds the *per-line* sums. Read only for days older than the transcripts. See "Claude Code's statistics cache" below. |
 | Claude Code status-line payload (stdin JSON handed to `statusLine.command`) | `session_id` (as a file name); `rate_limits.{five_hour, seven_day}.{used_percentage, resets_at}` — **four numbers reach `limits.json`, and nothing else** | Claude Code 2.1.263 | `fixtures/claude/statusline-payload.json`, `statusline-payload-both-windows.json`, `statusline-payload-no-rate-limits.json` | See "The status-line payload" below. |
@@ -158,14 +158,35 @@ The switch is the feature flag **`local_thread_store_compression`**. Measured on
 every machine running 0.153.4 or later, which is why this is written down rather than
 waited for: what separates a full `sessions/` tree from an unreadable one is one flag.
 
-**This reader does not decompress a `.jsonl.zst`. It recognises the name and says so.** A
-`sessions/` tree holding compressed rollouts and no plain ones reports
-`rollouts are zstd-compressed; nazar-tray cannot read them yet` on both windows, and never
+**This reader decompresses a `.jsonl.zst` (T-WP26).** `crates/nazar-core/src/codex/zst.rs`
+streams it through `ruzstd` — a decoder in Rust, so no C toolchain enters this workspace —
+and hands the lines to the same parser the plain file goes through. Four things about how,
+each with a test beside it:
+
+* **Whole file, not a window.** A zstd frame cannot be entered in the middle, so the tail
+  trick the plain reader uses does not exist here. It is not needed either: Codex only
+  compresses a log it has not touched for seven days, so the file is cold, is read once, and
+  never grows. Bounded at 64 MiB of output — the same ceiling a full pass over a plain log
+  has — and a file that reaches it is **refused rather than truncated**.
+* **Every frame.** Concatenated archives are a valid archive; reading the first frame and
+  calling it the log would be exactly the silent half-answer this section exists to prevent.
+* **Checksums, when there are any.** A frame may carry a 32-bit content checksum. The `zstd`
+  command line writes one; the library Codex calls does not (`ZSTD_c_checksumFlag` left at
+  libzstd's default of off), so the fixture has one and a real archive does not. When one is
+  there it is compared and a mismatch is an error.
+* **One name per session.** `<name>.jsonl` and `<name>.jsonl.zst` are one log in two states.
+  When both are on disk — during a sweep, or after Codex reopens an archived thread — the
+  **plain** one is read and the archive is passed over. The usage store files the cursor
+  under the plain name for the same reason, so a sweep looks like a file that was replaced
+  rather than a log nobody had ever read; without that, a swept session is credited twice.
+
+What is left of the T-WP25 state is narrower and still needed: a `sessions/` tree whose
+rollouts are **all** archives and **none** of which will decode reports
+`every rollout here is zstd-compressed and none of them could be decoded`, never
 `no rollout log in the Codex session directory` — on a machine full of sessions that second
-sentence is a wrong answer rather than a missing one, and a user who reads it concludes
-they have not used Codex. The usage pass counts the same files as compressed and skips
-them, so a log it never scanned is a number on the pass rather than a silence. Decompressing
-one is T-WP26; recognising it was T-WP25.
+sentence is a wrong answer rather than a missing one, and a user who reads it concludes they
+have not used Codex. An archive that will not decode beside one that will costs nothing: the
+scan carries on. On the usage side such a file is `files_unreadable`, with its cursor kept.
 
 `codex migrate-rollouts --apply` (`legacy_to_paginated_v1`, staging directory
 `rollout-migrations/`) is the same class of risk under the same maintenance lock: it moves

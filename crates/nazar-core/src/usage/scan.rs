@@ -1102,6 +1102,91 @@ pub fn read_new_lines(
     Ok(scan)
 }
 
+/// [`read_new_lines`] for a rollout Codex has compressed.
+///
+/// A zstd stream has no offsets: there is no place in it a later pass could seek to, and no
+/// byte in it that corresponds to a byte of the log. What makes that acceptable is the only
+/// reason such a file exists — Codex compresses a rollout it has **not touched for seven
+/// days**, so the file is cold. It will never grow. So the cursor this returns is not a
+/// place to resume from, it is a receipt: `offset` is the length of the compressed file, and
+/// the next pass over an unchanged file sees `offset == length`, reads nothing, and decodes
+/// nothing.
+///
+/// The three questions the plain path asks are asked here too and mean the same things.
+/// `identity` and `fingerprint` are computed over the bytes **on disk** — the compressed
+/// ones — because they are what is there to compare: a file replaced in place has a new
+/// identity whatever it holds, and that is the one thing this cursor has to notice.
+///
+/// `Pass::bytes` is the size of the archive rather than what it expanded to, for the same
+/// reason: it is the I/O this pass did. `Pass::restarted` is `true` when a cursor existed
+/// and no longer describes the file, which for a compressed rollout means it was rewritten
+/// — the compression sweep arriving, or Codex putting the plain file back to append to it.
+/// Its caller treats that exactly as it treats a truncated transcript, and the events it
+/// has already credited are what stop the log being counted twice.
+pub fn read_compressed_lines(
+    path: &Path,
+    previous: Option<Resume<'_>>,
+    needles: &[&[u8]],
+    on_line: &mut dyn FnMut(&str),
+) -> Result<Pass> {
+    let label = log_label(path);
+    let metadata = std::fs::metadata(path).map_err(|source| Error::log(label.clone(), source))?;
+    let length = metadata.len();
+
+    let mut file = File::open(path).map_err(|source| Error::log(label.clone(), source))?;
+    let mut head = [0u8; HEAD_BYTES];
+    let filled =
+        read_head(&mut file, &mut head).map_err(|source| Error::log(label.clone(), source))?;
+    let fresh_window = HEAD_BYTES.min(usize::try_from(length).unwrap_or(HEAD_BYTES));
+
+    let (identity, done, restarted) = match previous {
+        Some(resume) => {
+            let window = window_of(resume.identity).unwrap_or(fresh_window);
+            let candidate = identity_of(&metadata, &head[..window.min(filled)], window);
+            let same_file = candidate == resume.identity
+                && resume.offset == length
+                && fingerprint_before(&mut file, resume.offset)
+                    .map_err(|source| Error::log(label.clone(), source))?
+                    == resume.fingerprint;
+            if same_file {
+                (candidate, true, false)
+            } else {
+                (
+                    identity_of(&metadata, &head[..fresh_window.min(filled)], fresh_window),
+                    false,
+                    true,
+                )
+            }
+        }
+        None => (
+            identity_of(&metadata, &head[..fresh_window.min(filled)], fresh_window),
+            false,
+            false,
+        ),
+    };
+
+    let mut scan = Pass {
+        identity,
+        offset: length,
+        restarted,
+        ..Pass::default()
+    };
+    scan.fingerprint =
+        fingerprint_before(&mut file, length).map_err(|source| Error::log(label, source))?;
+    if done {
+        scan.offset = length;
+        return Ok(scan);
+    }
+
+    let tables: Vec<[usize; 256]> = needles.iter().map(|needle| skip_table(needle)).collect();
+    let decoded = crate::codex::zst::read_lines(path, &mut |line| {
+        absorb(line, needles, &tables, &mut scan, on_line);
+    })?;
+    scan.bytes = length;
+    scan.malformed += decoded.dropped;
+    Ok(scan)
+}
+
 /// Where a previous pass stopped, and the two pieces of evidence that it is still there.
 ///
 /// `identity` answers *is this the same file*; `fingerprint` answers *is this still the same
@@ -1125,7 +1210,7 @@ pub struct Resume<'a> {
 /// A transcript's path is `~/.claude/projects/<a directory somebody works in>/…` and a
 /// rollout's is a date tree; neither belongs in an error, a log line or a bug report. The
 /// hash is stable, so two mentions of the same file are recognisably the same file.
-fn log_label(path: &Path) -> String {
+pub(crate) fn log_label(path: &Path) -> String {
     format!("log {:016x}", fnv1a(path.to_string_lossy().as_bytes()))
 }
 

@@ -161,14 +161,15 @@ its first two items belong in the same commit as the readers they describe, beca
 From a format audit on 2026-09-15 rather than from live use. Codex has shipped a worker since
 0.153.4 that rewrites a rollout whose mtime is more than seven days old as `<name>.jsonl.zst`
 and **deletes the plain file**, behind a feature flag that is off by default and measured off.
-Both readers here select a file with `ends_with(".jsonl")`, so on the day that flag turns on
-they stop seeing a full `sessions/` tree — silently, and in the quota reader's case while
-reporting that the directory is empty.
+Both readers here selected a file with `ends_with(".jsonl")`, so on the day that flag turns on
+they would have stopped seeing a full `sessions/` tree — silently, and in the quota reader's
+case while reporting that the directory is empty. **Both packages have landed**; what is left
+of the state they added is the narrow one below.
 
 | # | Package | Done when |
 |---|---|---|
 | T-WP25 ✅ | **Recognise `.jsonl.zst`**: one walk counts the compressed rollouts instead of stepping over them; the quota reader answers `rollouts are zstd-compressed; nazar-tray cannot read them yet` rather than "no rollout log"; the usage pass reports `files_compressed` | ~~A tree of only compressed logs says so, a compressed log beside a plain one changes nothing, and nothing is added to `Cargo.toml`~~ — **landed 2026-09-15**; seven tests, no dependency, `limits.json` unchanged |
-| T-WP26 | **Read `.jsonl.zst`**: stream-decode with `ruzstd` (pure Rust, no C toolchain, and a `deny.toml` review), whole file rather than a tail window — a compressed log is cold and small | The quota reader gets a percentage out of a compressed tree, the usage pass counts its events exactly once, and `scripts/check-licenses.mjs` passes |
+| T-WP26 ✅ | **Read `.jsonl.zst`**: stream-decode with `ruzstd` (pure Rust, no C toolchain), whole file rather than a tail window — a compressed log is cold and small | ~~The quota reader gets a percentage out of a compressed tree, the usage pass counts its events exactly once, and `scripts/check-licenses.mjs` passes~~ — **landed 2026-09-16**; a committed archive of an existing fixture, the cursor filed under the plain name so a sweep cannot credit a session twice, and `Status::CompressedOnly` narrowed to "none of them would decode" |
 
 **The sibling repository has the same line** — `CODEX_ROLLOUT_SUFFIX` in Nazar's
 `packages/core/src/codex-rollout.ts` — and a much smaller problem behind it: Nazar's business
@@ -1773,3 +1774,52 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   the walk that keep the first two true, and the usage pass's counted skip. The fixtures are a
   handful of bytes that are deliberately **not** a zstd archive: nothing opens them, and a
   real archive in a test would be pinning a decompressor this build does not have.
+- 2026-09-16 21:40 — **T-WP26 landed: the archived rollouts are read.** T-WP25 gave a
+  `.jsonl.zst` a name and a count; this gives it a decoder, and the two halves of the risk
+  report are now both closed. `crates/nazar-core/src/codex/zst.rs` streams a frame through
+  `ruzstd` and hands the lines to the parsers that were already there, so a compressed log and
+  the plain log it was made from reach `parse_line` with the same lines in the same order.
+  That is not asserted, it is **measured**: `fixtures/codex/rollout-sample.jsonl.zst` is
+  `rollout-sample.jsonl` compressed by the real `zstd` command line, and the quota test
+  compares the whole provider block of one against the whole provider block of the other.
+  **Two packages entered `Cargo.toml`, and the reason is the one this repository's
+  dependency line allows.** `ruzstd` is a decoder written in Rust; `zstd` and `zstd-safe` wrap
+  libzstd and would put a C toolchain in front of every build of this workspace, on a code
+  path whose whole job is to read a file. `twox-hash` comes with the `hash` feature and is
+  what makes `get_calculated_checksum` exist — a zstd frame may carry a content checksum, the
+  `zstd` command line writes one and the library Codex calls does not, so the fixture has one
+  and a real archive does not, and when one is there it is compared. Both MIT, neither with a
+  dependency of its own; 442 packages in the notices became 444, all in "All platforms".
+  `rust-version` went 1.85 → 1.87, which is `ruzstd`'s own declared minimum and is written
+  down rather than left to be discovered.
+  **The regression this could most easily have introduced is a double count, and it is the
+  test that matters.** Compression is a **rename**: the cursor is filed under a hash of the
+  path, so an archive arriving under a new name is a log nothing has ever read, and every
+  event in it is credited again. The fork rule would hide most of that — it matches a log's
+  opening run against the runs it knows — but only for thirty-two events. So the cursor is
+  keyed on the **plain** name, and a sweep becomes what it actually is: a file that was
+  replaced. Measured, with the key un-normalised: a forty-event log swept credits **eight**
+  of its events twice. With it: zero credited, forty duplicates, one restart.
+  **Two names for one session are one log.** During the sweep, and after Codex reopens an
+  archived thread, both `<name>.jsonl` and `<name>.jsonl.zst` are on disk. Both walks now take
+  the directory whole before deciding, and the plain name wins — it is the one that can still
+  grow, and taking both would read the session twice.
+  **What is left of `Status::CompressedOnly` is narrow and still needed**: every rollout an
+  archive **and** every one of them refused by the decoder. The sentence changed with it, to
+  `every rollout here is zstd-compressed and none of them could be decoded`. It is still not
+  `no rollout log`, because the directory is still full. A damaged archive beside a readable
+  one costs nothing — the widened scan carries on — and on the usage side it is
+  `files_unreadable` with its cursor kept, the treatment a locked transcript gets.
+  **`files_compressed` kept its name and changed its meaning**, from *what was missed* to
+  *how much of this total came out of an archive*. `usage-contract.md`, `snapshot.ts` and the
+  bridge doc comment say so; no locale key was added, because the only strings that moved are
+  the reader's own sentences in `limits.json`'s free-text `error` field — the same reason
+  T-WP25 needed none.
+  **692 workspace tests where there were 675**, `--no-default-features` builds, fmt and clippy
+  clean, panel typecheck and 157 panel tests green, `check-licenses.mjs` green, notices
+  regenerated on Linux and verified byte for byte by the Windows job. `cargo deny check` is
+  red for three things that predate this package and none of which name `ruzstd` or
+  `twox-hash`: RUSTSEC-2026-0285 in `rustls 0.23.43` (the Dependabot alert), five unmaintained
+  `unic-*`/`proc-macro-error` crates under the Tauri tree, and `target-lexicon`'s
+  `Apache-2.0 WITH LLVM-exception`, which `scripts/check-licenses.mjs` accepts and `deny.toml`
+  does not. They are worth their own package; they are not this one.

@@ -19,16 +19,28 @@
 //!
 //! A third thing shapes it since T-WP25, and has not happened on a real machine yet:
 //! Codex can **compress** a rollout it has not touched for seven days, leaving
-//! `<name>.jsonl.zst` where the plain file was. Such a file is not a candidate — nothing
-//! here decompresses one — but it is counted, because a directory holding only compressed
-//! logs is the one case where "no candidates" must not be reported as "no logs". See
-//! [`ROLLOUT_COMPRESSED_SUFFIX`].
+//! `<name>.jsonl.zst` where the plain file was. T-WP25 gave that file a name and a count;
+//! T-WP26 gave it a reader ([`super::zst`]), so it is a candidate like any other — sorted
+//! by the same modification time, which Codex preserves across the sweep. It is still
+//! counted, because the count is what tells one shape of directory from another in a
+//! report, and because a caller that cannot open one still has to say which kind of
+//! nothing it found.
+//!
+//! One name wins over the other. During the sweep both `<name>.jsonl` and
+//! `<name>.jsonl.zst` exist for a moment, and after Codex reopens an old thread the plain
+//! file is back and the archive is gone. Whenever both are in the same directory the
+//! **plain** one is the candidate and the archive is passed over entirely: they are one
+//! session, reading it twice would be reading it twice, and the plain one is the one that
+//! can still grow.
 //!
 //! The walk is bounded on both sides: at most [`MAX_DATE_DIRECTORIES`] date directories
 //! are listed, and the caller opens at most [`MAX_FILES_OPENED`] of the files found.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use super::zst;
 
 /// How many rollout files the reader may open while looking for a quota line.
 pub const MAX_FILES_OPENED: usize = 5;
@@ -51,25 +63,19 @@ const MIN_NON_EMPTY_DIRECTORIES: usize = 3;
 const ROLLOUT_PREFIX: &str = "rollout-";
 const ROLLOUT_SUFFIX: &str = ".jsonl";
 
-/// Suffix of a rollout log Codex has compressed.
-///
-/// Codex has shipped a worker since 0.153.4 that rewrites every rollout whose mtime is more
-/// than seven days old as `<name>.jsonl.zst` and **deletes the plain file**. It sits behind
-/// the `local_thread_store_compression` feature flag, measured `under development` and
-/// `false` under 0.154.0 on 2026-09-15. This walk cannot read one, so it **counts** them
-/// rather than walking past them: a `sessions/` tree holding nothing else is a machine full
-/// of sessions, and the difference between "there are no logs" and "the logs are
-/// compressed" is the difference between a missing answer and a wrong one. See
-/// `docs/pinned-internal-formats.md`.
-const ROLLOUT_COMPRESSED_SUFFIX: &str = ".jsonl.zst";
-
 /// One rollout log found by the walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// Full path to the file.
     pub path: PathBuf,
     /// Last modification time, or the Unix epoch when the filesystem did not report one.
+    ///
+    /// Codex preserves this across the compression sweep, so a compressed candidate sorts
+    /// against the plain ones by when its session was last written rather than by when it
+    /// was archived.
     pub modified: SystemTime,
+    /// `true` when this is a `.jsonl.zst` and has to be decoded rather than tailed.
+    pub compressed: bool,
 }
 
 /// What the walk found.
@@ -78,10 +84,12 @@ pub struct Found {
     /// Rollout logs this reader can open, most recently modified first, at most `cap` of
     /// them.
     pub candidates: Vec<Candidate>,
-    /// Compressed rollout logs the walk saw and did not take.
+    /// How many compressed rollouts the walk found.
     ///
-    /// Neither capped with the candidates nor sorted: it is evidence about the directory
-    /// rather than a list of work, and the only question asked of it is whether it is zero.
+    /// Evidence about the directory rather than a second list: what to do with those files
+    /// is in the candidates. Counted before the cap is applied and never capped, because
+    /// the question it answers — how much of this tree is archived — is about the tree
+    /// rather than about the work.
     pub compressed: usize,
 }
 
@@ -101,13 +109,9 @@ pub fn newest_rollouts(home: &Path, cap: usize) -> Vec<Candidate> {
     find_rollouts(home, cap).candidates
 }
 
-/// [`newest_rollouts`], and how many compressed logs the same walk passed.
+/// [`newest_rollouts`], and how many of them are compressed.
 ///
-/// One walk answers both questions, because they are the same `read_dir`. The cap and the
-/// stop conditions are counted on the **readable** candidates alone, so a day full of
-/// `.jsonl.zst` neither ends the walk early nor pushes a plain log out of the list: a
-/// machine part way through Codex's seven-day compression has its newest sessions plain and
-/// its oldest compressed, and the plain ones are the ones worth reaching.
+/// One walk answers both questions, because they are the same `read_dir`.
 #[must_use]
 pub fn find_rollouts(home: &Path, cap: usize) -> Found {
     let sessions = sessions_dir(home);
@@ -171,11 +175,18 @@ fn numeric_children(parent: &Path) -> Vec<PathBuf> {
     names
 }
 
-/// Append every `rollout-*.jsonl` in `day` to `found`, and count the compressed ones.
+/// Append every rollout in `day` to `found`, plain or compressed.
+///
+/// The directory is taken whole before anything is added to `found`, because one of the
+/// decisions needs the other names: an archive whose plain twin is sitting beside it is not
+/// a separate log, it is the same log mid-sweep, and taking both would read the session
+/// twice.
 fn collect_rollouts(day: &Path, found: &mut Found) {
     let Ok(entries) = std::fs::read_dir(day) else {
         return;
     };
+
+    let mut names: Vec<(String, PathBuf, SystemTime)> = Vec::new();
     for entry in entries.filter_map(std::result::Result::ok) {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -185,8 +196,7 @@ fn collect_rollouts(day: &Path, found: &mut Found) {
         }
         // `.jsonl.zst` does not end in `.jsonl`, so the two tests are exclusive and the
         // order of them says nothing.
-        let compressed = name.ends_with(ROLLOUT_COMPRESSED_SUFFIX);
-        if !(compressed || name.ends_with(ROLLOUT_SUFFIX)) {
+        if !(zst::is_compressed(&name) || name.ends_with(ROLLOUT_SUFFIX)) {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {
@@ -195,13 +205,31 @@ fn collect_rollouts(day: &Path, found: &mut Found) {
         if !metadata.is_file() {
             continue;
         }
-        if compressed {
-            found.compressed += 1;
+        names.push((
+            name,
+            entry.path(),
+            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        ));
+    }
+
+    let plain: BTreeSet<&str> = names
+        .iter()
+        .filter(|(name, _, _)| !zst::is_compressed(name))
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+
+    for (name, path, modified) in &names {
+        let compressed = zst::is_compressed(name);
+        if compressed && plain.contains(zst::plain_name(name)) {
             continue;
         }
+        if compressed {
+            found.compressed += 1;
+        }
         found.candidates.push(Candidate {
-            path: entry.path(),
-            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            path: path.clone(),
+            modified: *modified,
+            compressed,
         });
     }
 }
@@ -225,8 +253,9 @@ mod tests {
 
     /// The same, with the name Codex leaves behind after it has compressed one.
     ///
-    /// The contents are a handful of bytes and not a zstd archive: no code path here opens
-    /// the file, and a real archive in a test would pin a decompressor that does not exist.
+    /// The contents are a handful of bytes and not a zstd archive. This module decides
+    /// which files are worth opening and opens none of them; what a real archive holds is
+    /// [`super::super::zst`]'s business and is tested against a committed one there.
     fn compressed(root: &Path, date: &str, label: &str, age: Duration) -> PathBuf {
         let dir = sessions_dir(root).join(date.replace('/', std::path::MAIN_SEPARATOR_STR));
         std::fs::create_dir_all(&dir).unwrap();
@@ -368,29 +397,45 @@ mod tests {
     }
 
     #[test]
-    fn a_compressed_rollout_is_counted_and_never_listed() {
+    fn a_compressed_rollout_is_a_candidate_in_its_own_modification_order() {
         let dir = TempDir::new("locate-compressed");
-        // A machine part way through Codex's seven-day sweep: this week plain, last week
-        // compressed — and the compressed ones planted newer, which is the order that would
-        // have put them at the head of the list had they been candidates.
+        // A machine part way through Codex's seven-day sweep: one plain session and two
+        // archived ones, and the archives planted newer, because Codex keeps the original
+        // modification time and the sweep is what has to not disturb the order.
         plant(&dir.path, "2026/09/07", "live", Duration::from_secs(600));
         compressed(&dir.path, "2026/09/01", "cold-one", Duration::from_secs(10));
         compressed(&dir.path, "2026/08/31", "cold-two", Duration::from_secs(20));
 
         let found = find_rollouts(&dir.path, MAX_FILES_OPENED);
 
-        assert_eq!(names(&found.candidates), ["rollout-live.jsonl"]);
+        assert_eq!(
+            names(&found.candidates),
+            [
+                "rollout-cold-one.jsonl.zst",
+                "rollout-cold-two.jsonl.zst",
+                "rollout-live.jsonl"
+            ]
+        );
         assert_eq!(found.compressed, 2);
+        assert_eq!(
+            found
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.compressed)
+                .count(),
+            2,
+            "each candidate has to say which kind it is, or the caller opens it wrongly"
+        );
     }
 
     #[test]
-    fn a_tree_of_only_compressed_rollouts_has_no_candidates_and_a_count() {
+    fn a_tree_of_only_compressed_rollouts_is_a_tree_with_candidates() {
         let dir = TempDir::new("locate-compressed-only");
         compressed(&dir.path, "2026/09/07", "cold", Duration::from_secs(10));
 
         let found = find_rollouts(&dir.path, MAX_FILES_OPENED);
 
-        assert!(found.candidates.is_empty());
+        assert_eq!(names(&found.candidates), ["rollout-cold.jsonl.zst"]);
         assert_eq!(
             found.compressed, 1,
             "the difference between an empty directory and a compressed one"
@@ -398,24 +443,51 @@ mod tests {
     }
 
     #[test]
-    fn a_full_cap_of_compressed_logs_does_not_hide_a_plain_one_further_down() {
+    fn the_plain_file_wins_over_the_archive_of_the_same_session() {
+        let dir = TempDir::new("locate-both-names");
+        // The two moments when both names exist: during the sweep, between writing the
+        // archive and deleting the plain file, and after Codex reopens an archived thread
+        // and puts the plain file back. Either way it is one session.
+        plant(&dir.path, "2026/09/07", "twin", Duration::from_secs(600));
+        compressed(&dir.path, "2026/09/07", "twin", Duration::from_secs(10));
+        compressed(&dir.path, "2026/09/07", "lonely", Duration::from_secs(20));
+
+        let found = find_rollouts(&dir.path, MAX_FILES_OPENED);
+
+        assert_eq!(
+            names(&found.candidates),
+            ["rollout-lonely.jsonl.zst", "rollout-twin.jsonl"]
+        );
+        assert_eq!(
+            found.compressed, 1,
+            "an archive that was passed over is not one the caller has to account for"
+        );
+    }
+
+    #[test]
+    fn the_cap_counts_compressed_logs_too_and_the_newest_still_win() {
         let dir = TempDir::new("locate-compressed-cap");
-        // Twice the cap of compressed logs above the only readable one. Counting them
-        // against the cap, or against the "enough non-empty directories" rule, would end
-        // the walk before reaching it.
+        // Twice the cap of archives above one plain log, and the plain one the oldest of
+        // all. Now that an archive can be opened, it belongs in the queue on its own
+        // merits, and the cap is the cap.
         for index in 0..(MAX_FILES_OPENED * 2) {
             compressed(
                 &dir.path,
                 "2026/09/07",
                 &format!("cold{index:02}"),
-                Duration::from_secs(10),
+                Duration::from_secs(10 + index as u64),
             );
         }
         plant(&dir.path, "2026/09/01", "plain", Duration::from_secs(9_000));
 
         let found = find_rollouts(&dir.path, MAX_FILES_OPENED);
 
-        assert_eq!(names(&found.candidates), ["rollout-plain.jsonl"]);
+        assert_eq!(found.candidates.len(), MAX_FILES_OPENED);
+        assert_eq!(names(&found.candidates)[0], "rollout-cold00.jsonl.zst");
+        assert!(
+            !names(&found.candidates).contains(&"rollout-plain.jsonl".to_owned()),
+            "the oldest log in the tree does not push past the cap"
+        );
         assert_eq!(found.compressed, MAX_FILES_OPENED * 2);
     }
 

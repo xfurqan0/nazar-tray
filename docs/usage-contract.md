@@ -580,18 +580,34 @@ as they were. The cost, stated rather than discovered: **a session archived befo
 scanned is never counted at all.** Changing that means reading both trees and telling them
 apart by something other than a path, and it is not a line this file can add on its own.
 
-**A compressed rollout is counted and not read.** Codex has shipped a worker since 0.153.4
-that rewrites every rollout whose mtime is more than seven days old as `<name>.jsonl.zst` and
-deletes the plain file; it sits behind the `local_thread_store_compression` flag, measured
-`under development` and `false` on 2026-09-15 under 0.154.0. This pass has no decompressor, so
-such a log costs exactly what an archived one costs — **its events are in no total and are not
-going to arrive later** — with one difference, and that difference is the whole of T-WP25:
-archiving is a decision written down here, and this would have been a week of history
-disappearing with nothing anywhere to say so. So the scan counts them.
-`UsageSummary::files_compressed`, summed into the bridge's `UsageScan.files_compressed`, is how
-many rollouts a pass walked past for this reason, and it is `0` on every machine whose Codex
-has the flag off. Reading them is T-WP26; the format is in
+**A compressed rollout is read.** Codex has shipped a worker since 0.153.4 that rewrites every
+rollout whose mtime is more than seven days old as `<name>.jsonl.zst` and deletes the plain
+file; it sits behind the `local_thread_store_compression` flag, measured `under development`
+and `false` on 2026-09-15 under 0.154.0. T-WP25 gave this pass the name and a count, because a
+week of history disappearing with nothing anywhere to say so is the one failure this document
+exists to prevent. T-WP26 gave it a decoder, so those events are now in the totals like any
+others. `UsageSummary::files_compressed`, summed into the bridge's
+`UsageScan.files_compressed`, is how many of the logs a pass read were archives — still `0` on
+every machine whose Codex has the flag off. The format is in
 [`pinned-internal-formats.md`](pinned-internal-formats.md) under "Compression".
+
+**Two things follow from compression being a rename**, and both are load bearing:
+
+* **A rollout's cursor is filed under its plain name.** `<name>.jsonl` and `<name>.jsonl.zst`
+  are one session in the two states Codex keeps it in, so keying the cursor on the name on
+  disk would meet the archive as a log nothing had ever read and credit the whole session a
+  second time. Keyed on the plain name, the sweep is a file that was replaced: the cursor's
+  identity check notices, the pass restarts, and the events already credited are matched off
+  one by one. Measured, in the test named after it: a forty-event log swept without this
+  credits eight of them twice — the eight past the fork rule's thirty-two-event reach.
+* **Only one of the two names is walked.** During the sweep, and after Codex reopens an
+  archived thread, both exist for a moment. The plain one is the log; the archive beside it is
+  passed over and not counted.
+
+**An archive that will not decode is a file that failed to open**, `files_unreadable`, with its
+cursor kept exactly as it was — the same treatment a locked transcript gets, for the same
+reason: damage today may be readable tomorrow, and a pass that credited half a log and wrote a
+finished cursor could never find out.
 
 ## A damaged month is left alone
 

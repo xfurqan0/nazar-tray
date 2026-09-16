@@ -58,6 +58,7 @@
 pub mod locate;
 pub mod parse;
 pub mod tail;
+pub mod zst;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -125,15 +126,17 @@ enum Status {
     NoHome,
     /// The home directory is there but holds no session log.
     NoLogs,
-    /// The session directory holds rollout logs and every one of them is compressed.
+    /// Every rollout here is compressed and not one of them could be decoded.
     ///
     /// A state of its own rather than a kind of [`Status::NoLogs`], because it is the
-    /// opposite sentence. Codex rewrites a rollout it has not touched for seven days as
-    /// `<name>.jsonl.zst` and deletes the plain file, so a machine nobody has opened Codex
-    /// on for a fortnight can have a **full** `sessions/` tree that this reader cannot open
-    /// a single file of — and answering "no rollout log" there tells the user they have
-    /// never run Codex. Reading these files is T-WP26; saying out loud that they are there
-    /// is this.
+    /// opposite sentence: a machine nobody has opened Codex on for a fortnight has a
+    /// **full** `sessions/` tree of `.jsonl.zst`, and answering "no rollout log" there
+    /// tells the user they have never run Codex.
+    ///
+    /// Since T-WP26 this is a narrow state rather than the normal one. These files are read
+    /// now ([`zst`]), so reaching here means the decoder refused every one of them — a
+    /// truncated archive, bit rot, a frame this decoder does not implement, or a format
+    /// that has moved. The sentence says exactly that and no more.
     CompressedOnly,
     /// Logs are there, but none of the ones we opened carried a usable quota line.
     NoQuotaLine,
@@ -157,6 +160,12 @@ pub struct CodexReader {
     /// unchanged set of logs. Without this a machine whose newest logs genuinely hold no
     /// quota line would read five files end to end on every poll, for ever.
     scanned: Option<Vec<(PathBuf, SystemTime)>>,
+    /// Compressed candidates the last widened scan could not decode.
+    ///
+    /// Kept beside [`CodexReader::scanned`] and for the same reason: the scan runs once per
+    /// candidate set, so the question "could these files be opened at all" is answered once
+    /// and then remembered, rather than re-asked on a poll that deliberately does no work.
+    undecodable: usize,
     warnings: u64,
 }
 
@@ -169,6 +178,7 @@ impl CodexReader {
             tail: None,
             latest: None,
             scanned: None,
+            undecodable: 0,
             warnings: 0,
         }
     }
@@ -233,6 +243,7 @@ impl CodexReader {
             self.tail = None;
             self.latest = None;
             self.scanned = None;
+            self.undecodable = 0;
             return Status::NoHome;
         }
 
@@ -240,23 +251,28 @@ impl CodexReader {
         let candidates = found.candidates;
         let Some(newest) = candidates.first() else {
             self.tail = None;
-            return if found.compressed > 0 {
-                Status::CompressedOnly
-            } else {
-                Status::NoLogs
-            };
+            return Status::NoLogs;
         };
 
-        // Follow the newest log incrementally; start over when a newer one appears.
-        let following = self
-            .tail
-            .as_ref()
-            .is_some_and(|tail| tail.path() == newest.path);
-        if !following {
-            self.tail = Some(tail::Tail::new(&newest.path, tail::INITIAL_WINDOW));
-        }
-        if let Some(reading) = self.poll_current(newest.modified) {
-            self.latest = Some(reading);
+        // Follow the newest log incrementally; start over when a newer one appears. Only a
+        // plain log is followed: an archive is a log Codex has not touched for seven days,
+        // so there is nothing for a tail to wait for, and a zstd stream has no offset for
+        // one to hold anyway. When the newest candidate is an archive the tail is put down
+        // entirely and the widened scan below reads the candidates in order, which is the
+        // order that puts the archive first.
+        if newest.compressed {
+            self.tail = None;
+        } else {
+            let following = self
+                .tail
+                .as_ref()
+                .is_some_and(|tail| tail.path() == newest.path);
+            if !following {
+                self.tail = Some(tail::Tail::new(&newest.path, tail::INITIAL_WINDOW));
+            }
+            if let Some(reading) = self.poll_current(newest.modified) {
+                self.latest = Some(reading);
+            }
         }
 
         if self.latest.is_none() {
@@ -278,6 +294,12 @@ impl CodexReader {
 
         match &self.latest {
             Some((quota, source_at)) => Status::Read(Box::new(quota.clone()), source_at.clone()),
+            // "No quota line" is a claim about what the logs said, so it may only be made
+            // about logs that were read. When every candidate is an archive and the decoder
+            // refused them, nothing here has read a line at all.
+            None if self.undecodable > 0 && candidates.iter().all(|one| one.compressed) => {
+                Status::CompressedOnly
+            }
             None => Status::NoQuotaLine,
         }
     }
@@ -304,20 +326,62 @@ impl CodexReader {
     /// Opens at most [`MAX_FILES_OPENED`] distinct files in total, counting the one the
     /// tail already has open.
     fn scan_candidates(&mut self, candidates: &[locate::Candidate]) -> Option<(Quota, String)> {
+        self.undecodable = 0;
         for candidate in candidates.iter().take(MAX_FILES_OPENED) {
-            let mut pass = tail::Tail::new(&candidate.path, tail::FULL_WINDOW);
-            let Ok(batch) = pass.poll(parse::NEEDLE) else {
-                self.warnings += 1;
-                continue;
+            let lines = if candidate.compressed {
+                match self.decode(&candidate.path) {
+                    Some(lines) => lines,
+                    None => continue,
+                }
+            } else {
+                let mut pass = tail::Tail::new(&candidate.path, tail::FULL_WINDOW);
+                let Ok(batch) = pass.poll(parse::NEEDLE) else {
+                    self.warnings += 1;
+                    continue;
+                };
+                self.warnings += batch.dropped;
+                batch.lines
             };
-            self.warnings += batch.dropped;
-            if let Some(reading) =
-                newest_usable(&batch.lines, candidate.modified, &mut self.warnings)
-            {
+            if let Some(reading) = newest_usable(&lines, candidate.modified, &mut self.warnings) {
                 return Some(reading);
             }
         }
         None
+    }
+
+    /// Decode one archived rollout, keeping the lines that could hold a quota.
+    ///
+    /// The filter is the same needle the tail applies, applied to the same bytes, so a log
+    /// read through the decoder and the same log read plain reach [`newest_usable`] with
+    /// the same lines in the same order. That is the property the fixture pair exists to
+    /// hold: `rollout-sample.jsonl` and `rollout-sample.jsonl.zst` are one file.
+    fn decode(&mut self, path: &Path) -> Option<Vec<String>> {
+        let mut lines = Vec::new();
+        let mut warnings = 0u64;
+        let decoded = zst::read_lines(path, &mut |line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if line.is_empty() || !tail::contains(line, parse::NEEDLE) {
+                return;
+            }
+            match std::str::from_utf8(line) {
+                Ok(text) => lines.push(text.to_owned()),
+                // A log with bytes that are not UTF-8 is a log we do not understand.
+                // Counted, never guessed at.
+                Err(_) => warnings += 1,
+            }
+        });
+        self.warnings += warnings;
+        match decoded {
+            Ok(decoded) => {
+                self.warnings += decoded.dropped;
+                Some(lines)
+            }
+            Err(_) => {
+                self.warnings += 1;
+                self.undecodable += 1;
+                None
+            }
+        }
     }
 }
 
@@ -358,7 +422,7 @@ fn provider(status: &Status, now: &str) -> Provider {
         },
         Status::NoLogs => unreadable("no rollout log in the Codex session directory"),
         Status::CompressedOnly => {
-            unreadable("rollouts are zstd-compressed; nazar-tray cannot read them yet")
+            unreadable("every rollout here is zstd-compressed and none of them could be decoded")
         }
         Status::NoQuotaLine => unreadable(&format!(
             "no rate_limits line in the newest {MAX_FILES_OPENED} rollouts"

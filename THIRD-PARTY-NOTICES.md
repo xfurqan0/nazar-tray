@@ -12,11 +12,11 @@ Where a crate offers a choice of licences, the one named below is the one it is 
 
 | Section | Packages |
 |---|---|
-| All platforms | 275 |
+| All platforms | 277 |
 | Windows | 35 |
 | Linux | 94 |
 | macOS | 38 |
-| **Total** | **442** |
+| **Total** | **444** |
 
 | Licence | Packages |
 |---|---|
@@ -24,12 +24,12 @@ Where a crate offers a choice of licences, the one named below is the one it is 
 | BSD-3-Clause | 5 |
 | CDLA-Permissive-2.0 | 1 |
 | ISC | 4 |
-| MIT | 404 |
+| MIT | 406 |
 | MIT-0 | 1 |
 | MPL-2.0 | 5 |
 | Unicode-3.0 | 18 |
 | Zlib | 2 |
-| **Total** | **442** |
+| **Total** | **444** |
 
 ## All platforms
 
@@ -214,6 +214,7 @@ Where a crate offers a choice of licences, the one named below is the one it is 
 | rustls | 0.23.43 | Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com> | [https://github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | rustls-pki-types | 1.15.1 | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> | [https://github.com/rustls/pki-types](https://github.com/rustls/pki-types) |
 | rustls-platform-verifier | 0.7.0 | Copyright (c) 2022 1Password | [https://github.com/rustls/rustls-platform-verifier](https://github.com/rustls/rustls-platform-verifier) |
+| ruzstd | 0.9.0 | Copyright (c) 2019 Moritz Borcherding | [https://github.com/KillingSpark/zstd-rs](https://github.com/KillingSpark/zstd-rs) |
 | same-file | 1.0.6 | Copyright (c) 2017 Andrew Gallant | [https://github.com/BurntSushi/same-file](https://github.com/BurntSushi/same-file) |
 | schemars | 0.8.22 | Copyright (c) 2019 Graham Esau | [https://github.com/GREsau/schemars](https://github.com/GREsau/schemars) |
 | schemars | 0.9.0 | Copyright (c) 2019 Graham Esau | [https://github.com/GREsau/schemars](https://github.com/GREsau/schemars) |
@@ -282,6 +283,7 @@ Where a crate offers a choice of licences, the one named below is the one it is 
 | tracing-core | 0.1.36 | Copyright (c) 2019 Tokio Contributors | [https://github.com/tokio-rs/tracing](https://github.com/tokio-rs/tracing) |
 | tray-icon | 0.24.2 | Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy | [https://github.com/tauri-apps/tray-icon](https://github.com/tauri-apps/tray-icon) |
 | try-lock | 0.2.5 | Copyright (c) 2018-2023 Sean McArthur<br>Copyright (c) 2016 Alex Crichton | [https://github.com/seanmonstar/try-lock](https://github.com/seanmonstar/try-lock) |
+| twox-hash | 2.1.4 | Copyright (c) 2015 Jake Goulding | [https://github.com/shepmaster/twox-hash](https://github.com/shepmaster/twox-hash) |
 | typeid | 1.0.3 | — | [https://github.com/dtolnay/typeid](https://github.com/dtolnay/typeid) |
 | typenum | 1.20.1 | Copyright 2014 Paho Lurie-Gregg<br>Copyright (c) 2014 Paho Lurie-Gregg | [https://github.com/paholg/typenum](https://github.com/paholg/typenum) |
 | unic-char-property | 0.9.0 | — | [https://github.com/open-i18n/rust-unic/](https://github.com/open-i18n/rust-unic/) |

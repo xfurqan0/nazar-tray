@@ -64,6 +64,7 @@
 //! cost is stated rather than hidden: a session archived before it was ever scanned is
 //! never counted at all. `docs/usage-contract.md` carries the decision.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -71,9 +72,10 @@ use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
 use super::scan::{
-    Count, Resume, UNKNOWN_MODEL, Usage, fnv1a, hour_key, identifier_field, read_new_lines,
-    timestamp_field,
+    Count, Resume, UNKNOWN_MODEL, Usage, fnv1a, hour_key, identifier_field, read_compressed_lines,
+    read_new_lines, timestamp_field,
 };
+use crate::codex::zst;
 use crate::error::Result;
 
 /// The byte strings a rollout line must contain before it is worth parsing.
@@ -111,15 +113,6 @@ const MAX_DEPTH: usize = 6;
 const ROLLOUT_PREFIX: &str = "rollout-";
 const ROLLOUT_SUFFIX: &str = ".jsonl";
 
-/// Suffix of a rollout Codex has compressed, and the third constant that module has.
-///
-/// The quota reader's trouble with these files is loud — it would report an empty machine.
-/// This reader's is quiet and worse: a log compressed before it was ever scanned is **never
-/// counted at all**, which is the permanent cost `archived_sessions/` carries and
-/// `usage-contract.md` states. So the walk counts them instead of passing them by, and a
-/// month missing a week has a number beside it saying how. Decompressing one is T-WP26.
-const ROLLOUT_COMPRESSED_SUFFIX: &str = ".jsonl.zst";
-
 /// `<home>/.codex` — where Codex keeps everything, unless `CODEX_HOME` says otherwise.
 ///
 /// Derived from the home directory the caller passes rather than from the environment, so
@@ -136,7 +129,7 @@ pub fn sessions_dir(codex_home: &Path) -> PathBuf {
     codex_home.join("sessions")
 }
 
-/// Every `rollout-*.jsonl` under `root`, sorted.
+/// Every rollout under `root`, plain or compressed, sorted.
 ///
 /// Sorted so that two runs over the same tree read the files in the same order and produce
 /// the same counters, and because the date directories are zero padded: sorting the paths
@@ -148,16 +141,16 @@ pub fn rollouts(root: &Path) -> Vec<PathBuf> {
     find_rollouts(root).paths
 }
 
-/// What the walk under `root` found: the logs it can read, and the ones it cannot.
+/// What the walk under `root` found: the logs, and how many of them were archived.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Found {
-    /// Every `rollout-*.jsonl` under `root`, sorted.
+    /// Every rollout under `root`, sorted. A `.jsonl.zst` is one of these since T-WP26.
     pub paths: Vec<PathBuf>,
-    /// Compressed rollouts seen and not read. Their events are not in any total.
+    /// How many of [`Found::paths`] are compressed.
     pub compressed: u64,
 }
 
-/// [`rollouts`], and how many compressed logs the same walk passed.
+/// [`rollouts`], and how many of them are archived.
 #[must_use]
 pub fn find_rollouts(root: &Path) -> Found {
     let mut found = Found::default();
@@ -173,6 +166,12 @@ fn collect(dir: &Path, depth: usize, found: &mut Found) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+
+    // The directory is taken whole first, because one decision needs the other names: an
+    // archive whose plain twin is beside it is the same session mid-sweep — or a session
+    // Codex has just reopened — and counting it as a second log would count the session
+    // twice. The plain name wins; it is the one that can still grow.
+    let mut names: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries.filter_map(std::result::Result::ok) {
         // `DirEntry::file_type` does not follow a symbolic link, so a link that points at
         // an ancestor is never walked into.
@@ -194,12 +193,45 @@ fn collect(dir: &Path, depth: usize, found: &mut Found) {
             continue;
         }
         // `.jsonl.zst` does not end in `.jsonl`, so the two tests are exclusive.
-        if name.ends_with(ROLLOUT_COMPRESSED_SUFFIX) {
-            found.compressed = found.compressed.saturating_add(1);
-        } else if name.ends_with(ROLLOUT_SUFFIX) {
-            found.paths.push(path);
+        if !(zst::is_compressed(&name) || name.ends_with(ROLLOUT_SUFFIX)) {
+            continue;
         }
+        names.push((name, path));
     }
+
+    let plain: BTreeSet<&str> = names
+        .iter()
+        .filter(|(name, _)| !zst::is_compressed(name))
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    for (name, path) in &names {
+        if zst::is_compressed(name) {
+            if plain.contains(zst::plain_name(name)) {
+                continue;
+            }
+            found.compressed = found.compressed.saturating_add(1);
+        }
+        found.paths.push(path.clone());
+    }
+}
+
+/// The path a rollout's cursor is filed under: the name it has when it is not compressed.
+///
+/// The compression sweep and its undo both **rename** a log, and a cursor keyed on the name
+/// on disk would see the archive as a file it had never met — and credit a session it had
+/// already counted all over again. Keyed on the plain name, the sweep looks like what it
+/// actually is: the same log, replaced. The cursor's identity check notices that by itself,
+/// the pass restarts, and the events it has already credited are matched off one by one.
+#[must_use]
+pub fn cursor_path(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    if !zst::is_compressed(name) {
+        return path.to_path_buf();
+    }
+    path.with_file_name(zst::plain_name(name))
 }
 
 /// One `token_count` event, reduced to what the store keeps.
@@ -353,18 +385,27 @@ pub fn scan_file(
 
     let mut scan = FileScan::default();
     let mut steps: Vec<Step> = Vec::new();
-    let pass = read_new_lines(
-        path,
-        previous,
-        &NEEDLES,
-        &mut |text| match parse_line(text) {
-            Outcome::Model(model) => steps.push(Step::Model(model)),
-            Outcome::Usage(event) => steps.push(Step::Event(Box::new(event))),
-            Outcome::Skipped(reason) => scan.note(reason),
-            Outcome::Malformed => scan.malformed += 1,
-            Outcome::Other => {}
-        },
-    )?;
+    let mut on_line = |text: &str| match parse_line(text) {
+        Outcome::Model(model) => steps.push(Step::Model(model)),
+        Outcome::Usage(event) => steps.push(Step::Event(Box::new(event))),
+        Outcome::Skipped(reason) => scan.note(reason),
+        Outcome::Malformed => scan.malformed += 1,
+        Outcome::Other => {}
+    };
+    // One parser, two readers. An archive cannot be entered in the middle, so it goes
+    // through [`read_compressed_lines`], which decodes it whole and leaves a cursor that
+    // says so; a plain log goes through the same incremental reader the transcripts use.
+    // What reaches `parse_line` is the same lines in the same order either way, and the
+    // fixture pair in [`crate::codex::zst`] is the proof.
+    let compressed = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(zst::is_compressed);
+    let pass = if compressed {
+        read_compressed_lines(path, previous, &NEEDLES, &mut on_line)?
+    } else {
+        read_new_lines(path, previous, &NEEDLES, &mut on_line)?
+    };
 
     // The model is resolved after the read rather than during it, because whether the
     // carried one applies at all is something only the finished pass knows: a restart means

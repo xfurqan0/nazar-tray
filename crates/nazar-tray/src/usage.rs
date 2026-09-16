@@ -164,12 +164,12 @@ pub struct UsageScan {
     pub duplicates: u64,
     /// How long the whole pass took, in milliseconds.
     pub took_ms: u64,
-    /// Rollout logs skipped because Codex has compressed them, both readers together.
+    /// Rollout logs Codex had compressed, and this pass decoded, both readers together.
     ///
-    /// Codex's only, and `0` until Codex turns its compression flag on. A log it has
-    /// rewritten as `.jsonl.zst` is one this build cannot read — that is T-WP26 — and the
-    /// events in it reach no total, so a pass that walked past a week of history says how
-    /// many files that was rather than leaving the gap to be discovered in a chart.
+    /// Codex's only, and `0` until Codex turns its compression flag on. T-WP25 added this
+    /// while such a log was one nothing could open; T-WP26 gave it a decoder, so the number
+    /// says how much of the history beside it came out of an archive rather than how much
+    /// of it is missing.
     #[serde(default)]
     pub files_compressed: u64,
     /// Lines the server answered with an error and billed for none of, skipped by name.

@@ -16,6 +16,8 @@ const PREMIUM: &str = include_str!("../../../../fixtures/codex/rollout-premium-n
 const NO_QUOTA: &str = include_str!("../../../../fixtures/codex/rollout-no-rate-limits.jsonl");
 /// Hand-written damage: truncated JSON, wrong types, a stray blank line.
 const MALFORMED: &str = include_str!("../../../../fixtures/codex/rollout-malformed.jsonl");
+/// [`SAMPLE`], compressed by the `zstd` command line exactly as Codex's sweep would.
+const ARCHIVE: &[u8] = include_bytes!("../../../../fixtures/codex/rollout-sample.jsonl.zst");
 
 /// The instant these tests are run at.
 ///
@@ -40,17 +42,23 @@ fn plant(home: &Path, date: &str, label: &str, contents: &str) -> PathBuf {
     path
 }
 
-/// Write a few bytes to `<home>/sessions/<date>/rollout-<label>.jsonl.zst`.
-///
-/// The bytes are deliberately **not** a zstd archive. Nothing in this crate opens one, and
-/// a fixture that held a real archive would be pinning a decompressor this reader does not
-/// have — what is being tested is that the name is recognised and the file left alone.
-fn plant_compressed(home: &Path, date: &str, label: &str) -> PathBuf {
+/// Write `bytes` to `<home>/sessions/<date>/rollout-<label>.jsonl.zst`.
+fn plant_archive(home: &Path, date: &str, label: &str, bytes: &[u8]) -> PathBuf {
     let dir = locate::sessions_dir(home).join(date.replace('/', std::path::MAIN_SEPARATOR_STR));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("rollout-{label}.jsonl.zst"));
-    std::fs::write(&path, b"not an archive, and never opened").unwrap();
+    std::fs::write(&path, bytes).unwrap();
     path
+}
+
+/// The committed archive of [`SAMPLE`], under an archived rollout's name.
+fn plant_compressed(home: &Path, date: &str, label: &str) -> PathBuf {
+    plant_archive(home, date, label, ARCHIVE)
+}
+
+/// A file with an archive's name and nothing an archive's shape inside it.
+fn plant_damaged(home: &Path, date: &str, label: &str) -> PathBuf {
+    plant_archive(home, date, label, b"not an archive at all")
 }
 
 /// Stamp a file's modification time, so "newest" is a fact rather than a race.
@@ -198,34 +206,78 @@ fn a_tree_of_plain_logs_reads_exactly_as_it_did() {
 }
 
 #[test]
-fn a_compressed_log_beside_a_plain_one_changes_nothing() {
+fn an_archive_reads_exactly_as_the_plain_file_it_was_made_from() {
+    // The property the whole package turns on, asserted against the plain reading rather
+    // than against a list of numbers copied out of the fixture: the two files are one file.
+    let plain_dir = TempDir::new("codex-plain-twin");
+    plant(&plain_dir.path, "2026/09/07", "session", SAMPLE);
+    let expected = CodexReader::new(&plain_dir.path).refresh_at(NOW);
+
+    let dir = TempDir::new("codex-archive-twin");
+    plant_compressed(&dir.path, "2026/09/07", "session");
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    assert_eq!(
+        serde_json::to_value(&provider).unwrap(),
+        serde_json::to_value(&expected).unwrap(),
+        "an archived rollout is the same reading as the log it was made from"
+    );
+    assert!(provider.windows[WINDOW_PRIMARY].percent.is_some());
+}
+
+#[test]
+fn the_tail_follows_the_plain_log_and_never_the_archive() {
     let dir = TempDir::new("codex-mixed");
     let plain = plant(&dir.path, "2026/09/07", "session", SAMPLE);
     let compressed = plant_compressed(&dir.path, "2026/09/07", "cold");
-    // The compressed one is the newer file, which is the case that would have mattered had
-    // it been a candidate: the walk sorts by modification time.
-    age(&plain, 600);
+    // The archive is the older file here, so the plain one leads and the tail has something
+    // to follow. An archive never grows; an incremental reader over one would be a promise
+    // to watch a file that has stopped.
+    age(&compressed, 600);
 
     let mut reader = CodexReader::new(&dir.path);
     let provider = reader.refresh_at(NOW);
 
-    assert!(
-        provider.windows[WINDOW_PRIMARY].percent.is_some(),
-        "the plain log is still the reading"
-    );
+    assert!(provider.windows[WINDOW_PRIMARY].percent.is_some());
     assert_eq!(provider.windows[WINDOW_PRIMARY].error, None);
     assert_eq!(
         reader.following(),
         Some(plain.as_path()),
-        "the reader must follow the log it can read"
+        "the reader must follow the log that can still grow"
     );
     assert_ne!(reader.following(), Some(compressed.as_path()));
 }
 
 #[test]
-fn a_tree_of_only_compressed_logs_says_so_instead_of_claiming_there_are_none() {
+fn the_newest_log_wins_even_when_it_is_the_archived_one() {
+    // A machine part way through the sweep: the session that was written last has already
+    // been archived, the plain one beside it is older. Before T-WP26 the older reading was
+    // the only one that could be had.
+    let dir = TempDir::new("codex-archive-newest");
+    let plain = plant(&dir.path, "2026/09/06", "older", PREMIUM);
+    plant_compressed(&dir.path, "2026/09/07", "newer");
+    age(&plain, 9_000);
+
+    let mut reader = CodexReader::new(&dir.path);
+    let provider = reader.refresh_at(NOW);
+
+    assert_eq!(
+        provider.windows[WINDOW_PRIMARY].percent,
+        Some(54.0),
+        "the archive holds the newest quota line, so it is the reading"
+    );
+    assert_eq!(
+        reader.following(),
+        None,
+        "there is nothing to follow while the newest log is an archive"
+    );
+}
+
+#[test]
+fn a_tree_of_only_compressed_logs_is_read_rather_than_reported_as_a_state() {
     // The scenario the risk report described: Codex's compression flag is on, nobody has
-    // opened Codex for more than a week, every rollout is cold. `sessions/` is full.
+    // opened Codex for more than a week, every rollout is cold. `sessions/` is full — and
+    // since T-WP26 a full sessions directory produces a reading.
     let dir = TempDir::new("codex-compressed-only");
     plant_compressed(&dir.path, "2026/09/07", "cold-one");
     plant_compressed(&dir.path, "2026/09/06", "cold-two");
@@ -233,12 +285,29 @@ fn a_tree_of_only_compressed_logs_says_so_instead_of_claiming_there_are_none() {
     let provider = CodexReader::new(&dir.path).refresh_at(NOW);
 
     assert!(provider.configured, "Codex is installed and has been used");
+    assert_eq!(provider.windows[WINDOW_PRIMARY].percent, Some(54.0));
+    assert_eq!(provider.windows[WINDOW_PRIMARY].error, None);
+    assert_eq!(provider.windows[WINDOW_SECONDARY].percent, Some(70.0));
+}
+
+#[test]
+fn only_an_archive_that_will_not_decode_is_a_state_of_its_own() {
+    // What is left of `Status::CompressedOnly`: not "these files are compressed" — they are
+    // read now — but "every one of them was refused". Damage, bit rot, or a frame this
+    // decoder does not implement. It is still not "no rollout log": the directory is full.
+    let dir = TempDir::new("codex-damaged-only");
+    plant_damaged(&dir.path, "2026/09/07", "bitrot-one");
+    plant_damaged(&dir.path, "2026/09/06", "bitrot-two");
+
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    assert!(provider.configured);
     assert_eq!(provider.windows.len(), 2);
     for key in [WINDOW_PRIMARY, WINDOW_SECONDARY] {
         let error = provider.windows[key].error.clone().unwrap();
         assert!(
-            error.contains("zstd-compressed"),
-            "the reason must name the compression: got {error}"
+            error.contains("zstd-compressed") && error.contains("could be decoded"),
+            "the reason must name the format and say it failed: got {error}"
         );
         assert!(
             !error.contains("no rollout log"),
@@ -247,6 +316,35 @@ fn a_tree_of_only_compressed_logs_says_so_instead_of_claiming_there_are_none() {
         assert_eq!(provider.windows[key].percent, None);
         assert_eq!(provider.windows[key].state, WindowState::Error);
     }
+}
+
+#[test]
+fn one_damaged_archive_does_not_hide_the_log_beside_it() {
+    let dir = TempDir::new("codex-damaged-and-good");
+    let damaged = plant_damaged(&dir.path, "2026/09/07", "bitrot");
+    plant_compressed(&dir.path, "2026/09/06", "good");
+    age(&damaged, 10);
+
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    assert_eq!(
+        provider.windows[WINDOW_PRIMARY].percent,
+        Some(54.0),
+        "the widened scan carries on past a file it could not open"
+    );
+    assert_eq!(provider.windows[WINDOW_PRIMARY].error, None);
+}
+
+#[test]
+fn an_empty_session_directory_still_says_there_are_no_logs() {
+    // The other half of the state above, and the reason it has to stay a separate sentence.
+    let dir = TempDir::new("codex-empty");
+    std::fs::create_dir_all(locate::sessions_dir(&dir.path).join("2026").join("09")).unwrap();
+
+    let provider = CodexReader::new(&dir.path).refresh_at(NOW);
+
+    let error = provider.windows[WINDOW_PRIMARY].error.clone().unwrap();
+    assert!(error.contains("no rollout log"), "got {error}");
 }
 
 // ---------------------------------------------------------------- the happy path

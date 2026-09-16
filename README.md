@@ -419,7 +419,7 @@ macOS too, and CI keeps it that way.
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | stable, ≥ 1.85 | `rust-toolchain.toml` pins the channel and pulls `clippy` and `rustfmt` |
+| Rust | stable, ≥ 1.87 | `rust-toolchain.toml` pins the channel and pulls `clippy` and `rustfmt` |
 | MSVC Build Tools 2022 | with the C++ workload | there is no linker without it |
 | WebView2 | already part of Windows 10 1803+ and Windows 11 | the panel runs in it |
 | Node | 22 | builds the panel and runs its tests |

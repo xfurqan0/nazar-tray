@@ -9,7 +9,9 @@
 //!   a reviewer notices.
 //! * **The fixture gate** greps the committed fixtures for anything that identifies the
 //!   machine they were captured on. The fixtures are sanitised copies of real session
-//!   logs, and the sanitising has to keep working as new ones are added.
+//!   logs, and the sanitising has to keep working as new ones are added. One of them is a
+//!   zstd archive and cannot be grepped at all, so it is **decoded first** — a fixture
+//!   nobody can read by eye is the one that most needs a gate.
 //!
 //! Both gates build the strings they look for out of fragments, so the test file does not
 //! trip itself.
@@ -315,6 +317,34 @@ fn the_codex_fixtures_carry_nothing_that_identifies_a_machine() {
     }
 }
 
+/// The archived fixture has to clear the same bar, and it cannot be read to check.
+///
+/// `fixtures/codex/rollout-sample.jsonl.zst` is the one committed file in this repository
+/// that a reviewer cannot open, a `grep` cannot search and a diff cannot show — which is
+/// exactly why it gets its own gate rather than being covered by the extension list above.
+/// Decoding it answers both questions at once: that it holds nothing identifying, and that
+/// it is still the plain fixture beside it rather than something that has drifted from it.
+#[test]
+fn the_compressed_codex_fixture_decodes_to_the_plain_one_and_is_just_as_clean() {
+    let codex = repo_root().join("fixtures").join("codex");
+    let plain = std::fs::read_to_string(codex.join("rollout-sample.jsonl"))
+        .expect("cannot read rollout-sample.jsonl");
+
+    let mut bytes = Vec::new();
+    nazar_core::codex::zst::read_lines(&codex.join("rollout-sample.jsonl.zst"), &mut |line| {
+        bytes.extend_from_slice(line);
+        bytes.push(b'\n');
+    })
+    .expect("the committed archive must decode");
+    let decoded = String::from_utf8(bytes).expect("a rollout log is text");
+
+    assert_eq!(
+        decoded, plain,
+        "the archive and the fixture it was made from have drifted apart"
+    );
+    assert_text_carries_no_identity("rollout-sample.jsonl.zst", &decoded);
+}
+
 /// The Claude fixtures have to clear the same bar, and one more.
 ///
 /// A status-line payload is *made* of paths — `cwd`, `transcript_path`, the workspace and
@@ -474,7 +504,11 @@ fn the_captured_fixtures_carry_nothing_that_identifies_a_machine() {
 fn assert_carries_no_identity(path: &Path) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("cannot read {name}"));
+    assert_text_carries_no_identity(&name, &text);
+}
 
+/// The same gate over text that did not come straight off the disk.
+fn assert_text_carries_no_identity(name: &str, text: &str) {
     assert!(!text.contains('~'), "{name} contains a home-relative path");
     for fragment in [
         "C:\\Users\\",
@@ -494,11 +528,11 @@ fn assert_carries_no_identity(path: &Path) {
         );
     }
     assert!(
-        !looks_like_an_email(&text),
+        !looks_like_an_email(text),
         "{name} contains an e-mail address"
     );
     assert!(
-        !contains_long_hex(&text),
+        !contains_long_hex(text),
         "{name} contains a 32-character hexadecimal identifier"
     );
 

@@ -21,6 +21,19 @@ default = ["detailed-windows"]
 detailed-windows = ["dep:ureq", "dep:zeroize"]
 
 [dependencies]
+# Decodes the `.jsonl.zst` rollouts Codex leaves behind when it compresses a session log
+# it has not touched for seven days (T-WP26). A decoder only, in Rust only: `zstd` and
+# `zstd-safe` wrap libzstd and would put a C toolchain in the way of every build of this
+# workspace, on a path that exists to read a file. `dict_builder` is off because Codex
+# compresses without a dictionary; `hash` is on because it is what makes
+# `FrameDecoder::get_calculated_checksum` exist, and a frame that carries a content
+# checksum — every frame the `zstd` command line writes — is then verified rather than
+# parsed past. Two packages, both MIT, neither with a dependency of its own.
+ruzstd = { version = "0.9", default-features = false, features = [
+    "hash",
+    "std",
+] }
+
 serde.workspace = true
 serde_json.workspace = true
 

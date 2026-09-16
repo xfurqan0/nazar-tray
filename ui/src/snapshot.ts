@@ -151,10 +151,10 @@ export interface UsageScan {
   /** Lines the server answered with an error and billed for none of. */
   readonly skipped_api_errors?: number;
   /**
-   * Rollout logs Codex has compressed to `.jsonl.zst`, which this build cannot read.
+   * Rollout logs Codex had compressed to `.jsonl.zst`, and this pass decoded.
    *
    * `0` on every machine until Codex turns its compression flag on. What it counts is
-   * history that is not in the numbers beside it and is not going to arrive later.
+   * history that is in the numbers beside it, read out of a file nobody can `grep`.
    */
   readonly files_compressed?: number;
   /** The readers that ran, in the order they ran: `claude`, then `codex`. */
