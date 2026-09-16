@@ -194,7 +194,7 @@ into a decision.
 | T-WP-L3 ✅ | **Two packages and the files a desktop expects**: `bundle.linux.{deb,rpm}`, the `.desktop` template, the Ayatana dependency settled at build time rather than by whatever `pkg-config` happened to see | ~~Both packages install, the launcher shows the icon, uninstalling keeps `~/.nazar`, and `check-binary-paths.mjs` finds nothing~~ — **landed 2026-09-15** |
 | T-WP-L4 | **The wrapper, installed like a program**: `nazar-statusline` into `/usr/bin` from the package, Linux path rules in `install.rs`, and the uninstall hook that puts a status line back | A packaged machine installs the status line and removing the package restores the user's own, byte for byte |
 | T-WP-L5 ✅ | **Notices that tell the truth on every platform**: three targets resolved rather than the host triple, one file with a section each, and an output that does not depend on the machine that wrote it | ~~`--check` is green in both CI jobs, `check-licenses.mjs` rejects nothing, and the Linux half of the tree is in the file a Linux package ships~~ — **landed 2026-09-15** |
-| T-WP-L6 | **A Linux artefact on the release draft**: `verify-linux` and `build-linux` on `ubuntu-22.04` for the wider glibc base, attestation, `SHA256SUMS` across both platforms, and the README's Windows-first paragraphs rewritten to what was measured | A tag produces a draft carrying the `-setup.exe`, the `.deb` and the `.rpm`, and `gh attestation verify` passes on all three |
+| T-WP-L6 ◐ | **A Linux artefact on the release draft**: `verify-linux` and `build-linux` on `ubuntu-22.04` for the wider glibc base, attestation, `SHA256SUMS` across both platforms, and the README's Windows-first paragraphs rewritten to what was measured | A tag produces a draft carrying the `-setup.exe`, the `.deb` and the `.rpm`, and `gh attestation verify` passes on all three. **The pipeline landed 2026-09-16** and was rehearsed by `workflow_dispatch`, which builds everything and cannot reach the draft. **Two halves are a maintainer's:** the README rewrite, which is public text, and the tag, which is one-way. Until a tag is pushed the criterion is unproven by construction. |
 
 **The faces are not in this list on purpose.** `faces/waybar/` reads `limits.json` and touches
 no Rust; it landed beside T-WP-L2 because that is what makes an engine-mode machine show a
@@ -1823,3 +1823,32 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   `unic-*`/`proc-macro-error` crates under the Tauri tree, and `target-lexicon`'s
   `Apache-2.0 WITH LLVM-exception`, which `scripts/check-licenses.mjs` accepts and `deny.toml`
   does not. They are worth their own package; they are not this one.
+- 2026-09-16 22:20 — **T-WP-L6, the half a machine can do: the release pipeline builds Linux.**
+  `release.yml` gained `verify-linux` and `build-linux`, both on `ubuntu-22.04` — glibc 2.35
+  against 24.04's 2.39, which is not a preference: a package built on Fedora 44 installed
+  cleanly in a Debian 12 container during T-WP-L3 and then **refused to start**, and the
+  runner is where that gets fixed for everyone. `build-linux` runs the same
+  `scripts/build-installer.mjs` the Windows job runs, with `--bundles deb,rpm` because
+  `bundle.targets` names `nsis` and no Linux machine can produce one, then the same
+  `check-binary-paths.mjs` gate, the same tag-against-manifest check in bash, and the same
+  build attestation.
+  **`SHA256SUMS` moved, and that is the only behaviour change on the Windows side.** It used
+  to be written by the Windows build job, which is the only job that could see its own output
+  and therefore the only one that could not cover the release. It is now written by `draft`,
+  the one job that has both platforms' artefacts in one directory, over the files it is about
+  to attach. Each build job still prints its hashes to its log, which is what a person compares
+  against. `draft` now `needs: [build, build-linux]`.
+  **AppImage is not built.** `.deb` and `.rpm` carry the `.desktop` file and the icons a
+  desktop expects and cover the distributions this is used on; the AppImage bundler downloads
+  `linuxdeploy` from the network at build time, which a release job should not do.
+  **The rehearsal needs no new input.** `draft` is gated on `refs/tags/v`, so a
+  `workflow_dispatch` runs the four jobs that build things and stops — there is nothing to
+  remember to set and nothing to undo. `docs/RELEASE.md` says so, and has the Linux half of the
+  checklist: what to build locally and what the script refuses to build without, a section that
+  reads a package with `rpm -qpi`/`-qpR`/`-qpl` and `dpkg-deb -I`/`-c` before installing
+  anything, the four facts that are release stoppers, the six-job table, and the verification a
+  Linux user can do without trusting the page.
+  **What is left of the package is a maintainer's, and deliberately.** The README's
+  Windows-first paragraphs are public text about what this product is; the tag is one-way. Both
+  are gates, so the acceptance criterion — *a tag produces a draft carrying all three files* —
+  stays unproven by construction until somebody pushes one.

@@ -13,9 +13,9 @@ is not.
 
 - The gate in the unified plan (§6.1) is green — every functional and hygiene
   item, each one either ✅ or a ⚠ you have read and accepted.
-- `main` is clean and CI is green on it: lint, tests and the panel on Windows,
-  `nazar-core` + `nazar-statusline` on Ubuntu and macOS, and the installer job,
-  which is a gate rather than a courtesy since WP7.
+- `main` is clean and CI is green on it: lint, tests and the panel on Windows and
+  on Linux, `nazar-core` + `nazar-statusline` on Ubuntu and macOS, and the
+  installer job, which is a gate rather than a courtesy since WP7.
 - You are signed in to GitHub as `xfurqan0`, with two-factor authentication on.
 
 ```powershell
@@ -105,6 +105,24 @@ for the same source on 2026-09-07, which is what those four lines are worth.
 An installer that is suddenly 10 MB means something got into the bundle. Look at
 `bundle.resources` in `tauri.conf.json` first.
 
+**The Linux packages are built by the release workflow, not by you.** Nothing on
+this page needs them to exist on your machine: `build-linux` produces the `.deb`
+and the `.rpm` on `ubuntu-22.04`, which is the point — 24.04 links against glibc
+2.39 and the result does not start on Debian 12. If you want to look at one
+locally, on a Linux machine:
+
+```bash
+cd ui && npm ci && cd ..
+node scripts/build-installer.mjs --bundles deb,rpm
+```
+
+`--bundles` is not optional there: `bundle.targets` names `nsis`, which no Linux
+machine can produce. The script refuses to start without the Ayatana
+AppIndicator headers (`sudo apt install libayatana-appindicator3-dev`, or
+`sudo dnf install libayatana-appindicator-gtk3-devel`) and says so by name,
+because packages built without them ask for a library that no longer exists in
+Debian 12 or Ubuntu 24.04.
+
 ---
 
 ## 3. Inspect the bundle
@@ -179,6 +197,64 @@ All five must be absent or `False`.
   **Never removed by any path.** Nazar reads `limits.json`, and a user may be
   running Nazar without this tray having ever been installed; `chain.json` is
   the only machine-readable record of the status line the wrapper replaced.
+
+---
+
+## 4b. Read the Linux packages
+
+Windows is the daily driver and the Linux packages ship beside it, so they get a
+reading rather than the full click-through above. Everything here is
+non-destructive: `rpm -qpi` and `dpkg-deb` describe a file without installing it.
+
+Download them from the rehearsal run — or from the draft, after step 6 — and ask
+what they claim:
+
+```bash
+gh run download <run-id> --name nazar-tray-linux --dir dist
+
+rpm -qpi dist/nazar-tray-*.x86_64.rpm      # name, version, licence, URL, summary
+rpm -qpR dist/nazar-tray-*.x86_64.rpm      # what it requires
+rpm -qpl dist/nazar-tray-*.x86_64.rpm      # what it installs
+
+dpkg-deb -I dist/nazar-tray_*_amd64.deb    # control: Maintainer, Depends
+dpkg-deb -c dist/nazar-tray_*_amd64.deb    # contents
+```
+
+Four things must be true of both, and each of them is a release stopper:
+
+- **The appindicator dependency is the Ayatana one** — `libayatana-appindicator3-1`
+  in the `.deb`, `libayatana-appindicator3.so.1` in the `.rpm`. The 2018 name
+  `libappindicator3-1` means the package was built on a machine without the
+  Ayatana headers, and it **cannot be installed** on Debian 12 or Ubuntu 24.04.
+- **`ca-certificates` is required.** The opt-in detailed-windows mode reads the
+  system trust store, and a machine without one fails in the shape this product
+  can least afford: a request with no answer, which looks like an unreadable
+  quota rather than a missing package.
+- **Both carry `/usr/bin/nazar-tray`, `/usr/bin/nazar-statusline`, the
+  `.desktop` file and the `hicolor` icons** — and nothing else. No fixtures, no
+  documentation.
+- **The maintainer is `Furkan Yıldız <xfurqan0@users.noreply.github.com>`** in the
+  `.deb` control file, and the licence is MIT in both.
+
+Then install one, on a machine you do not mind:
+
+```bash
+sudo dnf install ./dist/nazar-tray-*.x86_64.rpm      # Fedora
+sudo apt install ./dist/nazar-tray_*_amd64.deb       # Debian, Ubuntu
+
+nazar-tray --print | head -20
+nazar-statusline status
+
+sudo dnf remove nazar-tray                            # or: sudo apt remove nazar-tray
+```
+
+`~/.nazar` and `~/.config/nazar` survive the removal, on purpose and for the same
+reasons `%APPDATA%\nazar` does on Windows.
+
+On a desktop with no tray server — GNOME without the AppIndicator extension is
+the common one — the tray icon is not drawn and the application says so once,
+in a desktop notification, then carries on writing `limits.json`. That is
+engine mode, it is the documented behaviour, and it is not a packaging fault.
 
 ---
 
@@ -268,24 +344,55 @@ git tag -a v0.2.0 -m "nazar-tray 0.2.0"
 git push origin v0.2.0
 ```
 
-The tag starts `.github/workflows/release.yml`: it re-runs the whole gate, builds
-the installer on a GitHub runner, checks the binaries for build-machine paths
-before anything is hashed or attached, writes `SHA256SUMS`, attests the build
-provenance, and creates a **draft** release with both files attached. It does not
-publish.
+The tag starts `.github/workflows/release.yml`. It re-runs the whole gate on both
+operating systems, builds the installer on `windows-latest` and the packages on
+`ubuntu-22.04`, checks every binary for build-machine paths before anything is
+hashed or attached, attests the build provenance of each artefact, and creates a
+**draft** release. It does not publish.
+
+Six jobs, and the draft waits for two of them:
+
+| Job | Runner | Produces |
+|---|---|---|
+| `verify` | `windows-latest` | — the gate, plus `fmt` and `--no-default-features` |
+| `verify-linux` | `ubuntu-22.04` | — the gate again, plus the Waybar face's tests |
+| `build` | `windows-latest` | `nazar-tray_<version>_x64-setup.exe` |
+| `build-linux` | `ubuntu-22.04` | `nazar-tray_<version>_amd64.deb`, `nazar-tray-<version>-1.x86_64.rpm` |
+| `sign` | — | switched off; `docs/CODE_SIGNING.md` |
+| `draft` | `ubuntu-latest` | `SHA256SUMS`, and the draft with all four assets |
+
+`SHA256SUMS` is written by `draft` and nowhere else: it is the only job that sees
+both platforms' output, so it is the only one that can write a file covering the
+whole release. Each build job prints its own hashes to its log, which is what you
+compare against.
+
+**Rehearse it first, from `main`, without a tag.** The `draft` job is gated on
+`refs/tags/v`, so a dispatch runs the four jobs that matter and stops — there is
+no input to remember and nothing to undo:
+
+```powershell
+gh workflow run release.yml --ref main
+gh run watch
+gh run download <run-id>      # nazar-tray-windows and nazar-tray-linux
+```
+
+Then, after the tag:
 
 ```powershell
 gh run watch
-gh release view v0.2.0        # a draft, with two assets
+gh release view v0.2.0        # a draft, with four assets
 ```
 
 Take the installer's hash from the release's own `SHA256SUMS` — the one built by
-the runner, not the one on your laptop — and put it in the winget manifest:
+the runner, not the one on your laptop — and put it in the winget manifest.
+**winget is Windows only**: the `.deb` and the `.rpm` have no manifest to update,
+and until there is a COPR or an AUR package a Linux user downloads them from the
+release page.
 
 ```powershell
 gh release download v0.2.0 --pattern SHA256SUMS --dir .
 Get-Content SHA256SUMS
-# Paste the hash into packaging/winget/xfurqan0.nazar-tray.installer.yaml
+# Paste the *-setup.exe hash into packaging/winget/xfurqan0.nazar-tray.installer.yaml
 winget validate --manifest packaging\winget
 git add packaging/winget && git commit -m "winget: hash for 0.2.0" && git push
 ```
@@ -326,6 +433,16 @@ Check what a user gets:
 ```powershell
 gh release view v0.2.0 --web
 gh attestation verify (gh release download v0.2.0 --pattern "*-setup.exe" --dir . --clobber; ".\nazar-tray_0.2.0_x64-setup.exe") --repo xfurqan0/nazar-tray
+```
+
+The Linux packages are attested the same way, and a Linux user can check them
+without trusting anything on this page:
+
+```bash
+gh release download v0.2.0 --pattern "*.deb" --pattern "*.rpm" --dir .
+gh attestation verify nazar-tray_0.2.0_amd64.deb --repo xfurqan0/nazar-tray
+gh attestation verify nazar-tray-0.2.0-1.x86_64.rpm --repo xfurqan0/nazar-tray
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ---

@@ -7,8 +7,14 @@ name: Release
 # was built by a machine, from a commit, in public, with the tests green — and that its
 # provenance can be checked by anyone who downloads it.
 #
-# `workflow_dispatch` is here for rehearsals: it builds and uploads the same artefact to the
-# run, without creating or touching a release. Use it to prove the pipeline before tagging.
+# `workflow_dispatch` is here for rehearsals: it builds and uploads the same artefacts to the
+# run, without creating or touching a release. That is not an input anybody has to remember
+# to set — the `draft` job is gated on `refs/tags/v`, so a dispatch cannot reach it however
+# it is started. Use it to prove the pipeline before tagging.
+#
+# Two platforms since T-WP-L6: `verify` and `build` on Windows, `verify-linux` and
+# `build-linux` on ubuntu-22.04, and one `draft` that waits for both and writes the single
+# `SHA256SUMS` covering everything it attaches.
 
 on:
   push:
@@ -92,6 +98,78 @@ jobs:
       - name: Test nazar-core with the opt-in mode compiled out
         run: cargo test -p nazar-core --no-default-features
 
+  # The same gate again, on the operating system the other half of the release is built for.
+  # A near-copy of `verify` rather than a matrix leg of it, for the reason `ci.yml` gives:
+  # Linux needs the GTK and WebKitGTK development packages before cargo can link anything,
+  # and `#[cfg(unix)]` code is invisible to the Windows runner's clippy.
+  #
+  # `cargo fmt` and `cargo test -p nazar-core --no-default-features` are not repeated here:
+  # both read the source and say the same thing on every operating system, and `verify`
+  # already ran them. Clippy and the workspace tests are repeated because they do not.
+  verify-linux:
+    name: Lint and test — Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The same list `ci.yml` installs, and for the same reasons. `jq` is the Waybar face's
+      # only dependency and this is the only runner that can execute its eleven tests.
+      - name: Install the GTK stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            patchelf \
+            jq
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build the panel
+        working-directory: ui
+        run: npm run build
+
+      - name: Prepare the status-line sidecar
+        run: node scripts/sidecar.mjs --debug
+
+      - name: Check dependency licences
+        run: node scripts/check-licenses.mjs
+
+      # The same bytes the Windows job checks. Since T-WP-L5 the notices are resolved for all
+      # three targets and do not depend on the machine, so both jobs can hold the one file to
+      # the same standard.
+      - name: Check the third-party notices are current
+        run: node scripts/third-party-notices.mjs --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
+      - name: Test the panel and the faces
+        working-directory: ui
+        run: npm test
+
   build:
     name: Build the installer
     needs: verify
@@ -151,6 +229,10 @@ jobs:
             throw "tag $tag does not match tauri.conf.json $manifest"
           }
 
+      # The hashes are printed rather than written to a file. Since T-WP-L6 a release carries
+      # **one** `SHA256SUMS` covering every artefact on it, and the only job that sees both
+      # platforms' output is `draft`. Printing them here means a person reading this job can
+      # compare what it built against what ended up on the draft.
       - name: Collect the artefacts
         shell: pwsh
         run: |
@@ -158,9 +240,7 @@ jobs:
           Copy-Item target/release/bundle/nsis/*-setup.exe dist/
           Get-ChildItem dist |
             Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
-            Set-Content -Encoding utf8 dist/SHA256SUMS
-          Get-Content dist/SHA256SUMS
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) }
 
       # Signed by GitHub, not by us: it records which workflow run, from which commit, built
       # this exact file. Until SignPath approves a certificate this is the strongest thing a
@@ -174,6 +254,124 @@ jobs:
         id: upload
         with:
           name: nazar-tray-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # The Linux half of the release: a `.deb` and an `.rpm`, from the same script that makes
+  # the installer on Windows.
+  #
+  # A second job rather than a matrix leg of `build`, because almost every step differs: the
+  # GTK stack has to be installed first, the bundle targets come from the command line
+  # (`bundle.targets` names `nsis`, which no Linux machine can produce), and the collecting
+  # is bash rather than PowerShell.
+  #
+  # **ubuntu-22.04, deliberately.** 24.04 links against glibc 2.39 and the resulting binary
+  # does not start on Debian 12, which has 2.35 — measured under podman during T-WP-L3, where
+  # a package built on Fedora 44 installed cleanly on Debian 12 and then refused to run.
+  # 22.04's glibc 2.35 is the widest base a current runner offers, and the packages are the
+  # one artefact of this repository that a person cannot rebuild for themselves.
+  #
+  # AppImage is not built. `.deb` and `.rpm` cover the distributions this product is used on,
+  # they carry the `.desktop` file and the icons a desktop expects, and the AppImage bundler
+  # downloads `linuxdeploy` from the network at build time — a dependency a release job
+  # should not have.
+  build-linux:
+    name: Build the Linux packages
+    needs: verify-linux
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # `libayatana-appindicator3-dev` is the one that decides what the packages *ask for*
+      # rather than what they contain: `tauri-cli` writes the dependency from whichever
+      # development package pkg-config can see, and without this one both packages fall back
+      # to the 2018-era `libappindicator3` names — a `.deb` that cannot be installed on any
+      # current Debian or Ubuntu. `scripts/build-installer.mjs` refuses to build without it
+      # and sets `TAURI_LINUX_AYATANA_APPINDICATOR` so the answer is the same from every
+      # builder; this line is what makes the refusal not happen here.
+      #
+      # Neither `dpkg-deb` nor `rpmbuild` is installed: the Tauri bundler writes both
+      # archives itself.
+      - name: Install the GTK stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            patchelf
+
+      - name: Install panel dependencies
+        working-directory: ui
+        run: npm ci
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # Panel, notices, sidecar, bundler, path check — the same script the Windows job runs,
+      # with the bundle targets named because `bundle.targets` cannot name them.
+      - name: Build
+        run: node scripts/build-installer.mjs --bundles deb,rpm
+
+      # The same rule, and on Linux it is the rule that needed the most work: the release
+      # binary carried 214 copies of the builder's home directory through `ring`'s C and
+      # assembly, which `--remap-path-prefix` never sees because rustc does not compile them.
+      # `scripts/build-installer.mjs` passes `-ffile-prefix-map` for that half; this is the
+      # step that says so by name when it fails.
+      - name: Check the binaries for build-machine paths
+        run: node scripts/check-binary-paths.mjs
+
+      - name: Check the tag against the manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(node -p "require('./crates/nazar-tray/tauri.conf.json').version")
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag $tag does not match tauri.conf.json $manifest" >&2
+            exit 1
+          fi
+
+      # No `SHA256SUMS` here. The release carries **one** such file covering every artefact
+      # on it, and only the `draft` job sees both platforms' output; these hashes are printed
+      # for the log, so a person reading this job can compare what it built against what the
+      # draft ended up with.
+      - name: Collect the artefacts
+        run: |
+          mkdir -p dist
+          cp target/release/bundle/deb/*.deb dist/
+          cp target/release/bundle/rpm/*.rpm dist/
+          sha256sum dist/*
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nazar-tray-linux
           path: dist/*
           if-no-files-found: error
           retention-days: 30
@@ -228,9 +426,15 @@ jobs:
           if-no-files-found: error
 
   # A draft. Not a release: the notes are read by a person, and publishing is their click.
+  #
+  # It is also the only place both platforms' artefacts are in one directory, which is why
+  # `SHA256SUMS` is written here and not in either build job. One file, covering everything
+  # on the release, computed from the files that are actually about to be attached — rather
+  # than two files that each describe half of it and neither of which a downloader can use
+  # without knowing which half they have.
   draft:
     name: Draft release
-    needs: build
+    needs: [build, build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -238,10 +442,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `name`, so every artefact of this run is downloaded, each into its own directory.
       - uses: actions/download-artifact@v4
         with:
-          name: nazar-tray-windows
-          path: dist
+          path: artefacts
+
+      # Named patterns rather than a wildcard sweep: a release missing one of the three is a
+      # release that has to fail here, loudly, instead of being published with a gap in it.
+      - name: Gather the artefacts and hash them
+        run: |
+          mkdir -p dist
+          cp artefacts/nazar-tray-windows/*-setup.exe dist/
+          cp artefacts/nazar-tray-linux/*.deb dist/
+          cp artefacts/nazar-tray-linux/*.rpm dist/
+          ( cd dist && sha256sum -- *-setup.exe *.deb *.rpm > ../SHA256SUMS )
+          mv SHA256SUMS dist/
+          cat dist/SHA256SUMS
 
       - name: Create the draft
         env:
