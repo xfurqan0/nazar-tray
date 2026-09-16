@@ -471,7 +471,7 @@ function providerCard(provider: ProviderView): HTMLElement {
       age.textContent = ageText(freshness, ageMs === undefined ? undefined : ageMs + elapsed, t);
     });
   } else {
-    age.textContent = t("panel.provider.notConfigured");
+    age.textContent = reason(provider.name);
   }
   head.append(age);
   card.append(head);
@@ -482,7 +482,38 @@ function providerCard(provider: ProviderView): HTMLElement {
     windows.append(...provider.windows.map(windowRow));
     card.append(windows);
   }
+  // A provider with nothing to show is the one card that has room for a sentence, and the
+  // one that needs it: "not set up" is true of both providers and actionable for neither.
+  if (!provider.configured) {
+    const how = t(`panel.provider.fix.${provider.name}`);
+    if (how !== `panel.provider.fix.${provider.name}`) {
+      const note = document.createElement("p");
+      note.className = "help";
+      note.textContent = how;
+      card.append(note);
+    }
+  }
   return card;
+}
+
+/**
+ * Why a provider has no numbers, in as much detail as this build has for that provider.
+ *
+ * The two are not unconfigured in the same way and cannot be fixed in the same way: Claude
+ * Code reports its quota to a status line, so the answer is a wrapper to install, while
+ * Codex writes its own session logs, so the answer is to use it. `not set up on this
+ * machine` was true of both and told a user nothing — on 2026-09-16 it was the whole of
+ * what a Linux first run said about Claude Code, on a machine where Claude Code was the
+ * thing being used.
+ *
+ * The same lookup `crates/nazar-tray/src/tray.rs` does for the menu row, and the generic
+ * key stays behind it so that a provider this build has no sentence for still says
+ * something rather than its own key.
+ */
+function reason(name: string): string {
+  const specific = `panel.provider.notConfigured.${name}`;
+  const text = t(specific);
+  return text === specific ? t("panel.provider.notConfigured") : text;
 }
 
 /** Rebuild the whole panel from the last snapshot. */

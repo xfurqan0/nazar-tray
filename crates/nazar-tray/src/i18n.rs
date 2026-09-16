@@ -394,6 +394,11 @@ mod tests {
         for provider in ["claude", "codex"] {
             keys.push(format!("tray.provider.{provider}"));
             keys.push(format!("panel.provider.{provider}"));
+            // `tray::not_configured` looks this up per provider and falls back to the
+            // generic sentence. Listing it here turns the fallback into a safety net for a
+            // provider nobody has written a sentence for yet, rather than the thing the
+            // two shipped providers quietly land on.
+            keys.push(format!("panel.provider.notConfigured.{provider}"));
         }
         // The one deliberate non-key in the sources: the test above proves an unknown key
         // renders as itself.

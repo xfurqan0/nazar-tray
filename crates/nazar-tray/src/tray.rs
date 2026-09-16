@@ -745,6 +745,42 @@ mod tests {
         assert_ne!(not_set_up, silent.replace("Codex", "Claude"));
     }
 
+    /// The bug qarpus reported on 2026-09-16: "Claude yok", on a machine running Claude Code.
+    ///
+    /// `configured: false` for Claude means one thing and one thing only — there is no
+    /// capture in `~/.nazar/statusline`, because the wrapper that writes them is not in
+    /// Claude Code's `settings.json`. "Not set up on this machine" said none of that, and
+    /// on a machine where Claude Code is the thing being used it reads as the tray having
+    /// failed to find something that is plainly there.
+    ///
+    /// The two providers are not unconfigured in the same way and are not fixed in the same
+    /// way, which is the whole reason the sentence is per provider.
+    #[test]
+    fn an_unconfigured_provider_says_what_is_missing_rather_than_that_something_is() {
+        let catalog = i18n::catalog("en");
+
+        assert_eq!(
+            quota_row(&unread("claude", false), &catalog),
+            "Claude — status line wrapper not installed"
+        );
+        assert_eq!(
+            quota_row(&unread("codex", false), &catalog),
+            "Codex — not installed on this machine"
+        );
+        assert_ne!(
+            not_configured(&catalog, "claude"),
+            catalog.text("panel.provider.notConfigured"),
+            "Claude's reason is the one that was wrong; it must not be the generic one"
+        );
+
+        // A provider this build has no sentence for still says something, rather than
+        // printing its own message key at the user.
+        assert_eq!(
+            not_configured(&catalog, "gemini"),
+            catalog.text("panel.provider.notConfigured")
+        );
+    }
+
     /// Every language can write a row, and none of them leaves a placeholder in it.
     #[test]
     fn the_menu_row_reads_as_a_sentence_in_all_six_languages() {

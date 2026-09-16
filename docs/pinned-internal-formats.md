@@ -499,6 +499,37 @@ build has ever heard of, and `nothing_but_the_days_and_the_models_leaves_the_sta
 fails if either turns up in the summary, in a month document, or in a cursor document — and
 also if any of the four unread key *names* does.
 
+## Claude Code's quota: there is exactly one source, and this is the measurement
+
+Asked on 2026-09-17, on the Fedora 44 laptop, because a Linux first run said *"Claude Code —
+not set up on this machine"* on a machine whose only tray-worthy workload is Claude Code. If
+Claude Code wrote its rate limits anywhere else on disk, the wrapper would stop being the only
+way to see them, and a reader that needs no identity file and no network would be worth having.
+
+**It does not.** Two scans, both of *names* rather than of content:
+
+| Where | Scope | Rate-limit fields found |
+|---|---|---|
+| `~/.claude/projects/**/*.jsonl` | 71 files, 23 020 lines, every top-level key and every key one level down | **none** |
+| `~/.claude/stats-cache.json` | every key at every depth | **none** |
+
+The transcripts' 79 top-level keys are conversation bookkeeping, and the only quota-shaped name
+among them is `message.usage` — the four token counters this product already reads for the
+usage store, which count spend and say nothing about a limit. The statistics cache's only match
+is `modelUsage.<model>.contextWindow`, which is a property of a model rather than a window of a
+plan. A plain-text search for `used_percentage` and `rate_limits` over the same tree matched
+only transcripts of sessions that had been *reading this repository*, which is the strings
+appearing as somebody's file content rather than as Claude Code's own fields.
+
+`~/.claude.json` and its backups were not opened, and it would not change the answer if they
+had been: that file carries `oauthAccount`, which is an email address and two organisation
+identifiers, and a source that has to be read past an identity is exactly the source
+[`detailed-windows.md`](detailed-windows.md) makes opt-in.
+
+**So there is no second passive source to add, and none was added.** Claude Code reports its
+rate limits to the status-line command and to the usage endpoint, and nowhere else. This
+section exists so the question is not asked a third time.
+
 ## The advisory lock
 
 `~/.nazar/limits.lock` is the only file on this page that belongs to nazar-tray itself. It
