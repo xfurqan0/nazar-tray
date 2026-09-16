@@ -43,7 +43,7 @@
 //! | `--scale 1.5` | forces the webview's device scale factor and sizes the panel to match, so 150 % is photographable on a 100 % display |
 //! | `--theme graphite` | overrides the theme for this run without touching settings |
 //! | `--mode light` | overrides light/dark for this run without touching settings |
-//! | `--hint on\|off` | shows or hides the first-run overflow hint, which is otherwise a once-per-machine state |
+//! | `--hint on\|off` | shows or hides the first-run overflow hint, which is otherwise a once-per-machine state — **Windows only**, see [`crate::desktop::OVERFLOW_HINT`] |
 //! | `--offer on\|off` | the same, for the one-time Max-plan offer |
 //! | `--locale tr` | the panel and the tooltip in one language, whatever the machine's is |
 //! | `--icons <dir>` | writes the bead's two states — the mark, and unknown — at 16, 32 and 64 px, plus one strip of all six, then exits; nothing else happens |
@@ -237,6 +237,10 @@ pub struct Options {
     /// `--mode <light|dark>`: override the light/dark mode for this run only.
     pub mode: Option<String>,
     /// `--hint <on|off>`: show or hide the first-run overflow hint for this run only.
+    ///
+    /// Windows only, and ignored everywhere else: the hint is about the Windows 11 overflow
+    /// flyout, and a Linux or macOS run that could be told to show it could take a
+    /// screenshot of a banner that platform never produces.
     ///
     /// The hint is shown once per machine and then never again, which makes it the one
     /// state a screenshot cannot reach twice. `None` means "whatever the settings say".

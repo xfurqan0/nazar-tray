@@ -120,6 +120,15 @@ interface UiState {
    */
   readonly resolvedLocale: string;
   readonly hintDismissed: boolean;
+  /**
+   * Whether this platform has a first-run overflow hint at all.
+   *
+   * Windows keeps new tray icons behind `^`; nothing else does, and `hintDismissed` already
+   * arrives `true` everywhere else. This is the second half of the same fact, and it is
+   * here for the settings row that offers to show the tip again — a button that promises a
+   * tip about a control this desktop does not have.
+   */
+  readonly hintAvailable: boolean;
   readonly demo: boolean;
   /** `--view settings`: open on the settings page rather than on the numbers. */
   readonly openSettings: boolean;
@@ -175,6 +184,7 @@ const quietTimes = document.querySelector<HTMLElement>("[data-quiet-times]");
 const autostartBox = document.querySelector<HTMLInputElement>("[data-autostart]");
 const autostartError = document.querySelector<HTMLElement>("[data-autostart-error]");
 const hintResetNote = document.querySelector<HTMLElement>("[data-hint-reset-note]");
+const hintResetRow = document.querySelector<HTMLElement>("[data-hint-reset-row]");
 const suggestionBox = document.querySelector<HTMLElement>("[data-suggestion]");
 
 // The status-line section. The only control on this page that changes a file belonging to
@@ -222,6 +232,7 @@ let ui: UiState = {
   locale: null,
   resolvedLocale: "en",
   hintDismissed: true,
+  hintAvailable: false,
   demo: false,
   openSettings: false,
   openUsage: null,
@@ -585,7 +596,11 @@ function paintForm(): void {
     const key = node.dataset["path"] as keyof SettingsView["paths"] | undefined;
     if (key) node.textContent = settings.paths[key];
   }
-  if (hintResetNote) hintResetNote.hidden = settings.firstRunHintDismissed;
+  // The row goes with the platform, the note inside it with the settings: on a desktop
+  // with no overflow flyout there is no tip to bring back, so the button that offers to is
+  // not a control, it is a promise nobody can keep.
+  if (hintResetRow) hintResetRow.hidden = !ui.hintAvailable;
+  if (hintResetNote) hintResetNote.hidden = !ui.hintAvailable || settings.firstRunHintDismissed;
   showProblems(validate(values, settings.languages));
 }
 

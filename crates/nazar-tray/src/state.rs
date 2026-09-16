@@ -92,7 +92,18 @@ pub struct UiState {
     /// the operating system, then English — and both surfaces are told what it is.
     pub resolved_locale: String,
     /// Whether the first-run overflow hint has already been dismissed.
+    ///
+    /// Always `true` where the hint does not apply, which is every platform but Windows:
+    /// see [`crate::desktop::OVERFLOW_HINT`]. The panel needs no `cfg` of its own for the
+    /// banner, only for the settings button that brings it back — which is
+    /// [`UiState::hint_available`].
     pub hint_dismissed: bool,
+    /// Whether this platform has a first-run overflow hint at all.
+    ///
+    /// The banner is governed by `hint_dismissed` alone; this is what hides the *settings*
+    /// row that offers to show it again. A button that promises to bring back a tip about
+    /// a control the desktop does not have is the same bug one screen further in.
+    pub hint_available: bool,
     /// Whether the numbers on screen are [`crate::demo`]'s rather than this machine's.
     ///
     /// The panel shows a badge when this is true. A screenshot that could be mistaken for
@@ -118,7 +129,8 @@ impl Default for UiState {
             mode: DEFAULT_THEME_MODE.to_owned(),
             locale: None,
             resolved_locale: "en".to_owned(),
-            hint_dismissed: false,
+            hint_dismissed: !crate::desktop::OVERFLOW_HINT,
+            hint_available: crate::desktop::OVERFLOW_HINT,
             demo: false,
             open_settings: false,
             open_usage: None,
@@ -426,10 +438,15 @@ impl AppState {
                 .clone()
                 .or_else(|| config.locale.clone()),
             resolved_locale: strings.locale(),
-            hint_dismissed: self
-                .overrides
-                .hint_dismissed
-                .unwrap_or(config.first_run_hint_dismissed),
+            // The platform first, and the settings only where the platform has the
+            // question: `--hint on` is a screenshot flag, and a screenshot of a Windows
+            // banner is not a thing a Linux run should be able to take.
+            hint_dismissed: !crate::desktop::OVERFLOW_HINT
+                || self
+                    .overrides
+                    .hint_dismissed
+                    .unwrap_or(config.first_run_hint_dismissed),
+            hint_available: crate::desktop::OVERFLOW_HINT,
             demo: self.overrides.demo,
             open_settings: self.overrides.open_settings,
             open_usage: self.overrides.open_usage.clone(),
@@ -829,6 +846,57 @@ pub fn quit(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state with nothing in it: the defaults, and a snapshot nobody read.
+    fn fresh_state(overrides: Overrides) -> AppState {
+        AppState::new(
+            Arc::new(Mutex::new(Snapshot::empty("2026-09-17T00:00:00Z"))),
+            Arc::new(Mutex::new(Warnings::default())),
+            Config::default(),
+            overrides,
+            false,
+        )
+    }
+
+    /// The bug qarpus found on a Fedora 44 GNOME session on 2026-09-16.
+    ///
+    /// A fresh machine opened the panel and was told to drag the bead onto the taskbar and
+    /// pin it out of the `^` overflow — a flyout and a taskbar that only Windows 11 has.
+    /// `first_run_hint_dismissed` is `false` on every fresh machine of every platform, and
+    /// nothing above it asked whose desktop this was.
+    ///
+    /// Two fields rather than one, because they answer two questions: the banner is owed or
+    /// it is not, and the settings row that offers to bring it back exists or it does not.
+    #[test]
+    fn a_fresh_machine_is_offered_the_overflow_hint_on_windows_and_nowhere_else() {
+        let strings = Strings::new("en");
+        let ui = fresh_state(Overrides::default()).ui(&strings);
+
+        assert_eq!(
+            ui.hint_available,
+            cfg!(target_os = "windows"),
+            "the hint is about the Windows 11 overflow flyout"
+        );
+        assert_eq!(
+            ui.hint_dismissed,
+            !cfg!(target_os = "windows"),
+            "a fresh Windows machine is owed the hint; a fresh Linux or macOS one is not"
+        );
+    }
+
+    /// `--hint on` is a screenshot flag, and it does not travel to a platform with no
+    /// banner to photograph.
+    #[test]
+    fn the_screenshot_flag_cannot_conjure_a_banner_the_platform_has_not_got() {
+        let strings = Strings::new("en");
+        let ui = fresh_state(Overrides {
+            hint_dismissed: Some(false),
+            ..Overrides::default()
+        })
+        .ui(&strings);
+
+        assert_eq!(ui.hint_dismissed, !cfg!(target_os = "windows"));
+    }
 
     #[test]
     fn the_form_is_the_settings_document_and_goes_back_into_it() {

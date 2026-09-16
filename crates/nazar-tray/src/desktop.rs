@@ -1,5 +1,11 @@
 //! Whether this desktop has anywhere to put a tray icon — and what to do when it has not.
 //!
+//! It also answers the smaller question that turns out to have the same shape: **which of
+//! the things this build says once per machine are true on this desktop at all.** A first
+//! run is the one moment a user has no idea what they are looking at, and a sentence that
+//! names a control their desktop does not have spends that moment telling them to go and
+//! look for something that is not there. See [`first_run_notices`].
+//!
 //! On Windows and macOS the answer is always yes, and this module is four lines of `cfg`.
 //! On Linux it is a question with a real answer, and getting it wrong is the worst first
 //! impression this product can make.
@@ -60,6 +66,64 @@ use tauri::AppHandle;
 /// Namespaced like a locale key and for the same reason: `alerts.json` also holds
 /// `provider/window` records, and the two must never be able to collide.
 const HIDDEN_NOTICE: &str = "notice.trayHidden";
+
+/// Whether the panel's first-run overflow hint is about anything on this platform.
+///
+/// **Windows 11 hides every new tray icon behind the `^` button**, so the first run says so
+/// and tells the user to drag the bead onto the taskbar. Neither half of that sentence
+/// exists anywhere else: a Linux tray icon is a `StatusNotifierItem` published on D-Bus and
+/// drawn by whatever is listening — there is no overflow to be behind and nothing to drag
+/// — and the macOS menu bar shows every item it is handed. On 2026-09-16 a Fedora 44 GNOME
+/// session was told to drag a bead into a taskbar it does not have, which is where this
+/// constant comes from.
+///
+/// A compile-time `cfg!` rather than a runtime question, because the answer is the
+/// operating system's shell and not the session's: it cannot change while the process runs
+/// and it cannot be measured wrong.
+pub const OVERFLOW_HINT: bool = cfg!(target_os = "windows");
+
+/// One thing this build says to a user exactly once per machine.
+///
+/// Compiled only into the test build: nothing in the running tray reads the list, because
+/// each notice is produced where it belongs — the banner by the panel, the notification by
+/// [`announce`]. What the list is for is the question no single call site can answer, which
+/// is what a fresh machine of *this* platform ends up being told.
+#[cfg(test)]
+pub struct FirstRun {
+    /// Where "once" is remembered. `alerts.json`'s notice set for a desktop notification,
+    /// and `None` for the panel banner — which is claimed by `config.json`'s
+    /// `firstRunHintDismissed` instead, because the user dismisses it with a button.
+    pub claim: Option<&'static str>,
+    /// The locale key of the text the user actually reads. A notification's title, for the
+    /// ones that have a body as well.
+    pub message: &'static str,
+}
+
+/// Everything a fresh machine of this platform can be told once, and nothing it cannot.
+///
+/// The list is small enough to read and that is the point of it: every entry here is a
+/// sentence written for one desktop, and the test below asks each one whether it is a
+/// sentence this build can still produce in all six languages. Adding a notice without
+/// adding it here costs nothing, so the list is not a registry the code reads — it is the
+/// per-platform answer, written down where the platform question already lives.
+#[cfg(test)]
+#[must_use]
+pub fn first_run_notices() -> Vec<FirstRun> {
+    let mut notices = Vec::new();
+    if OVERFLOW_HINT {
+        notices.push(FirstRun {
+            claim: None,
+            message: "panel.hint.overflow",
+        });
+    }
+    if cfg!(target_os = "linux") {
+        notices.push(FirstRun {
+            claim: Some(HIDDEN_NOTICE),
+            message: "tray.hidden.title",
+        });
+    }
+    notices
+}
 
 /// The bus name a `StatusNotifierItem` host takes. KDE's spelling is the one everybody
 /// implements, GNOME's AppIndicator extension included.
@@ -206,6 +270,77 @@ mod tests {
         let answer = mode(false);
         assert!(matches!(answer, Mode::Tray | Mode::Engine(Reason::NoHost)));
         assert_eq!(answer.draws_an_icon(), answer == Mode::Tray);
+    }
+
+    /// The first-run hint is Windows-only, and this is the whole of that claim.
+    ///
+    /// It was not, until 2026-09-16: a Fedora 44 GNOME session opened the panel and read
+    /// "drag the bead onto the taskbar to pin it", about an overflow flyout that only
+    /// Windows 11 has. The gate is a `cfg!`, so the test can only ever check the platform
+    /// it is compiled for — which is exactly the three platforms CI compiles for.
+    #[test]
+    fn the_overflow_hint_belongs_to_windows_and_to_nowhere_else() {
+        assert_eq!(
+            OVERFLOW_HINT,
+            cfg!(target_os = "windows"),
+            "no other desktop has an overflow flyout to be behind or a taskbar to be \
+             dragged onto"
+        );
+        // And the sentence it gates really is about that flyout, in English at least: a
+        // hint reworded into something every desktop has would want a different gate.
+        assert!(
+            crate::i18n::catalog("en")
+                .text("panel.hint.overflow")
+                .contains("overflow")
+        );
+    }
+
+    /// What a fresh machine of this platform is told once — the list, per platform.
+    ///
+    /// Two assertions, and the second is the one that keeps the list honest: every message
+    /// it names has to still resolve in all six catalogues, so a key renamed in
+    /// `ui/locales/*.json` fails here instead of shipping a notification that says
+    /// `tray.hidden.title`.
+    #[test]
+    fn a_fresh_machine_is_told_what_its_own_desktop_can_act_on() {
+        let notices = first_run_notices();
+        let messages: Vec<&str> = notices.iter().map(|notice| notice.message).collect();
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            messages,
+            ["panel.hint.overflow"],
+            "Windows has the overflow flyout and no tray host to be missing"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            messages,
+            ["tray.hidden.title"],
+            "Linux has a tray host that may be absent and no overflow flyout"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            messages.is_empty(),
+            "the menu bar shows what it is handed, and it is always there"
+        );
+
+        for notice in &notices {
+            for language in nazar_core::config::LOCALES {
+                let catalog = crate::i18n::catalog(language);
+                assert_ne!(
+                    catalog.text(notice.message),
+                    notice.message,
+                    "{} has no text in {language}",
+                    notice.message
+                );
+            }
+            if let Some(claim) = notice.claim {
+                assert!(
+                    claim.starts_with("notice."),
+                    "a notice key shares alerts.json with provider/window records: {claim}"
+                );
+            }
+        }
     }
 
     /// Three modes, three different sentences, and none of them empty — the line is what a
