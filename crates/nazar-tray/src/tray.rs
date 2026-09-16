@@ -41,12 +41,18 @@
 //! under the pointer rather than going stale. Windows and macOS keep the four-item menu they
 //! had, byte for byte: [`QUOTA_IN_MENU`] is a `cfg!`.
 //!
-//! **WP5 adds `Settings` and makes the menu rebuildable.** A menu item's text is set when the
-//! item is *built*, so a menu built in English stays in English however the settings change —
-//! which was WP4's open risk, written down at the time and closed here. [`rebuild_menu`]
-//! throws the whole menu away and makes a new one in the current language; it is called from
-//! `set_config`, and only when the language actually moved, because replacing a menu the user
-//! may have open is not a thing to do for nothing.
+//! **WP5 adds `Settings` and makes the menu rebuildable.** WP4 shipped a menu built in one
+//! language and left in it however the settings changed, which was its open risk; this is
+//! where that was closed. [`rebuild_menu`] throws the whole menu away and makes a new one in
+//! the current language, called from `set_config` and only when the language actually moved,
+//! because replacing a menu the user may have open is not a thing to do for nothing.
+//!
+//! *(That note used to say a menu item's text **cannot** be changed after the item is built.
+//! It can: `MenuItem::set_text` reaches `muda`'s `GtkMenuItem::set_label` on GTK and the
+//! matching call on Windows, which is exactly what T-WP-L8's live quota rows do on every
+//! refresh. The rebuild stays because a language change moves every label at once and may
+//! change the item list, and a rebuild is one operation the user sees once — but it is a
+//! choice now, not a limit.)*
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -87,6 +93,31 @@ const MENU_QUOTA: &str = "nazar-quota-";
 /// — and a menu that changes height while the user is reading it. macOS gets the tooltip
 /// and the popover for the same reason.
 const QUOTA_IN_MENU: bool = cfg!(target_os = "linux");
+
+/// Whether this shell draws a line of our text beside the icon.
+///
+/// **The one surface on Linux that costs the user no gesture at all.** The menu is beside
+/// the icon but has to be opened; the tooltip does not exist (`set_tooltip` on GTK is
+/// `Ok(())` and nothing else, so everything [`tooltip`] builds reaches a Linux user
+/// nowhere). `set_title` is the third door and it is open: `tray-icon`'s GTK backend hands
+/// it to `AppIndicator::set_label`, which publishes `XAyatanaLabel` on the
+/// `StatusNotifierItem`, and GNOME's AppIndicator extension draws that as a label beside the
+/// bead. So the binding percentage can be **on the panel**, with no click and no hover,
+/// which is what a quota tray is for.
+///
+/// Windows has no label beside a tray icon and has the tooltip instead. On macOS `set_title`
+/// does work — it writes into the menu bar — but there the popover opens on a click and the
+/// tooltip is there on hover, so a number permanently in the menu bar is a decision for a
+/// macOS pass to make with a macOS in front of it, rather than one to inherit from Linux's
+/// constraints.
+const LABEL_BESIDE_ICON: bool = cfg!(target_os = "linux");
+
+/// What the label says when nothing could be read.
+///
+/// Not a locale key: it is punctuation, it is the same character in all six languages, and
+/// [`crate::alerts`] already answers an unreadable percentage with it. What it must never be
+/// is `0 %`, which is finding B03 — a reassuring number for a reading nobody has.
+const LABEL_UNKNOWN: &str = "?";
 
 /// Longest tooltip Windows will show. `NOTIFYICONDATA::szTip` holds 128 characters
 /// including the terminator, and a tooltip that is silently dropped is worse than a short
@@ -254,9 +285,11 @@ fn build_menu(
 
 /// Replace the menu and the tooltip with ones written in the current language.
 ///
-/// Called when — and only when — the language actually changed. A menu item's text cannot be
-/// changed after the item is built, so this makes new items; the tray icon keeps its own
-/// identity, so nothing flickers and nothing moves in the Windows 11 overflow.
+/// Called when — and only when — the language actually changed. New items rather than new
+/// text on the old ones: `set_text` does work (see [`QuotaRows`], which uses it on every
+/// refresh), but a language change moves every label at once and can change which items
+/// exist, and this way there is one operation to get right instead of a sweep. The tray icon
+/// keeps its own identity, so nothing flickers and nothing moves in the Windows 11 overflow.
 pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
     let catalog = strings.catalog();
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
@@ -284,7 +317,10 @@ pub fn rebuild_menu(app: &AppHandle, strings: &Strings) {
         Err(error) => eprintln!("nazar-tray: could not rebuild the tray menu: {error}"),
     }
     if let Some(state) = app.try_state::<AppState>() {
-        let _ = tray.set_tooltip(Some(tooltip(&state.view(), &catalog, week(app).as_ref())));
+        let view = state.view();
+        let _ = tray.set_tooltip(Some(tooltip(&view, &catalog, week(app).as_ref())));
+        // The label moves with the language too: Turkish writes the percent sign first.
+        let _ = tray.set_title(title(app, &view, &catalog));
     }
 }
 
@@ -379,6 +415,7 @@ pub fn refresh(app: &AppHandle, catalog: &Catalog) {
 
     let _ = tray.set_icon(Some(image(IconState::from_view(&view), scale_factor(app))));
     let _ = tray.set_tooltip(Some(tooltip(&view, catalog, week(app).as_ref())));
+    let _ = tray.set_title(title(app, &view, catalog));
     write_quota_rows(app, &view, catalog);
 }
 
@@ -420,6 +457,7 @@ pub fn refresh_tooltip(app: &AppHandle) {
     let catalog = strings.catalog();
     let view = state.view();
     let _ = tray.set_tooltip(Some(tooltip(&view, &catalog, week(app).as_ref())));
+    let _ = tray.set_title(title(app, &view, &catalog));
     write_quota_rows(app, &view, &catalog);
 }
 
@@ -573,7 +611,7 @@ fn quota_line(view: &SnapshotView, catalog: &Catalog) -> Option<(String, Option<
 /// this function exists to prevent.
 fn binding_entry(provider: &ProviderView, catalog: &Catalog) -> Option<(String, f64, Option<i64>)> {
     let window = provider.windows.iter().find(|window| window.binding)?;
-    let percent = window.percent.filter(|value| value.is_finite())?;
+    let percent = binding_percent(provider)?;
     let entry = catalog.format(
         "tray.tooltip.entry",
         &[
@@ -587,6 +625,55 @@ fn binding_entry(provider: &ProviderView, catalog: &Catalog) -> Option<(String, 
         ],
     );
     Some((entry, percent, window.remaining_ms))
+}
+
+/// One provider's binding percentage, and nothing else about it.
+///
+/// The number without the sentence, for the surface that has room for a number and no room
+/// for a sentence. `None` where [`binding_entry`] is `None`, and for the same reason: a
+/// provider nobody could read has no percentage, and inventing one is finding B03.
+fn binding_percent(provider: &ProviderView) -> Option<f64> {
+    let window = provider.windows.iter().find(|window| window.binding)?;
+    window.percent.filter(|value| value.is_finite())
+}
+
+/// The whole tray in one short string: the binding percentage closest to running out.
+///
+/// **One number, because a panel label is not a place to put two.** Which number is not a
+/// choice: the tray's job is to say how close the user is to a wall, so it is the highest
+/// binding percentage across the providers — the same window the tooltip's reset clause
+/// follows, and the one that decides when there is nothing left to spend.
+///
+/// Floored rather than rounded, so 99.6 % is `99 %` and never `100 %` (finding B15), and
+/// through a locale key rather than `format!` because the percent sign does not go in the
+/// same place in all six languages — Turkish writes `%62`.
+fn label(view: &SnapshotView, catalog: &Catalog) -> String {
+    let Some(percent) = view
+        .providers
+        .iter()
+        .filter_map(binding_percent)
+        .reduce(f64::max)
+    else {
+        return LABEL_UNKNOWN.to_owned();
+    };
+    catalog.format(
+        "tray.label.percent",
+        &[("percent", &percent.floor().to_string())],
+    )
+}
+
+/// The label this run should be showing, or `None` where there is nothing to show it on.
+///
+/// `None` rather than an empty string is the same answer expressed twice: `set_title(None)`
+/// clears the label, which is what a user who turned the setting off is asking for.
+fn title(app: &AppHandle, view: &SnapshotView, catalog: &Catalog) -> Option<String> {
+    if !LABEL_BESIDE_ICON {
+        return None;
+    }
+    let wanted = app
+        .try_state::<AppState>()
+        .is_none_or(|state| state.config().tray.show_label);
+    wanted.then(|| label(view, catalog))
 }
 
 /// `(resets in 2 h 10 m)`, or nothing when the source named no reset or it is already due.
@@ -702,6 +789,84 @@ mod tests {
             cfg!(target_os = "linux"),
             "tray-icon's GTK backend makes set_tooltip a no-op and sends no click event, \
              so the menu is the only surface the shell puts beside the icon"
+        );
+    }
+
+    /// The label is one number, it is the worst one, and it is floored.
+    ///
+    /// **Which number is the whole decision.** A panel label has room for one, and the one
+    /// a quota tray is about is the window closest to running out — so the highest binding
+    /// percentage across the providers wins, whichever provider that is. The others are one
+    /// click away in the menu, which is where T-WP-L8 put them.
+    #[test]
+    fn the_label_is_the_binding_window_closest_to_running_out() {
+        let catalog = i18n::catalog("en");
+        let both = view(vec![
+            provider("claude", vec![window("seven_day", Some(31.0), 10080, true)]),
+            provider("codex", vec![window("secondary", Some(88.7), 10080, true)]),
+        ]);
+        assert_eq!(
+            label(&both, &catalog),
+            "88%",
+            "the label is about the wall the user is nearest to, not about a provider"
+        );
+
+        // Floored, never rounded up: 99.6 % has not run out, and a tray that says 100 % of
+        // a window with room left in it is finding B15 on the panel.
+        let nearly = view(vec![provider(
+            "codex",
+            vec![window("secondary", Some(99.6), 10080, true)],
+        )]);
+        assert_eq!(label(&nearly, &catalog), "99%");
+    }
+
+    /// A reading nobody has is a question mark, and never a reassuring zero.
+    #[test]
+    fn the_label_says_nothing_it_does_not_know() {
+        let catalog = i18n::catalog("en");
+        assert_eq!(label(&view(Vec::new()), &catalog), LABEL_UNKNOWN);
+        assert_eq!(
+            label(&view(vec![unread("claude", false)]), &catalog),
+            LABEL_UNKNOWN,
+            "a provider with no wrapper installed has no percentage, and 0 % would be a lie"
+        );
+        // A binding window whose percentage is missing is the same answer: the window is
+        // there, the number is not.
+        let blank = view(vec![provider(
+            "codex",
+            vec![window("secondary", None, 10080, true)],
+        )]);
+        assert_eq!(label(&blank, &catalog), LABEL_UNKNOWN);
+    }
+
+    /// The percent sign does not go in the same place in all six languages.
+    ///
+    /// The reason the label is a locale key and not a `format!`: Turkish writes `%88`, and
+    /// a label built with the sign hard-coded on the right would be wrong there in a way
+    /// nobody but a Turkish user would ever see.
+    #[test]
+    fn the_label_is_written_the_way_each_language_writes_a_percentage() {
+        let numbers = view(vec![provider(
+            "codex",
+            vec![window("secondary", Some(88.0), 10080, true)],
+        )]);
+        assert_eq!(label(&numbers, &i18n::catalog("tr")), "%88");
+        assert_eq!(label(&numbers, &i18n::catalog("en")), "88%");
+        for locale in nazar_core::config::LOCALES {
+            let drawn = label(&numbers, &i18n::catalog(locale));
+            assert!(drawn.contains("88"), "{locale} lost the number: {drawn}");
+            assert!(drawn.contains('%'), "{locale} lost the sign: {drawn}");
+        }
+    }
+
+    /// Where a label can be drawn at all, and why it is not everywhere.
+    #[test]
+    fn only_a_shell_that_draws_labels_is_given_one() {
+        assert_eq!(
+            LABEL_BESIDE_ICON,
+            cfg!(target_os = "linux"),
+            "set_title reaches libappindicator's XAyatanaLabel on GTK; Windows has no label \
+             beside a tray icon and already says this in the tooltip"
         );
     }
 

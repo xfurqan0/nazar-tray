@@ -198,6 +198,7 @@ into a decision.
 | T-WP-L8 ✅ | **The menu is the face on Linux**: live quota rows in the dbusmenu, rewritten on every refresh; no placement where placement is ignored; `config.window.x11Positioning` for anybody who wants the popup through XWayland; one notice pointing GNOME at nazar-gnome | ~~The menu carries a row per provider with the binding window, its percentage and its reset; the rows change while the menu is open; a provider with nothing to report says why and never `0 %`; a Windows `config.json` does not change a byte~~ — **landed 2026-09-17** |
 | T-WP-L9 ✅ | **A reason a user can act on**: `panel.provider.notConfigured.<name>` in the panel and in the menu row, the sentence that names the command, and the measurement that says there is no second source to read instead | ~~Claude Code with no wrapper reads as "status line wrapper not installed" and the card says what to run; the transcripts and the statistics cache are searched for a rate-limit field and the answer is written down~~ — **landed 2026-09-17** |
 | T-WP-L10 ✅ | **A tray that survives a lock screen**: one `NameOwnerChanged` subscription on `org.kde.StatusNotifierWatcher`, the icon built the moment a host appears, and `desktop::Presence` — the state machine that says when, as a pure function with no bus in it | ~~A run that started with no host draws its icon when one arrives, with no restart; a host leaving takes the icon's state with it and leaves the engine alone; the icon is built once however often the name changes hands; nobody is ever notified about an unlock; `--headless` ignores all of it~~ — **landed 2026-09-17** |
+| T-WP-L11 ✅ | **The number, on the panel, without a click**: `set_title` → `XAyatanaLabel`, `config.tray.showLabel`, the startup row named after the desktop it starts with, and the measurement of where a Linux autostart entry actually goes | ~~The binding percentage is beside the bead with no click and no hover, written the way each language writes a percentage and `?` when nothing was read; `showLabel: false` takes it away; no Linux user is offered "Start with Windows"; a Windows `config.json` does not change a byte~~ — **landed 2026-09-17** |
 | T-WP-L6 ◐ | **A Linux artefact on the release draft**: `verify-linux` and `build-linux` on `ubuntu-22.04` for the wider glibc base, attestation, `SHA256SUMS` across both platforms, and the README's Windows-first paragraphs rewritten to what was measured | A tag produces a draft carrying the `-setup.exe`, the `.deb` and the `.rpm`, and `gh attestation verify` passes on all three. **The pipeline landed 2026-09-16** and was rehearsed by `workflow_dispatch`, which builds everything and cannot reach the draft. **Two halves are a maintainer's:** the README rewrite, which is public text, and the tag, which is one-way. Until a tag is pushed the criterion is unproven by construction. |
 
 **The faces are not in this list on purpose.** `faces/waybar/` reads `limits.json` and touches
@@ -1987,3 +1988,28 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   libappindicator. Zero `Notify` calls across the whole run, counted by `dbus-monitor`. Windows
   and macOS compile none of it: `watch` is an empty function there, the state machine is behind
   `cfg(any(target_os = "linux", test))` and its five tests run in every job.
+- 2026-09-17 01:30 — **T-WP-L11 landed: the tooltip's content finally reaches a Linux user,
+  and two more Windows sentences stop leaking.** `set_tooltip` on GTK is `Ok(())` and nothing
+  else, so everything the tooltip says has always reached a Linux user nowhere; `set_title` is
+  the door that is open. It becomes `AppIndicator::set_label` and arrives as the
+  `XAyatanaLabel` property of the `StatusNotifierItem`, which GNOME's AppIndicator extension
+  draws beside the bead — so the binding percentage is **on the panel with no click and no
+  hover**, which is what a quota tray is for. One number, the highest binding percentage
+  across the providers, floored (`99.6 %` is `99 %`, finding B15), through a locale key
+  because Turkish writes `%88`, and `?` rather than `0 %` when nothing was read.
+  `config.tray.showLabel` turns it off and is absent until somebody does, so a Windows
+  `config.json` does not change a byte. Measured over D-Bus with the stand-in watcher:
+  `XAyatanaLabel = "%11"` by default, `""` with the switch off.
+  **Second: "Start with Windows" on a Fedora machine.** The switch works there — an XDG
+  `.desktop` file the session honours — and only the sentence was wrong, so
+  `desktop::AUTOSTART_LABEL` picks the key at compile time the way `OVERFLOW_HINT` does, the
+  panel draws it, and `--autostart status` stops printing the Windows word on standard error.
+  `settings.autostart.session` is in all six catalogues. Where the entry goes was measured
+  rather than assumed: `auto-launch` hard-codes `$HOME/.config/autostart` and ignores
+  `XDG_CONFIG_HOME`, so on a machine that moved that variable the switch would write a file
+  the session never reads — named on standard error, written down in
+  `pinned-internal-formats.md`, and not worked around.
+  **Third, a comment that was wrong:** `tray.rs` said a menu item's text cannot be changed
+  after the item is built. It can — `set_text` reaches `muda`'s `GtkMenuItem::set_label`, which
+  is what T-WP-L8's live quota rows have been doing since the day before — so the note now says
+  the rebuild is a choice rather than a limit.

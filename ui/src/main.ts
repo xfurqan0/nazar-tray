@@ -129,6 +129,14 @@ interface UiState {
    * tip about a control this desktop does not have.
    */
   readonly hintAvailable: boolean;
+  /**
+   * The locale key for the startup row's label.
+   *
+   * "Start with Windows" is a lie on a Linux desktop, where the same switch writes an XDG
+   * `.desktop` file the session honours. Which sentence this build's shell gets is decided
+   * in Rust, like `hintAvailable`, rather than guessed here from `navigator.platform`.
+   */
+  readonly autostartLabel: string;
   readonly demo: boolean;
   /** `--view settings`: open on the settings page rather than on the numbers. */
   readonly openSettings: boolean;
@@ -185,6 +193,7 @@ const autostartBox = document.querySelector<HTMLInputElement>("[data-autostart]"
 const autostartError = document.querySelector<HTMLElement>("[data-autostart-error]");
 const hintResetNote = document.querySelector<HTMLElement>("[data-hint-reset-note]");
 const hintResetRow = document.querySelector<HTMLElement>("[data-hint-reset-row]");
+const autostartLabel = document.querySelector<HTMLElement>("[data-autostart-label]");
 const suggestionBox = document.querySelector<HTMLElement>("[data-suggestion]");
 
 // The status-line section. The only control on this page that changes a file belonging to
@@ -233,6 +242,7 @@ let ui: UiState = {
   resolvedLocale: "en",
   hintDismissed: true,
   hintAvailable: false,
+  autostartLabel: "settings.autostart",
   demo: false,
   openSettings: false,
   openUsage: null,
@@ -303,6 +313,16 @@ const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 // ---------------------------------------------------------------- rendering
 
+/**
+ * The startup row's label: the one row whose sentence depends on the platform.
+ *
+ * Called from both directions, because it moves with either — `applyLanguage` when the
+ * language changes and the settings render when the state arrives — and it is one lookup.
+ */
+function paintAutostartLabel(): void {
+  if (autostartLabel) autostartLabel.textContent = t(ui.autostartLabel);
+}
+
 /** Apply the language to every static string in the document. */
 function applyLanguage(): void {
   root.lang = locale;
@@ -313,6 +333,7 @@ function applyLanguage(): void {
   document
     .querySelector<SVGElement>("[data-bead] svg")
     ?.setAttribute("aria-label", t("panel.bead.alt"));
+  paintAutostartLabel();
   if (versionLabel) versionLabel.textContent = __APP_VERSION__;
   for (const node of document.querySelectorAll<HTMLElement>("[data-link]")) {
     const key = node.dataset["link"];
@@ -630,6 +651,7 @@ function paintForm(): void {
   // The row goes with the platform, the note inside it with the settings: on a desktop
   // with no overflow flyout there is no tip to bring back, so the button that offers to is
   // not a control, it is a promise nobody can keep.
+  paintAutostartLabel();
   if (hintResetRow) hintResetRow.hidden = !ui.hintAvailable;
   if (hintResetNote) hintResetNote.hidden = !ui.hintAvailable || settings.firstRunHintDismissed;
   showProblems(validate(values, settings.languages));

@@ -341,9 +341,11 @@ pub fn run_autostart(app: &tauri::AppHandle, action: Autostart) -> ! {
     match manager.is_enabled() {
         Ok(enabled) => {
             println!(
-                "nazar-tray: start with Windows is {}",
+                "nazar-tray: {} is {}",
+                crate::desktop::AUTOSTART_PHRASE,
                 if enabled { "on" } else { "off" }
             );
+            warn_about_the_autostart_directory(enabled);
             std::process::exit(0);
         }
         Err(error) => {
@@ -352,6 +354,33 @@ pub fn run_autostart(app: &tauri::AppHandle, action: Autostart) -> ! {
         }
     }
 }
+
+/// Say so when the entry has been written where this session will not read it.
+///
+/// `auto-launch` hard-codes `$HOME/.config/autostart` and the XDG specification says a
+/// session reads `$XDG_CONFIG_HOME/autostart`. Those are the same directory on almost every
+/// machine, and on the ones where they are not the switch would report itself on and start
+/// nothing. One line, on the way past, for the only person who can act on it — and only when
+/// the entry is on, because an entry that is off starts nothing either way.
+#[cfg(target_os = "linux")]
+fn warn_about_the_autostart_directory(enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let home = nazar_core::paths::home_dir().ok();
+    let xdg = std::env::var_os("XDG_CONFIG_HOME");
+    if crate::desktop::autostart_is_read(home.as_deref(), xdg.as_deref()) {
+        return;
+    }
+    eprintln!(
+        "nazar-tray: the entry is in ~/.config/autostart, but XDG_CONFIG_HOME points \
+         somewhere else, so this session may not read it"
+    );
+}
+
+/// Windows writes a registry value and macOS a launch agent: neither has this question.
+#[cfg(not(target_os = "linux"))]
+fn warn_about_the_autostart_directory(_enabled: bool) {}
 
 impl Options {
     /// Whether a change the panel makes may be written back to `config.json`.

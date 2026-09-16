@@ -659,6 +659,7 @@ they wrote.
 | `notifications` | The master switch above the thresholds and the quiet hours. |
 | `quietHours` | `HH:MM` **local** wall-clock times; the range wraps midnight when `to` is earlier than `from`, and equal endpoints are an empty range. Absent means there are none. |
 | `providers` | Which providers are read at all. A provider switched off has **no reader built for it**: its files are never opened. |
+| `tray` | **Linux only in effect, and absent until it is turned off.** `{ "showLabel": false }` takes away the line of text the tray draws beside its icon — the binding percentage, `%62` or `62%` depending on the language, `?` when nothing could be read. It gets there through `TrayIcon::set_title`, which on GTK is `AppIndicator::set_label` and reaches the shell as the `XAyatanaLabel` property of the `StatusNotifierItem`; GNOME's AppIndicator extension draws it as a label next to the bead. It defaults to **on**, so the key is skipped until somebody turns it off and a Windows or macOS `config.json` is byte-identical to one this build's predecessor wrote. Windows and macOS ignore the setting: neither has a label beside a tray icon, and both have the tooltip, which on GTK does not exist at all. |
 | `window` | **Linux only, and absent until it is turned on.** `{ "x11Positioning": true }` asks GTK for the X11 backend (`GDK_BACKEND=x11`) so that the panel can open beside the cursor: a Wayland client can neither read the global pointer nor move its own toplevel, and both calls succeed while doing nothing. Ignored on a session that is already X11, and ignored with no `DISPLAY` — there would be no XWayland to fall back to. The key is skipped while it holds its default, so a Windows or macOS `config.json` is byte-identical to one this build's predecessor wrote. |
 
 Three rules, and each is a way a settings file gets lost:
@@ -742,6 +743,34 @@ machine. **Two things the plugin does not do**, both of which belong to WP7's un
 * The `Run` value is written **unquoted**: `C:\Program Files\nazar-tray\nazar-tray.exe
   --hidden`. Windows resolves that by trying each space-delimited prefix, so it works, but a
   quoted path would not depend on that.
+
+### On Linux it is an XDG desktop entry, and it works
+
+Measured on 2026-09-17, Fedora 44, by turning the switch on and off with `HOME` pointed at a
+throwaway directory:
+
+```
+~/.config/autostart/nazar-tray.desktop
+  [Desktop Entry] Type=Application Version=1.0
+  Name=nazar-tray  Comment=nazar-traystartup script
+  Exec=<path to nazar-tray> --hidden
+  StartupNotify=false  Terminal=false
+```
+
+`--autostart off` removes the file and leaves the directory, so there is no Linux equivalent
+of the `StartupApproved` residue above. **Two things about the path**, both in `auto-launch`
+0.5.0 rather than in this repository:
+
+* The directory is built as `dirs::home_dir().join(".config").join("autostart")`, **hard-coded**
+  — `XDG_CONFIG_HOME` is not consulted. The XDG autostart specification says a session reads
+  `$XDG_CONFIG_HOME/autostart`, so on a machine that has moved that variable the switch would
+  write a file the session never reads. `nazar-tray --autostart on` says so on standard error
+  when it sees that case (`desktop::autostart_is_read`); it does not write anywhere else,
+  because guessing a second directory would be two entries to keep in step.
+* The directory is created with `create_dir` rather than `create_dir_all`, so a home with no
+  `~/.config` at all fails with `os error 2`. Every desktop session creates `~/.config` long
+  before a user reaches a settings page, which is why this is written down rather than worked
+  around.
 
 ## The usage endpoint
 

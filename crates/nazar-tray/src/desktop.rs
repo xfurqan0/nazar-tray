@@ -117,6 +117,62 @@ const HIDDEN_NOTICE: &str = "notice.trayHidden";
 /// and it cannot be measured wrong.
 pub const OVERFLOW_HINT: bool = cfg!(target_os = "windows");
 
+/// The locale key for the settings row that turns the startup entry on.
+///
+/// **"Start with Windows" on a Fedora machine is the same bug as the overflow hint**, one
+/// screen further in: the feature works — `tauri-plugin-autostart` writes an XDG
+/// `.desktop` file and the session honours it — and only the sentence is wrong. So the
+/// answer is the same shape as [`OVERFLOW_HINT`]: a compile-time constant naming which
+/// sentence this build's shell is, rather than a guess from `navigator.platform` in the
+/// panel.
+///
+/// Two keys rather than one neutral sentence for all three platforms, because "start with
+/// Windows" is what a Windows user is looking for in a settings page and "the desktop
+/// session" is what everybody else's own documentation calls it.
+pub const AUTOSTART_LABEL: &str = if cfg!(target_os = "windows") {
+    "settings.autostart"
+} else {
+    "settings.autostart.session"
+};
+
+/// The same fact for standard error, which is English everywhere and translates nothing.
+///
+/// `--autostart status` used to print "start with Windows is off" on a Linux machine, which
+/// is the panel's bug with a terminal in front of it.
+pub const AUTOSTART_PHRASE: &str = if cfg!(target_os = "windows") {
+    "start with Windows"
+} else {
+    "start with the desktop session"
+};
+
+/// Whether the autostart entry will be read from where it is written.
+///
+/// **A measurement, not a guess.** `auto-launch 0.5.0` — under `tauri-plugin-autostart` —
+/// builds its path as `dirs::home_dir().join(".config").join("autostart")`, hard-coded, and
+/// the XDG autostart specification says a session reads `$XDG_CONFIG_HOME/autostart`. On the
+/// overwhelming majority of machines those are the same directory and the switch does
+/// exactly what it says. On a machine that has moved `XDG_CONFIG_HOME` they are not, and the
+/// switch would turn on, report itself on, write a file, and start nothing — which is the
+/// silent failure this whole Linux pass has been about.
+///
+/// So the switch is not changed and nothing is written anywhere else: the case is *named*,
+/// once, on standard error, where somebody who moved their config directory will recognise
+/// it. Being wrong in the safe direction is cheap here — an unset or empty variable means
+/// the default, which is exactly where the plugin writes.
+#[cfg(any(target_os = "linux", test))]
+#[must_use]
+pub fn autostart_is_read(home: Option<&std::path::Path>, xdg: Option<&std::ffi::OsStr>) -> bool {
+    let Some(xdg) = xdg.filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let Some(home) = home else {
+        // No home directory to compare against, and none for the plugin to write into
+        // either. Whatever is wrong here, it is not this.
+        return true;
+    };
+    std::path::Path::new(xdg) == home.join(".config")
+}
+
 /// One thing this build says to a user exactly once per machine.
 ///
 /// Compiled only into the test build: nothing in the running tray reads the list, because
@@ -836,6 +892,54 @@ mod tests {
                 "{mode:?} was told {told} times about its tray host"
             );
         }
+    }
+
+    /// The startup row says what this shell calls it, and never what Windows calls it.
+    #[test]
+    fn the_startup_switch_is_named_after_the_desktop_it_starts_with() {
+        let windows = cfg!(target_os = "windows");
+        assert_eq!(AUTOSTART_LABEL == "settings.autostart", windows);
+        assert_eq!(AUTOSTART_PHRASE.contains("Windows"), windows);
+        // Both spellings exist in all six catalogues, because the one this build did not
+        // pick is still the one another build ships.
+        for language in nazar_core::config::LOCALES {
+            let catalog = crate::i18n::catalog(language);
+            for key in ["settings.autostart", "settings.autostart.session"] {
+                assert_ne!(catalog.text(key), key, "{key} has no text in {language}");
+            }
+        }
+    }
+
+    /// Where the entry is written against where the session reads it.
+    ///
+    /// `auto-launch` hard-codes `$HOME/.config/autostart`; XDG says the session reads
+    /// `$XDG_CONFIG_HOME/autostart`. Measured on 2026-09-17 rather than assumed — and the
+    /// answer this returns decides only whether one sentence is printed, so the safe
+    /// direction is "yes, it is read", which is what every ordinary machine gets.
+    #[test]
+    fn the_startup_entry_is_read_from_where_the_plugin_writes_it() {
+        let home = std::path::Path::new("/home/qarpus");
+        let ordinary = std::ffi::OsStr::new("/home/qarpus/.config");
+        let moved = std::ffi::OsStr::new("/home/qarpus/.local/config");
+
+        assert!(
+            autostart_is_read(Some(home), None),
+            "an unset XDG_CONFIG_HOME is the default, which is where the plugin writes"
+        );
+        assert!(
+            autostart_is_read(Some(home), Some(std::ffi::OsStr::new(""))),
+            "an empty variable is not a directory"
+        );
+        assert!(autostart_is_read(Some(home), Some(ordinary)));
+        assert!(
+            !autostart_is_read(Some(home), Some(moved)),
+            "the entry would be written somewhere this session does not read"
+        );
+        assert!(
+            autostart_is_read(None, Some(moved)),
+            "with no home directory there is no second place for it to be, and the \
+             sentence would name a problem this is not"
+        );
     }
 
     /// Who may say it: one expression, read by the notice and by the machine alike.

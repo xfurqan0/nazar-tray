@@ -20,7 +20,7 @@
 //! | `set_config` | the settings form, **validated**, saved atomically, and applied at once |
 //! | `reset_hint` | put the first-run overflow tip back |
 //! | `dismiss_detailed_suggestion` | the Max-plan offer has been shown; do not ask again |
-//! | `get_autostart` / `set_autostart` | "start with Windows", read back from the plugin |
+//! | `get_autostart` / `set_autostart` | the startup entry, read back from the plugin |
 //! | `quit` | stop the loop, **release the advisory lock**, and exit |
 //! | `snapshot-changed` (event) | the document moved; ask again |
 //! | `open-settings` (event) | the tray menu asked for the settings view |
@@ -104,6 +104,14 @@ pub struct UiState {
     /// row that offers to show it again. A button that promises to bring back a tip about
     /// a control the desktop does not have is the same bug one screen further in.
     pub hint_available: bool,
+    /// The locale key for the startup row's label.
+    ///
+    /// **"Start with Windows" on a Linux machine is the overflow hint's bug one screen
+    /// further in**: the switch itself works there — an XDG `.desktop` file the session
+    /// honours — and only the sentence was wrong. Answered in Rust for the same reason the
+    /// hint is ([`crate::desktop::AUTOSTART_LABEL`]): the panel would have to guess from
+    /// `navigator.platform`, and this build already knows which shell it was compiled for.
+    pub autostart_label: String,
     /// Whether the numbers on screen are [`crate::demo`]'s rather than this machine's.
     ///
     /// The panel shows a badge when this is true. A screenshot that could be mistaken for
@@ -131,6 +139,7 @@ impl Default for UiState {
             resolved_locale: "en".to_owned(),
             hint_dismissed: !crate::desktop::OVERFLOW_HINT,
             hint_available: crate::desktop::OVERFLOW_HINT,
+            autostart_label: crate::desktop::AUTOSTART_LABEL.to_owned(),
             demo: false,
             open_settings: false,
             open_usage: None,
@@ -447,6 +456,7 @@ impl AppState {
                     .hint_dismissed
                     .unwrap_or(config.first_run_hint_dismissed),
             hint_available: crate::desktop::OVERFLOW_HINT,
+            autostart_label: crate::desktop::AUTOSTART_LABEL.to_owned(),
             demo: self.overrides.demo,
             open_settings: self.overrides.open_settings,
             open_usage: self.overrides.open_usage.clone(),
@@ -818,7 +828,7 @@ pub fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Turn "start with Windows" on or off, and report what it is afterwards.
+/// Turn the startup entry on or off, and report what it is afterwards.
 ///
 /// The answer is read back from the plugin rather than assumed: writing to the registry can
 /// fail, and a switch that flips in the interface without anything happening on the machine

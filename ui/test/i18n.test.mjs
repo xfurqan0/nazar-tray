@@ -174,6 +174,7 @@ test("the keys that carry a count are frozen, so a new one is a decision", () =>
     "time.hoursMinutes",
     "time.minutes",
     "time.seconds",
+    "tray.label.percent",
     "tray.tooltip.entry",
   ]);
 });
@@ -398,12 +399,20 @@ test("the tray has no words of its own", () => {
    * They are here rather than inside an `eprintln!` — which the regex below would have
    * stripped — because two call sites read them and a sentence written twice is a sentence
    * that will one day say two things.
+   *
+   * `desktop.rs` again — the two spellings of the startup entry, for the same surface and
+   * the same reason. `--autostart status` prints one of them on standard error, and which
+   * one is a compile-time decision an `eprintln!` cannot make inline. What the *user* reads
+   * is the settings row, and that comes from `settings.autostart` or
+   * `settings.autostart.session` like every other word this product shows.
    */
   const ALLOWED = new Set([
     "no quota line in the newest session log",
     "tray icon shown",
     "engine mode (--headless): no tray icon, limits.json still written",
     "engine mode: no StatusNotifierWatcher on the session bus; limits.json still written",
+    "start with Windows",
+    "start with the desktop session",
   ]);
 
   const diagnostic =

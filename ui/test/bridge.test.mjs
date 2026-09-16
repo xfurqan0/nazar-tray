@@ -364,6 +364,11 @@ test("every message key either side names is in all six locale files", () => {
     "crates/nazar-tray/src/tray.rs",
     "crates/nazar-tray/src/i18n.rs",
     "crates/nazar-tray/src/alerts.rs",
+    // The platform's own sentences: the tray-host notices, the overflow hint, and the two
+    // spellings of the startup row's label. None of them is a lookup in Rust — the panel
+    // does the lookup with the key this build chose — so only a scan of the sources sees
+    // them at all.
+    "crates/nazar-tray/src/desktop.rs",
   ];
 
   const named = new Set();

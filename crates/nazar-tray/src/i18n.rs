@@ -400,6 +400,13 @@ mod tests {
             // two shipped providers quietly land on.
             keys.push(format!("panel.provider.notConfigured.{provider}"));
         }
+        // The startup row's label is a `desktop` constant rather than a lookup — the panel
+        // does the lookup, with the key this build chose — so no lookup call in any Rust
+        // source names either sentence, and the scan above cannot see them. Both are
+        // listed, because the platform picks one at compile time and the one this build did
+        // not pick is still the one another build ships.
+        keys.push("settings.autostart".to_owned());
+        keys.push("settings.autostart.session".to_owned());
         // The one deliberate non-key in the sources: the test above proves an unknown key
         // renders as itself.
         keys.retain(|key| key != "nothing.like.this");

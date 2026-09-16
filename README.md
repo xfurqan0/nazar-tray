@@ -228,7 +228,7 @@ In the panel, and from the tray menu's **Settings**:
 | **Theme** | `nazar` or `graphite`, and light / dark / follow the system. |
 | **Providers** | Claude Code and Codex, each on or off. **A provider you switch off is not read at all** — its files are never opened and its card is not drawn. |
 | **Notifications** | On or off, the three thresholds, and quiet hours. |
-| **Start with Windows** | Adds a startup entry for your account; nazar-tray starts hidden in the tray. The switch reads the registry back, so it agrees with Task Manager's Startup tab. |
+| **Start with Windows** / **Start with the desktop session** | Adds a startup entry for your account; nazar-tray starts hidden in the tray. The row is named after the desktop you are on — on Windows the switch reads the registry back, so it agrees with Task Manager's Startup tab; on Linux it writes `~/.config/autostart/nazar-tray.desktop`, which is what an XDG session reads. |
 | **Status line** | Whether the wrapper is Claude Code's status line, and the button that installs or removes it. It shows the diff first and writes nothing until you press again — [the section below](#the-status-line-wrapper). |
 | **Detailed windows** | The opt-in mode described above, off by default, with the whole of what it reads written out beside the switch. |
 | **Files** | Where `limits.json`, the status-line captures, your settings and the notification history live. |
@@ -389,6 +389,15 @@ explained somewhere in this repository.
   ignored with no `DISPLAY`. On GNOME the closer answer is
   [nazar-gnome](https://github.com/xfurqan0/nazar-gnome), which the first run points at:
   the shell places a panel indicator, and no window of ours can get nearer than that.
+- **On Linux the number is on the panel, beside the bead, with no click at all.** `set_title`
+  is the one call `tray-icon`'s GTK backend passes through — it becomes libappindicator's
+  `XAyatanaLabel`, which GNOME's AppIndicator extension draws as a label next to the icon — so
+  the binding window's percentage is readable without opening anything. One number, the one
+  closest to running out, written the way your language writes a percentage, and `?` rather
+  than a reassuring `0 %` when nothing could be read. `{ "tray": { "showLabel": false } }` in
+  `config.json` leaves you the bead alone. Windows and macOS ignore the setting: they have the
+  tooltip, which on GTK does not exist — `set_tooltip` there is a no-op, which is why this
+  exists at all.
 - **Claude Code's quota needs the wrapper, on every platform.** Claude Code reports its rate
   limits to its status-line command and to the usage endpoint, and writes them nowhere else on
   disk — measured across 71 transcript files and `stats-cache.json` in

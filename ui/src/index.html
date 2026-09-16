@@ -330,7 +330,12 @@
           <legend data-i18n="settings.section.startup"></legend>
           <label class="row check">
             <input type="checkbox" data-autostart />
-            <span class="row-label" data-i18n="settings.autostart"></span>
+            <!--
+              The one row whose label is the platform's rather than the markup's: "Start
+              with Windows" is a lie on a Linux desktop, where the switch writes an XDG
+              `.desktop` file. Which sentence it is comes from Rust, in `ui.autostartLabel`.
+            -->
+            <span class="row-label" data-autostart-label></span>
           </label>
           <p class="help" data-i18n="settings.autostart.help"></p>
           <p

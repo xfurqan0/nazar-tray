@@ -115,6 +115,13 @@ pub struct Config {
     /// written by the build before it.
     #[serde(default, skip_serializing_if = "WindowSwitches::is_default")]
     pub window: WindowSwitches,
+    /// What the tray draws besides the icon. One switch, and it belongs to Linux too.
+    ///
+    /// **Skipped when it is the default**, which is on, so a machine that has never turned
+    /// it off writes nothing — a Windows or macOS `config.json` is byte-identical to one
+    /// written by the build before it.
+    #[serde(default, skip_serializing_if = "TraySwitches::is_default")]
+    pub tray: TraySwitches,
     /// Keys a future version added. Preserved verbatim.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -329,6 +336,42 @@ impl WindowSwitches {
     }
 }
 
+/// What the tray draws beside its icon, where the desktop draws anything at all.
+///
+/// **This exists because of a measurement.** `tray-icon`'s GTK backend implements
+/// `set_tooltip` as `Ok(())` and nothing else, so everything the tooltip says on Windows —
+/// the binding window, its percentage, its countdown — reaches a Linux user nowhere. What
+/// that backend does implement is `set_title`, which becomes libappindicator's
+/// `XAyatanaLabel`: a line of text the shell draws **beside the icon**, with no click and no
+/// hover. GNOME's AppIndicator extension draws it as a `StLabel` next to the bead, so the
+/// one number this application exists to show can be on the panel itself.
+///
+/// On by default, because a quota tray whose number is visible without a click is the
+/// product working as intended, and off is one line in `config.json` for anybody who wants
+/// the bead alone. Windows and macOS ignore it: their tooltip already carries this and
+/// neither shell has a label beside a tray icon to write into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraySwitches {
+    /// Draw the binding percentage beside the icon, where the desktop draws labels.
+    #[serde(default = "default_true")]
+    pub show_label: bool,
+}
+
+impl Default for TraySwitches {
+    fn default() -> Self {
+        TraySwitches { show_label: true }
+    }
+}
+
+impl TraySwitches {
+    /// Whether this is the shipped default, and so nothing `config.json` needs to carry.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == TraySwitches::default()
+    }
+}
+
 /// Something wrong with a settings document, in the vocabulary the panel translates.
 ///
 /// Returned by [`Config::validate`], which is what the settings form is checked against
@@ -380,6 +423,7 @@ impl Default for Config {
             providers: ProviderSwitches::default(),
             usage: UsageSwitches::default(),
             window: WindowSwitches::default(),
+            tray: TraySwitches::default(),
             extra: Map::new(),
         }
     }
@@ -563,6 +607,32 @@ mod tests {
                 .window
                 .x11_positioning
         );
+    }
+
+    /// The tray label is on by default, and a default is not a thing to write down.
+    ///
+    /// The same rule as the window switch above, from the other side: this one defaults to
+    /// **true**, so "absent" has to mean on. A file written before the key existed, and a
+    /// Windows file written by this build, are the same bytes and the same behaviour.
+    #[test]
+    fn the_tray_label_is_on_by_default_and_says_so_nowhere() {
+        let untouched = Config::default().to_json().unwrap();
+        assert!(
+            !untouched.contains("showLabel"),
+            "a default document must not carry the key: {untouched}"
+        );
+        assert!(Config::from_json(&untouched).unwrap().tray.show_label);
+
+        let turned_off = Config {
+            tray: TraySwitches { show_label: false },
+            ..Config::default()
+        };
+        let text = turned_off.to_json().unwrap();
+        assert!(text.contains("\"showLabel\": false"), "{text}");
+        assert_eq!(Config::from_json(&text).unwrap(), turned_off);
+
+        // An empty section is the default section, not a section of `false`.
+        assert!(Config::from_json("{\"tray\":{}}").unwrap().tray.show_label);
     }
 
     #[test]
