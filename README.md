@@ -307,11 +307,27 @@ store listing:
   one where it does, it goes **beside** the bead rather than instead of it, and gives you the
   number without hovering.
 
+One face is large enough to have left: **[nazar-gnome](https://github.com/xfurqan0/nazar-gnome)**
+is a GNOME Shell extension in a repository of its own, and it is the answer on a stock GNOME —
+the desktop with no system tray, where this application's icon is registered and never drawn
+unless somebody else's AppIndicator bridge is installed. Run the engine there:
+
+```sh
+nazar-tray --headless
+```
+
+and the extension puts the bead and the binding window in the top bar, with every window in
+its menu. It reads the same `limits.json` and the same lock file, in the same order, and not
+a line of the contract changed to admit it. **On a desktop that already draws the tray icon,
+do not install it** — two indicators of one number are noise, not redundancy.
+
 **The tray is the only writer.** A face reads: it does not fetch, does not cache a "last good
 value" and does not notify, because a second source of threshold warnings would double every
-one of them. It is also why the face is in this repository rather than in one of its own — it
-is checked against `fixtures/limits.sample.json` in the same CI run as the code that writes
-that shape, so the two cannot drift.
+one of them. It is also why the small ones live in this repository rather than in one of
+their own — a face in `faces/` is checked against `fixtures/limits.sample.json` in the same
+CI run as the code that writes that shape, so the two cannot drift. The test for the other
+direction is whether a face has a store listing, a review queue and a version number of its
+own; one that does gets a repository, which is why nazar-gnome has one.
 
 The contract a face reads is [docs/limits-contract.md](docs/limits-contract.md), frozen at v1.
 
