@@ -62,16 +62,39 @@
 //! certain to reach the user whose tray does not work. It is claimed in `alerts.json` like
 //! every other thing this product says once.
 //!
-//! **A watcher that arrives later is not noticed, on purpose.** A user who installs the
-//! AppIndicator extension while the tray is running has to restart nazar-tray, and that is
-//! written in the README rather than solved: the extension itself needs the GNOME Shell
-//! session restarted on Wayland before it loads at all, so the session has already been
-//! through something far heavier than a restart of this process by the time the name
-//! appears. Watching `NameOwnerChanged` for a rare event whose cheaper path is a relog
-//! would be a subscription held for the life of every Linux process, to save a step the
-//! user has already taken.
+//! **A watcher that arrives later is noticed** — and that sentence used to say the opposite.
+//! T-WP-L2 decided against the subscription because a host appearing mid-run meant the
+//! AppIndicator extension being installed, which needs the GNOME session restarted on
+//! Wayland anyway: a subscription held for the life of every Linux process, to save a step
+//! the user had already taken. **The premise was wrong, and the machine that proved it is
+//! the one this was written on.** GNOME disables extensions while the session is locked, and
+//! the watcher's bus name goes with them: `org.kde.StatusNotifierWatcher` was on the bus at
+//! 00:03 on 2026-09-17 and gone at 00:25, with `gnome-shell` still on the same pid. So a
+//! tray started while the screen is locked — which is what autostart does to anybody who
+//! locks the machine and walks away — falls into engine mode and stays there until somebody
+//! restarts it by hand. That is not a rare event with a cheaper path; it is every morning.
+//!
+//! [`watch`] therefore holds one `NameOwnerChanged` subscription, narrowed by a match rule
+//! to that one bus name so the bus sends nothing else, and [`Presence`] is the whole of what
+//! this process does about it:
+//!
+//! ```text
+//!   arrives, no icon yet ─▶ build the icon — this is the run that started behind a lock
+//!   arrives, icon built  ─▶ nothing: libappindicator re-registers the item by itself
+//!   leaves               ─▶ note it. The icon object stays, the engine is untouched
+//!   --headless           ─▶ nothing, ever. The user asked for the engine
+//! ```
+//!
+//! **And none of it is worth a notification.** The one-off "no tray host" notice belongs to
+//! the start-up question and stays there ([`Mode::worth_a_notice`]): a watcher leaving is
+//! not a thing to interrupt somebody about, and a watcher arriving *is* an icon appearing,
+//! which says it better than a toast could. The alternative is a machine that says something
+//! about its tray every morning, to a user who just unlocked a working one.
 
 use tauri::AppHandle;
+// `try_state` and `run_on_main_thread`, which only the watcher thread needs.
+#[cfg(target_os = "linux")]
+use tauri::Manager;
 
 /// The `alerts.json` key under which the "no tray host" notice is claimed.
 ///
@@ -180,6 +203,17 @@ impl Mode {
         matches!(self, Mode::Tray)
     }
 
+    /// Whether this run has something to say to the user about the tray host.
+    ///
+    /// One expression, read by the two places that have to agree about it: [`announce`],
+    /// which shows the notice, and [`Presence::start`], which is the state machine's account
+    /// of the same run. **Only the mode nobody asked for qualifies** — `--headless` was
+    /// requested and a desktop that drew the icon has already said everything by drawing it.
+    #[must_use]
+    pub fn worth_a_notice(self) -> bool {
+        self == Mode::Engine(Reason::NoHost)
+    }
+
     /// One line for a terminal, in English like everything else on standard error.
     ///
     /// Printed at start-up and by `--print`, which is how somebody debugging a machine that
@@ -224,11 +258,248 @@ pub fn announce(app: &AppHandle, mode: Mode) {
     if !mode.draws_an_icon() {
         eprintln!("nazar-tray: {}", mode.status());
     }
-    if mode == Mode::Engine(Reason::NoHost) {
+    if mode.worth_a_notice() {
         crate::alerts::notice(app, HIDDEN_NOTICE, "tray.hidden.title", "tray.hidden.body");
         return;
     }
     announce_gnome_indicator(app, mode);
+}
+
+/// What this run has on screen, and what it may still grow — the whole watcher state
+/// machine, in three bits and no dependencies.
+///
+/// No bus, no Tauri, no clock, so "what happens when the watcher comes back for the third
+/// time" is answered by a test rather than by a lock screen at two in the morning.
+/// [`watch`] is the only thing that turns its answers into calls, and what it may answer is
+/// [`Step`].
+///
+/// **`built` never goes back to false, and that is the load-bearing part.** The icon is
+/// built once: libappindicator holds its own watch on the same bus name and re-registers
+/// the item when a host returns, so a second [`crate::tray::install`] would be a second
+/// `TrayIcon` under one id, a second menu, and a `QuotaRows` that no refresh writes to —
+/// two beads and one of them frozen. What a watcher leaving changes is `shown`, which costs
+/// nothing to be wrong about and keeps the log honest.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Presence {
+    /// Whether a `TrayIcon` exists in this process at all.
+    built: bool,
+    /// Whether a host is on the bus to draw it. `false` is the hidden state: nothing is
+    /// drawn, and the refresh loop, the lock and the notifications do not notice.
+    shown: bool,
+    /// `--headless`. A watcher arriving is not an argument against what the user asked for.
+    asked: bool,
+}
+
+/// What the bus said about `org.kde.StatusNotifierWatcher`.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watcher {
+    /// The name gained an owner: a host is listening.
+    Arrived,
+    /// The name lost its owner: a locked GNOME session, a crashed plasmashell, an extension
+    /// turned off.
+    Left,
+}
+
+/// What a change of presence is worth doing.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Build the tray icon. This run has not got one and now has somewhere to put it.
+    Draw,
+    /// Record that nothing is drawing the icon. One line on standard error and no GTK call:
+    /// see [`Presence`] for why the item is left alone.
+    Hide,
+    /// Show the one-off "no tray host" notice. Returned by [`Presence::start`] and by
+    /// nothing else, ever — the test below is what says so.
+    Tell,
+    /// Nothing to do.
+    Rest,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl Presence {
+    /// Where a run begins, and the one thing it says on the way in.
+    ///
+    /// The [`Step`] is [`announce`]'s, and the two agree because both ask
+    /// [`Mode::worth_a_notice`] rather than each deciding for itself.
+    #[must_use]
+    pub fn start(mode: Mode) -> (Self, Step) {
+        let drawn = mode.draws_an_icon();
+        let presence = Presence {
+            built: drawn,
+            shown: drawn,
+            asked: mode == Mode::Engine(Reason::Asked),
+        };
+        let step = if mode.worth_a_notice() {
+            Step::Tell
+        } else {
+            Step::Rest
+        };
+        (presence, step)
+    }
+
+    /// Whether there is any point subscribing to the bus for this run.
+    #[must_use]
+    pub fn listens(self) -> bool {
+        !self.asked
+    }
+
+    /// Take one change of presence and say what it is worth doing.
+    ///
+    /// Idempotent in both directions: a second `Arrived` while an icon is up and a second
+    /// `Left` while nothing is drawn are both [`Step::Rest`], because a bus can repeat
+    /// itself — a shell restarting emits the name twice — and a user should not get two
+    /// icons or two lines of log for one event.
+    pub fn step(&mut self, watcher: Watcher) -> Step {
+        if self.asked {
+            return Step::Rest;
+        }
+        match watcher {
+            Watcher::Arrived => {
+                self.shown = true;
+                if self.built {
+                    Step::Rest
+                } else {
+                    self.built = true;
+                    Step::Draw
+                }
+            }
+            Watcher::Left if self.shown => {
+                self.shown = false;
+                Step::Hide
+            }
+            Watcher::Left => Step::Rest,
+        }
+    }
+}
+
+/// Follow `org.kde.StatusNotifierWatcher` for the life of the process.
+///
+/// One thread, one match rule, and a blocking iterator that spends its life parked in
+/// `poll`: the bus filters on our behalf, so nothing is delivered to this process unless
+/// that one name changes hands. Called from the setup, after the tray has or has not been
+/// built — [`Presence::start`] is handed the same [`Mode`] the icon was built from, so the
+/// thread starts out knowing what is on screen.
+///
+/// **Every failure is silence rather than a dead process.** No session bus, a bus that
+/// refuses the match rule, a signal whose body will not deserialise: each of them leaves the
+/// run exactly as T-WP-L2 left it, which is a working engine with whatever icon it started
+/// with. A tray must not fall over because a subscription could not be held.
+#[cfg(target_os = "linux")]
+pub fn watch(app: &AppHandle, mode: Mode) {
+    let (presence, _told_by_announce) = Presence::start(mode);
+    if !presence.listens() {
+        return;
+    }
+    let app = app.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("nazar-watcher".to_owned())
+        .spawn(move || follow(&app, presence))
+    {
+        eprintln!("nazar-tray: could not watch for a tray host: {error}");
+    }
+}
+
+/// Windows and macOS have their tray inside the shell: it is there before this process
+/// starts and it is there after, so there is no name to follow and nothing to change.
+#[cfg(not(target_os = "linux"))]
+pub fn watch(_app: &AppHandle, _mode: Mode) {}
+
+/// The subscription itself, on its own thread.
+#[cfg(target_os = "linux")]
+fn follow(app: &AppHandle, mut presence: Presence) {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        eprintln!("nazar-tray: no session bus; a tray host arriving later will not be seen");
+        return;
+    };
+    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+        return;
+    };
+    // Arg 0 of `NameOwnerChanged` is the name that changed hands, so this match rule is the
+    // difference between one wake-up a day and one per service the session starts.
+    let signals = match dbus.receive_name_owner_changed_with_args(&[(0, WATCHER)]) {
+        Ok(signals) => signals,
+        Err(error) => {
+            eprintln!("nazar-tray: could not watch for a tray host: {error}");
+            return;
+        }
+    };
+
+    // The rule is on the bus now, so anything that happens from here is ahead of us rather
+    // than lost. What is behind us is the gap between `mode`'s question and this line — a
+    // few milliseconds in which a session can finish unlocking — so the question is asked
+    // once more, against the same connection, and the answer goes through the same machine.
+    if has_owner(&dbus) {
+        act(app, &mut presence, Watcher::Arrived);
+    }
+
+    for signal in signals {
+        let Ok(args) = signal.args() else {
+            continue;
+        };
+        // An empty new owner is how the bus spells "this name is gone".
+        let watcher = if args.new_owner().is_some() {
+            Watcher::Arrived
+        } else {
+            Watcher::Left
+        };
+        act(app, &mut presence, watcher);
+    }
+}
+
+/// Step the machine and do what it says.
+#[cfg(target_os = "linux")]
+fn act(app: &AppHandle, presence: &mut Presence, watcher: Watcher) {
+    match presence.step(watcher) {
+        Step::Draw => draw(app),
+        Step::Hide => eprintln!(
+            "nazar-tray: the StatusNotifierWatcher left the session bus; nothing is drawing \
+             the icon, and limits.json is still written"
+        ),
+        // `Tell` is the start-up notice and cannot come from an event; `Rest` is the common
+        // case and says nothing, because a log line per unlock is its own kind of noise.
+        Step::Tell | Step::Rest => {}
+    }
+}
+
+/// Build the icon, on the thread GTK belongs to.
+///
+/// The bus thread decides and the main thread draws: everything under
+/// [`crate::tray::install`] ends in a GTK call, and `tray-icon`'s GTK backend is not a thing
+/// to touch from a thread that is not the one GTK was initialised on.
+#[cfg(target_os = "linux")]
+fn draw(app: &AppHandle) {
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        // Torn down between the signal and the main thread's next turn. `install` asks for
+        // the state rather than trying for it, so this is checked rather than risked.
+        let (Some(strings), Some(_)) = (
+            handle.try_state::<std::sync::Arc<crate::i18n::Strings>>(),
+            handle.try_state::<crate::state::AppState>(),
+        ) else {
+            return;
+        };
+        let strings = strings.inner().clone();
+        if let Err(error) = crate::tray::install(&handle, &strings) {
+            eprintln!("nazar-tray: a tray host arrived and the icon could not be built: {error}");
+            return;
+        }
+        crate::tray::refresh(&handle, &strings.catalog());
+        eprintln!("nazar-tray: a StatusNotifierWatcher arrived; the tray icon is up");
+    }) {
+        eprintln!("nazar-tray: could not reach the main thread to build the icon: {error}");
+    }
+}
+
+/// Whether the watcher's name has an owner, asked of a proxy somebody else opened.
+#[cfg(target_os = "linux")]
+fn has_owner(dbus: &zbus::blocking::fdo::DBusProxy<'_>) -> bool {
+    let Ok(name) = zbus::names::BusName::try_from(WATCHER) else {
+        return false;
+    };
+    dbus.name_has_owner(name).unwrap_or(false)
 }
 
 /// On GNOME, once: the numbers can live in the panel, where the shell places them.
@@ -339,10 +610,7 @@ fn tray_host_present() -> bool {
     let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
         return false;
     };
-    let Ok(name) = zbus::names::BusName::try_from(WATCHER) else {
-        return false;
-    };
-    dbus.name_has_owner(name).unwrap_or(false)
+    has_owner(&dbus)
 }
 
 /// Windows and macOS both have a tray that is part of the shell, so there is nothing to
@@ -455,6 +723,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every event a bus can deliver, in the order a locked GNOME session delivers them.
+    ///
+    /// Six modes of failure in one sequence, and the machine is small enough that all of
+    /// them fit: the autostarted run that started behind a lock screen, the unlock, the
+    /// second lock, the shell restart that emits the name twice, and the `--headless` run
+    /// that must ignore the lot.
+    const A_MORNING: [Watcher; 6] = [
+        Watcher::Arrived,
+        Watcher::Left,
+        Watcher::Left,
+        Watcher::Arrived,
+        Watcher::Arrived,
+        Watcher::Left,
+    ];
+
+    /// The package: a run that started with no host gets an icon when one turns up.
+    ///
+    /// This is the autostart-into-a-lock-screen case measured on 2026-09-17. Before
+    /// T-WP-L10 the first line was the whole of the run's life.
+    #[test]
+    fn a_run_that_started_behind_a_lock_screen_draws_its_icon_when_the_screen_comes_back() {
+        let (mut presence, start) = Presence::start(Mode::Engine(Reason::NoHost));
+        assert_eq!(start, Step::Tell, "the machine had nowhere to put an icon");
+        assert!(
+            presence.listens(),
+            "and nothing else can change that but the bus"
+        );
+
+        assert_eq!(presence.step(Watcher::Arrived), Step::Draw);
+        assert_eq!(
+            presence.step(Watcher::Left),
+            Step::Hide,
+            "locked again: the icon has nowhere to be drawn and the engine keeps going"
+        );
+        assert_eq!(
+            presence.step(Watcher::Arrived),
+            Step::Rest,
+            "the icon already exists; libappindicator re-registers it by itself"
+        );
+    }
+
+    /// An icon is built once per run, whatever the bus does afterwards.
+    ///
+    /// Two `TrayIcon`s under one id would be two beads, one of them frozen: `QuotaRows` is
+    /// managed state and the second `install` cannot replace it.
+    #[test]
+    fn an_icon_is_built_once_and_a_repeated_signal_is_not_a_second_one() {
+        let (mut presence, start) = Presence::start(Mode::Tray);
+        assert_eq!(start, Step::Rest, "an icon that was drawn has said it all");
+
+        let steps: Vec<Step> = A_MORNING
+            .iter()
+            .map(|watcher| presence.step(*watcher))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                Step::Rest, // arrived, and one was already drawn
+                Step::Hide, // left
+                Step::Rest, // left again: the bus repeating itself is not a second event
+                Step::Rest, // back, and the icon we have is the icon it draws
+                Step::Rest, // back again
+                Step::Hide, // and gone
+            ]
+        );
+        assert_eq!(
+            steps.iter().filter(|step| **step == Step::Draw).count(),
+            0,
+            "the icon was built before the first signal arrived"
+        );
+    }
+
+    /// `--headless` is a decision, and the bus does not get a vote on it.
+    #[test]
+    fn a_headless_run_never_grows_an_icon() {
+        let (mut presence, start) = Presence::start(Mode::Engine(Reason::Asked));
+        assert_eq!(start, Step::Rest, "the user asked for this and knows");
+        assert!(
+            !presence.listens(),
+            "and there is nothing to subscribe to the bus for"
+        );
+        for watcher in A_MORNING {
+            assert_eq!(presence.step(watcher), Step::Rest);
+        }
+    }
+
+    /// The notification counter: once per run at most, and only for the run that never had
+    /// a host to begin with.
+    ///
+    /// **The half that matters is the zero.** A desktop notification every time a GNOME
+    /// session is unlocked would be this application interrupting somebody to tell them
+    /// about a tray that works — which is the thing that makes the whole subscription worth
+    /// less than nothing.
+    #[test]
+    fn the_user_hears_about_a_missing_host_once_and_never_because_one_came_back() {
+        for mode in [
+            Mode::Tray,
+            Mode::Engine(Reason::NoHost),
+            Mode::Engine(Reason::Asked),
+        ] {
+            let (mut presence, start) = Presence::start(mode);
+            let mut told = usize::from(start == Step::Tell);
+            for watcher in A_MORNING {
+                told += usize::from(presence.step(watcher) == Step::Tell);
+            }
+            assert_eq!(
+                told,
+                usize::from(mode.worth_a_notice()),
+                "{mode:?} was told {told} times about its tray host"
+            );
+        }
+    }
+
+    /// Who may say it: one expression, read by the notice and by the machine alike.
+    #[test]
+    fn only_a_run_nobody_asked_for_is_worth_interrupting() {
+        assert!(Mode::Engine(Reason::NoHost).worth_a_notice());
+        assert!(!Mode::Engine(Reason::Asked).worth_a_notice());
+        assert!(!Mode::Tray.worth_a_notice());
     }
 
     /// Three modes, three different sentences, and none of them empty — the line is what a

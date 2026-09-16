@@ -368,12 +368,14 @@ explained somewhere in this repository.
   goes nowhere: with no host it says so once in a desktop notification and **keeps running as
   the engine** — the refresh loop, the advisory lock, the threshold notifications and
   `~/.nazar/limits.json` are exactly what they are with an icon. `--headless` asks for that
-  mode on purpose. Two things it does not do. It does not notice a watcher that appears
-  later, so install the extension and then restart nazar-tray — the extension needs the
-  session restarted on Wayland anyway, which is the heavier half of that step. And with no
-  icon there is nothing to click, so the panel opens only by running `nazar-tray` a second
-  time, which asks the instance that holds the lock to show it — wherever the compositor puts
-  it, since a Wayland client may not place its own window.
+  mode on purpose. **A host that turns up later is noticed**: nazar-tray keeps one
+  `NameOwnerChanged` subscription on that bus name and builds the icon when one appears. So a
+  tray that started while the screen was locked — GNOME switches its extensions off there and
+  the watcher's name goes with them — draws its icon as soon as the session is unlocked, with
+  no restart and no second notification. One thing it still does not do: with no icon there is
+  nothing to click, so the panel opens only by running `nazar-tray` a second time, which asks
+  the instance that holds the lock to show it — wherever the compositor puts it, since a
+  Wayland client may not place its own window.
 - **On Linux the menu is the tray, and the panel is an ordinary window.** `tray-icon`'s GTK
   backend sends no click event, reports no icon rectangle and shows no tooltip — the left
   button belongs to libappindicator, which opens the menu — so the menu is where the numbers

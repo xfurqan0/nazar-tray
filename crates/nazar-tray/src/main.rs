@@ -298,6 +298,12 @@ fn main() {
                 tray::install(app.handle(), &setup_strings)?;
                 tray::refresh(app.handle(), &setup_strings.catalog());
             }
+            // And the answer is allowed to change after this line. GNOME disables its
+            // extensions while the session is locked and the watcher's bus name goes with
+            // them, so a tray that autostarted behind a lock screen used to run blind until
+            // somebody restarted it by hand. T-WP-L10 gives it an icon when the screen comes
+            // back: one `NameOwnerChanged` subscription, Linux only, nothing for `--headless`.
+            desktop::watch(app.handle(), mode);
 
             if let Some(scale) = options.scale {
                 panel::apply_scale(app.handle(), scale);
