@@ -1852,3 +1852,62 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   Windows-first paragraphs are public text about what this product is; the tag is one-way. Both
   are gates, so the acceptance criterion — *a tag produces a draft carrying all three files* —
   stays unproven by construction until somebody pushes one.
+- 2026-09-16 22:22 — **`cargo deny check` is green, and three of the ten errors were not the
+  three that were reported.** The package T-WP26's log entry said was worth writing. The lock
+  file moved by two lines: `rustls 0.23.43 -> 0.23.45`, which closes RUSTSEC-2026-0285 — TLS
+  1.3 handshake messages accepted across encryption-level boundaries — and is the Dependabot
+  alert. `cargo update -p rustls` touched nothing else, and `THIRD-PARTY-NOTICES.md` changed
+  by the same one line.
+  **The two licence gates disagreed, and the script was right.** `target-lexicon` is
+  `Apache-2.0 WITH LLVM-exception` and offers nothing else; it is a build-time dependency of
+  the gtk3 `-sys` crates through cfg-expr and system-deps, so it is not droppable, and
+  `target-lexicon 0.13` carries the same licence, so it is not upgradable out of the problem
+  either. An SPDX exception is an *additional permission* — this one waives Apache-2.0's
+  attribution requirement for object code — so the base licence decides, which is what
+  `check-licenses.mjs` already did and what cargo-deny, matching whole expressions, could not
+  do without being told. `deny.toml` now spells the expression out.
+  **Aligning them also closed a hole in the script.** Its rule was "drop any word ending in
+  `-exception` and judge the base", and measured against `Apache-2.0 WITH Commons-Clause` —
+  a rider that is not an SPDX exception and that takes commercial use *away* — the old rule
+  returned `true`. It now checks the name after `WITH` against a set holding exactly
+  `LLVM-exception`, which is the same one expression `deny.toml` allows. Nothing in the tree
+  changed verdict: 545 dependencies, all permissive.
+  **The wildcard errors nobody had reported.** `bans` was failing on
+  `nazar-core = { path = "../nazar-core" }` in both binaries. That version is not missing, it
+  is the workspace's, and cargo-deny forgives a wildcard path dependency in a crate that is
+  not published — so `nazar-statusline` and `nazar-tray` now say `publish = false`, which is
+  simply true: crates.io does not accept a path dependency. `nazar-core` is left publishable.
+  **Six unmaintained crates are ignored, dated, and neither chain is ours to fix.** (A
+  seventh ignore joins them below, for a different reason.) Asked of
+  each: does an upgrade drop it? The five `unic-*` crates arrive as
+  urlpattern 0.3 -> tauri-utils -> tauri, and **urlpattern 0.6 replaced unic with
+  `icu_properties`** — the crate the advisories themselves recommend — but tauri-utils 2.9.3
+  asks for `urlpattern = "0.3"`, so no `cargo update` reaches it. `proc-macro-error` arrives
+  as glib-macros 0.18 -> gtk 0.18 -> libappindicator -> tray-icon -> tauri, and **glib-macros
+  0.19 dropped it**; the chain is stuck one level higher, because libappindicator 0.9.0 is the
+  newest release that exists and it asks for `gtk ^0.18`. Both answers were read off the
+  registry rather than assumed. Each ignore carries its RUSTSEC id and its reason, and the
+  section carries a review date — 2026-12-16, or whenever `cargo update` moves `tauri` or
+  `tray-icon`.
+  **And the alert was never the one that was reported.** The T-WP26 entry above guesses that
+  the Dependabot "1 moderate" is RUSTSEC-2026-0285. It is not: the repository has exactly one
+  open alert, #1, raised 2026-09-09, and it is **GHSA-wrw7-89jp-8q8g against `glib` 0.18.5** —
+  `VariantStrIter` passing `&p` where the C function wanted `&mut p`, so iterating a GVariant
+  string array could dereference null. `cargo deny check` had never said a word about it,
+  because cargo-deny's `unsound` scope defaults to something narrower than "a dependency of a
+  dependency", which is what every crate in this tree is. A gate that is green because it is
+  not looking is worse than one that is red, so `unsound = "all"` is now set — it reproduces
+  the alert exactly — and the advisory is ignored explicitly beside the other six. The fix is
+  glib 0.20 and it is the same dead end: libappindicator 0.9.0 pins `gtk ^0.18`, so reaching
+  it means a different tray backend on Linux, not a dependency bump. Two measurements narrow
+  it and neither is a fix: `glib` is absent from the Windows graph entirely
+  (`cargo tree -i glib --target x86_64-pc-windows-msvc` prints nothing), and the five affected
+  functions are called by nothing — the name does not occur in any vendored source outside
+  glib itself. **There are no open pull requests, Dependabot or otherwise, and no
+  `.github/dependabot.yml`**: the alerts are raised, and nothing is opening update branches.
+  **Ten errors to none, plus one the gate could not see.** The forty warnings are unchanged
+  and are policy: thirty-eight duplicate-version notices (`multiple-versions = "warn"`) and
+  two allowances — `BSL-1.0`, `Unicode-DFS-2016` — for licences no current dependency carries.
+  692 tests, fmt and clippy clean, `check-licenses.mjs` green, notices current. CI does not
+  run `cargo deny`; it still does not, and that is the next question rather than this
+  package's answer.

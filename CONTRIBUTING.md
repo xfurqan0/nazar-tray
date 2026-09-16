@@ -57,9 +57,15 @@ node scripts/build-installer.mjs
 - **No invented numbers.** The binding window is the highest percentage a provider reports.
   Nothing is estimated, extrapolated, or derived from a flag the source does not send.
 - **Permissive dependencies only.** `scripts/check-licenses.mjs` fails the build on anything
-  that is not, and `deny.toml` holds the same policy for `cargo deny`. A copyleft dependency
-  in an MIT product is a rewrite, not a paperwork problem. Adding a dependency also means
-  running `node scripts/third-party-notices.mjs`; CI checks the result is current.
+  that is not, and `deny.toml` holds the same policy for `cargo deny`, down to the one
+  `WITH` clause either of them accepts. A copyleft dependency in an MIT product is a rewrite,
+  not a paperwork problem. Adding a dependency also means running
+  `node scripts/third-party-notices.mjs`; CI checks the result is current.
+- **`cargo deny check` is green, and is the gate CI does not run.** It covers what the script
+  cannot — advisories, yanked crates, duplicate versions, unexpected registries — and needs
+  `cargo install cargo-deny --locked`. Run it when you add or update a dependency. Every
+  entry in its `ignore` list carries a RUSTSEC id, the reason, and a review date; adding one
+  without all three is how a red gate becomes a green lie.
 - **The default build makes no network call.** The one HTTP client is behind the
   `detailed-windows` feature and a run-time switch, and CI builds without the feature to prove
   the switch is real. A dependency that opens a socket outside that feature does not go in.

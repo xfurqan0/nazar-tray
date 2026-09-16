@@ -45,26 +45,47 @@ const ALLOWED = new Set([
 ]);
 
 /**
+ * SPDX exceptions this project accepts, by name.
+ *
+ * An exception is an *additional permission* granted on top of the licence it modifies, so
+ * the base licence is what decides whether an expression passes. The LLVM exception waives
+ * Apache-2.0's attribution requirement for object code, which is a permission this project
+ * does not need and cannot be harmed by. Six crates carry it, five of them offering plain
+ * MIT beside it; `target-lexicon`, a build-time dependency of the gtk3 `-sys` crates through
+ * cfg-expr and system-deps, offers nothing else, so it is the one that makes this set
+ * necessary rather than decorative.
+ *
+ * The set exists because "anything after WITH" is not the same rule. A rider bolted on to
+ * an otherwise permissive licence can take permission away instead of granting it — the
+ * Commons Clause is the one that does the rounds — and it is not an SPDX exception at all.
+ * Naming the ones we accept is also what makes this gate and `deny.toml` say the same
+ * thing: cargo-deny matches the whole expression, and its `allow` list spells out
+ * `Apache-2.0 WITH LLVM-exception` and no other `WITH` clause.
+ */
+const ALLOWED_EXCEPTIONS = new Set(["LLVM-exception"]);
+
+/**
  * Evaluate an SPDX expression against the allowlist.
  *
  * `A OR B` passes when either side does, because the user picks. `A AND B` needs both.
- * Exceptions (`Apache-2.0 WITH LLVM-exception`) narrow a licence, so the base decides.
+ * `A WITH E` is one term rather than two: it passes as `A` when `E` is an exception this
+ * project accepts, and as nothing at all when it is not.
  */
 function isAllowed(expression) {
   if (!expression) return false;
   const normalised = expression.replace(/\//g, " OR ").replace(/[()]/g, " ");
+  const resolved = normalised.replace(/(\S+)\s+WITH\s+(\S+)/gi, (_, license, exception) =>
+    ALLOWED_EXCEPTIONS.has(exception) ? license : "NOASSERTION",
+  );
   const terms = (clause) =>
-    clause
-      .split(/\s+/)
-      .filter((word) => word && !["OR", "AND", "WITH"].includes(word.toUpperCase()))
-      .filter((word) => !word.endsWith("-exception"));
+    clause.split(/\s+/).filter((word) => word && !["OR", "AND"].includes(word.toUpperCase()));
 
-  if (/\sAND\s/i.test(normalised)) {
-    return normalised
+  if (/\sAND\s/i.test(resolved)) {
+    return resolved
       .split(/\sAND\s/i)
       .every((clause) => terms(clause).some((term) => ALLOWED.has(term)));
   }
-  return terms(normalised).some((term) => ALLOWED.has(term));
+  return terms(resolved).some((term) => ALLOWED.has(term));
 }
 
 function cargoDependencies() {

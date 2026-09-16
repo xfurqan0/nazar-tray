@@ -8,6 +8,12 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "System-tray app showing Claude Code and Codex quota windows."
+# A binary with a path dependency, which crates.io cannot take: the registry rejects
+# `{ path = ... }` without a version, and pinning one here would be a second version
+# number to bump at every release. Saying so is also what lets `allow-wildcard-paths`
+# in deny.toml apply — cargo-deny only forgives a wildcard path dependency in a crate
+# that is not published.
+publish = false
 
 [lints.rust]
 missing_docs = "warn"

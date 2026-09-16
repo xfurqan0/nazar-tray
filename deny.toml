@@ -27,6 +27,15 @@ version = 2
 allow = [
     "0BSD",
     "Apache-2.0",
+    # The LLVM exception, spelled out because cargo-deny matches the whole expression
+    # rather than the licence under it. An SPDX exception only ever *grants* permission —
+    # this one waives Apache-2.0's attribution requirement for object code — so the base
+    # licence decides whether it is acceptable, and Apache-2.0 already is. Six crates in
+    # this tree carry it; five offer plain MIT beside it and would pass either way, but
+    # `target-lexicon` (a build-time dependency of the gtk3 `-sys` crates, through
+    # cfg-expr and system-deps) offers nothing else. `scripts/check-licenses.mjs` accepts
+    # the same expression and no other `WITH` clause.
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
@@ -51,6 +60,12 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A wildcard is a version that was never pinned, and that is worth denying — but the only
+# wildcards here are `nazar-core = { path = "../nazar-core" }` in the two binaries, where
+# the version is not missing, it is the workspace's. cargo-deny forgives that only for a
+# crate marked `publish = false`, which both binaries now are, and which is simply true:
+# crates.io does not accept a path dependency.
+allow-wildcard-paths = true
 # Nothing here yet. A crate that reads credentials or opens a socket without the product
 # asking it to belongs in this list with the reason written beside it.
 deny = []
@@ -58,7 +73,58 @@ deny = []
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# `unsound` defaults to a scope that does not include a dependency of a dependency, which
+# is every crate in this list. Left at the default, this file was green while GitHub had an
+# open Dependabot alert against `glib` — a gate that agrees with nothing is worse than a
+# gate that is red, so the scope is widened and the advisory is ignored explicitly, below,
+# with its reason. `unmaintained` is already "all" by default and stays there.
+unsound = "all"
+# Reviewed 2026-09-16. Nothing below is a vulnerability: a vulnerability is fixed or the
+# dependency goes, and nothing is ignored here on the grounds that it looked hard. All
+# seven sit under Tauri's gtk3 tree, none is reachable from this workspace's own code, and
+# each was asked the same question — does an upgrade drop it? — with the answer measured
+# against the registry rather than assumed. Every answer points upstream, so the ignores
+# are dated and are meant to be re-read, not inherited.
+#
+# Next review: 2026-12-16, or whenever `cargo update` moves `tauri` or `tray-icon` — the
+# two packages that would carry any of these fixes.
+ignore = [
+    # RUSTSEC-2025-0075 / -0080 / -0081 / -0098 / -0100: the five `unic-*` crates, which
+    # the rust-unic project retired wholesale in 2025. They arrive as
+    # urlpattern 0.3 -> tauri-utils -> tauri, and urlpattern is a URL matcher used by
+    # Tauri's capability parsing at build time. The upgrade exists and is not ours to
+    # take: urlpattern 0.6 replaced unic with `icu_properties`, the very crate the
+    # advisories recommend, but tauri-utils 2.9.3 asks for `urlpattern = "0.3"`, so no
+    # `cargo update` reaches it — only a Tauri release that bumps the requirement.
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range, via urlpattern 0.3 -> tauri-utils; fixed upstream in urlpattern 0.6, which tauri does not depend on yet" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common, same chain and same fix" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property, same chain and same fix" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version, same chain and same fix" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident, same chain and same fix" },
+    # RUSTSEC-2024-0370: proc-macro-error, a syn 1.x macro helper whose author stopped
+    # answering. It is a proc macro — it runs during the build and is in no shipped
+    # binary. It arrives as glib-macros 0.18 -> glib -> gtk 0.18 -> libappindicator ->
+    # tray-icon -> tauri, and glib-macros dropped it in 0.19. The chain is stuck one
+    # level above that: libappindicator 0.9.0 is the newest release there is and it asks
+    # for `gtk ^0.18`, so nothing in this tree can move to glib 0.19 until
+    # libappindicator does.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, build-time only, via glib-macros 0.18 -> gtk3 -> libappindicator -> tray-icon; glib-macros 0.19 dropped it but libappindicator 0.9.0 pins gtk 0.18" },
+    # RUSTSEC-2024-0429 = GHSA-wrw7-89jp-8q8g, the one open Dependabot alert on this
+    # repository (raised 2026-09-09). `glib::VariantStrIter` passed `&p` where the C
+    # function wanted `&mut p`, so iterating a GVariant string array could dereference a
+    # null pointer. Fixed in glib 0.20, and the same dead end as the line above: gtk3-rs
+    # ended at 0.18, libappindicator 0.9.0 is the newest release there is and it asks for
+    # `gtk ^0.18`, so nothing reaches glib 0.20 without leaving the gtk3 stack — which is a
+    # different tray backend on Linux, not a dependency bump.
+    #
+    # Two things narrow it, both measured rather than argued. `glib` is not in the Windows
+    # dependency graph at all (`cargo tree -i glib --target x86_64-pc-windows-msvc` prints
+    # nothing), so the installer is untouched. And the advisory names five functions —
+    # `VariantStrIter::next`, `nth`, `last`, `next_back`, `nth_back` — which nothing in the
+    # resolved tree calls: the string does not appear in any vendored source outside glib
+    # itself. It stays listed, and dated, because neither fact is a fix.
+    { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter unsoundness, Linux-only and uncalled in this tree; fixed in glib 0.20, unreachable while libappindicator 0.9.0 pins gtk 0.18" },
+]
 
 [sources]
 unknown-registry = "deny"
