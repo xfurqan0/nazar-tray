@@ -220,6 +220,15 @@ dpkg-deb -I dist/nazar-tray_*_amd64.deb    # control: Maintainer, Depends
 dpkg-deb -c dist/nazar-tray_*_amd64.deb    # contents
 ```
 
+`dpkg-deb` is a Debian tool and a Fedora machine does not have it. A `.deb` is an
+`ar` archive, so `binutils` is enough:
+
+```bash
+mkdir -p deb && cd deb && ar x ../dist/nazar-tray_*_amd64.deb
+tar xf control.tar.gz && cat control
+tar tf data.tar.gz
+```
+
 Four things must be true of both, and each of them is a release stopper:
 
 - **The appindicator dependency is the Ayatana one** — `libayatana-appindicator3-1`
