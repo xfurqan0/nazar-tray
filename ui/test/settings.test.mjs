@@ -45,6 +45,10 @@ const DEFAULTS = {
   detailedWindows: false,
   usageCountLikeClaudeCode: false,
   usageFillHistoryFromStats: false,
+  // Linux's two, which every build still round-trips: the rows are hidden elsewhere and
+  // the values are not, so a Windows Save cannot clear what a Linux session switched on.
+  trayShowLabel: true,
+  windowX11Positioning: false,
 };
 
 const LANGUAGES = ["en", "tr"];
@@ -63,8 +67,49 @@ test("a form drawn from the settings and read straight back is the same settings
     detailedWindows: true,
     usageCountLikeClaudeCode: true,
     usageFillHistoryFromStats: true,
+    trayShowLabel: false,
+    windowX11Positioning: true,
   };
   assert.deepEqual(toForm(toValues(chosen)), chosen);
+});
+
+test("the two shell switches are on the page, explained, and hidden off Linux", () => {
+  // The rows exist in the markup on every platform — the panel is one bundle — and the
+  // fieldset around them starts `hidden`, so a build whose Rust side says `desktopSwitches`
+  // is false never draws them at all. That is `desktop::DESKTOP_SWITCHES`, the mirror of
+  // the rule that keeps the Windows overflow hint off a Linux panel.
+  const html = read("ui/src/index.html");
+  assert.match(html, /<fieldset[^>]*data-desktop-switches[^>]*hidden/);
+  for (const field of ["trayShowLabel", "windowX11Positioning"]) {
+    assert.ok(html.includes(`data-field="${field}"`), `the form has no ${field} control`);
+  }
+  for (const key of [
+    "settings.section.desktop",
+    "settings.tray.showLabel",
+    "settings.tray.showLabel.help",
+    "settings.window.x11Positioning",
+    "settings.window.x11Positioning.help",
+  ]) {
+    assert.ok(html.includes(`data-i18n="${key}"`), `${key} is not named in the markup`);
+    assert.ok(english[key], `${key} is not in the English catalogue`);
+  }
+  // The cost is in the sentence rather than only in the README: the whole application moves
+  // to XWayland and the change waits for a restart.
+  assert.match(english["settings.window.x11Positioning.help"], /XWayland/);
+  assert.match(english["settings.window.x11Positioning.help"], /next time/);
+});
+
+test("the gear is the door to the settings, and it is the only one in the header", () => {
+  // The maintainer asked for a gear rather than the footer word it replaces; the word is
+  // gone, so there is exactly one control that opens the page and it is the icon.
+  const html = read("ui/src/index.html");
+  const openers = [...html.matchAll(/data-open-settings/g)];
+  assert.equal(openers.length, 1, "there should be exactly one control that opens settings");
+  assert.match(html, /<button[^>]*class="gear"[^>]*data-open-settings/);
+  // The icon carries no word, so its accessible name comes from the catalogue like every
+  // other string on the page.
+  assert.match(html, /data-i18n-label="settings.title"/);
+  assert.ok(english["settings.title"], "settings.title is not in the English catalogue");
 });
 
 test("the two usage switches survive the round trip on their own", () => {

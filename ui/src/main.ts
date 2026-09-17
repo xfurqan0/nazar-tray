@@ -193,6 +193,8 @@ const autostartBox = document.querySelector<HTMLInputElement>("[data-autostart]"
 const autostartError = document.querySelector<HTMLElement>("[data-autostart-error]");
 const hintResetNote = document.querySelector<HTMLElement>("[data-hint-reset-note]");
 const hintResetRow = document.querySelector<HTMLElement>("[data-hint-reset-row]");
+const desktopSwitches = document.querySelector<HTMLElement>("[data-desktop-switches]");
+const gear = document.querySelector<HTMLElement>(".gear[data-open-settings]");
 const autostartLabel = document.querySelector<HTMLElement>("[data-autostart-label]");
 const suggestionBox = document.querySelector<HTMLElement>("[data-suggestion]");
 
@@ -333,6 +335,15 @@ function applyLanguage(): void {
   document
     .querySelector<SVGElement>("[data-bead] svg")
     ?.setAttribute("aria-label", t("panel.bead.alt"));
+  // A control whose face is a drawing rather than a word: the key fills the accessible name
+  // and the hover title instead of the text content, so the icon stays an icon and the
+  // sentence still comes from the catalogue.
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-label]")) {
+    const key = node.dataset["i18nLabel"];
+    if (!key) continue;
+    node.setAttribute("aria-label", t(key));
+    node.title = t(key);
+  }
   paintAutostartLabel();
   if (versionLabel) versionLabel.textContent = __APP_VERSION__;
   for (const node of document.querySelectorAll<HTMLElement>("[data-link]")) {
@@ -582,6 +593,9 @@ function reportHeight(): void {
 function showView(name: ViewName): void {
   shown = name;
   for (const view of views) view.hidden = view.dataset["view"] !== name;
+  // A gear that opens the page already on screen is a control that does nothing, and the
+  // settings and usage views have a *Back* of their own in the same corner.
+  if (gear) gear.hidden = name !== "quota";
   // The window is measured from whatever is on screen, so switching views has to be
   // followed by a measurement or the settings page opens inside a panel-sized window.
   lastHeight = 0;
@@ -607,6 +621,19 @@ function text(name: string): string {
 function checked(name: string): boolean {
   const control = field(name);
   return control instanceof HTMLInputElement ? control.checked : false;
+}
+
+/** A checkbox's state, or what it was before when this build does not draw the row. */
+function checkedOr(name: string, fallback: boolean): boolean {
+  const control = field(name);
+  return control instanceof HTMLInputElement && !control.disabled && isDrawn(control)
+    ? control.checked
+    : fallback;
+}
+
+/** Whether a control is on a part of the page this build actually shows. */
+function isDrawn(control: HTMLElement): boolean {
+  return control.closest("[hidden]") === null;
 }
 
 /** Put the working copy into the controls. */
@@ -652,6 +679,9 @@ function paintForm(): void {
   // with no overflow flyout there is no tip to bring back, so the button that offers to is
   // not a control, it is a promise nobody can keep.
   paintAutostartLabel();
+  // And the same rule again for the two rows that are only a Linux shell's business: the
+  // label beside the bead, and the panel through XWayland.
+  if (desktopSwitches) desktopSwitches.hidden = !settings.desktopSwitches;
   if (hintResetRow) hintResetRow.hidden = !ui.hintAvailable;
   if (hintResetNote) hintResetNote.hidden = !ui.hintAvailable || settings.firstRunHintDismissed;
   showProblems(validate(values, settings.languages));
@@ -682,6 +712,11 @@ function readForm(): void {
     detailedWindows: checked("detailedWindows"),
     usageCountLikeClaudeCode: checked("usageCountLikeClaudeCode"),
     usageFillHistoryFromStats: checked("usageFillHistoryFromStats"),
+    // Read back even where the rows are hidden: the form is a whole document, and a
+    // checkbox nobody drew would otherwise submit `false` and switch off, on a Windows
+    // machine, a label a Linux machine had turned on with the same settings file.
+    trayShowLabel: checkedOr("trayShowLabel", values.trayShowLabel),
+    windowX11Positioning: checkedOr("windowX11Positioning", values.windowX11Positioning),
   };
   if (quietTimes) quietTimes.dataset["disabled"] = String(!values.quietHoursEnabled);
 }
@@ -1848,6 +1883,14 @@ document.querySelector("[data-suggestion-dismiss]")?.addEventListener("click", (
 // The tray menu's `Settings` cannot open a view inside a webview, so it asks for one.
 void listen("open-settings", () => {
   void loadSettings().then(() => showView("settings"));
+});
+
+// And its `Usage history`, added in T-WP-L12 — the same handler the footer button runs, so
+// the menu and the panel cannot open the view in two different states.
+void listen("open-usage", () => {
+  showView("usage");
+  usage = closeDetail(usage);
+  void askUsage();
 });
 
 // Esc closes the panel — except on the settings and usage pages, where it goes back one step

@@ -233,6 +233,7 @@ pub fn resize(app: &AppHandle, css_height: f64) {
         return;
     }
     let _ = window.set_size(wanted);
+    pin(&window, wanted);
 
     // The panel is anchored above the cursor, so growing it downwards would push it over
     // the taskbar. Re-placing keeps the bottom edge where the user pointed. Where nothing
@@ -242,6 +243,37 @@ pub fn resize(app: &AppHandle, css_height: f64) {
         if let Some(anchor) = state.anchor() {
             let _ = place(&window, anchor);
         }
+    }
+}
+
+/// Hold the window at the size it was just given, because GTK will not otherwise.
+///
+/// **A measurement, not a precaution.** `tauri.conf.json` says `resizable: false`, and on
+/// GTK that is not a hint: `tao 0.35.3` sends every `set_size` to `gtk_window_resize`, which
+/// is documented to do nothing on a window whose resizable flag is off. The window is then
+/// sized by its *size request* instead, and the size request of a window whose only child is
+/// a `WebKitWebView` is the natural height of the document — so on 2026-09-17 the panel on a
+/// Fedora 44 session was **1105 physical pixels tall** with 480 pixels of content in it,
+/// measured through `xprop`/`import` on the real window, and it never shrank back when a
+/// shorter view replaced a taller one. Every `set_size` this file makes had been silently
+/// discarded since the first Linux build: `MIN_HEIGHT`, `MAX_HEIGHT` and the whole
+/// measure-and-ask arrangement were Windows-only behaviour without anybody choosing that.
+///
+/// The door GTK does leave open on a fixed window is the geometry hint. `set_min_size` and
+/// `set_max_size` reach `gtk_window_set_geometry_hints` with `MIN_SIZE | MAX_SIZE`, and a
+/// minimum equal to the maximum *is* the size — the window manager resizes to it and the
+/// natural size stops mattering. Pinning both also keeps the window unresizable by the
+/// user's own gestures, which is what `resizable: false` was asked for in the first place.
+///
+/// Windows and macOS compile none of this: `set_size` works there, and adding constraints
+/// would be a second authority over a size that already has one.
+#[allow(unused_variables)]
+fn pin(window: &WebviewWindow, wanted: PhysicalSize<u32>) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window.set_resizable(true);
+        let _ = window.set_min_size(Some(wanted));
+        let _ = window.set_max_size(Some(wanted));
     }
 }
 

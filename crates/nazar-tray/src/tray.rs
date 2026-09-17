@@ -76,10 +76,28 @@ const MENU_OPEN: &str = "nazar-open";
 const MENU_REFRESH: &str = "nazar-refresh";
 /// Menu item: show the panel with the settings view open.
 const MENU_SETTINGS: &str = "nazar-settings";
+/// Menu item: show the panel with the usage view open.
+const MENU_USAGE: &str = "nazar-usage";
 /// Menu item: stop the loop, release the lock, exit.
 const MENU_QUIT: &str = "nazar-quit";
 /// Id prefix of a live quota row: the provider name is appended.
 const MENU_QUOTA: &str = "nazar-quota-";
+
+/// The actions above the separator, in the order they are drawn.
+///
+/// One list rather than an order spelled out twice in [`build_menu`], once for the platforms
+/// with quota rows and once for the platforms without: the two menus differ in what is above
+/// them, never in this. `Quit` is deliberately not in it — it is below the separator, which
+/// is the whole reason the separator is there.
+const MENU_ACTIONS: [&str; 4] = [MENU_OPEN, MENU_SETTINGS, MENU_USAGE, MENU_REFRESH];
+
+/// The locale key each action's label comes from, in the same order.
+const MENU_ACTION_KEYS: [&str; 4] = [
+    "tray.menu.open",
+    "tray.menu.settings",
+    "tray.menu.usage",
+    "tray.menu.refresh",
+];
 
 /// Whether the menu carries the numbers as well as the actions.
 ///
@@ -210,35 +228,36 @@ fn not_configured(catalog: &Catalog, provider: &str) -> String {
 
 /// Build the context menu in one language.
 ///
-/// Four entries and a separator, in the order a Windows user looks for them: the thing they
-/// came for, the thing they might want next, the settings, and the way out. On Linux a row
-/// per provider goes above them, and a second separator: see [`QUOTA_IN_MENU`].
+/// **Five entries and a separator: the two views, then the two verbs, then the way out.**
+/// `Open panel` first because it is what the click was for; `Settings…` and `Usage history`
+/// next because they are the two other screens this application has, and a menu that names
+/// one of them and not the other leaves the second reachable only by opening the first;
+/// `Refresh now` after them because it changes a number rather than where the user is; and
+/// `Quit` alone under the separator, which is the convention a destructive last item earns.
+///
+/// T-WP-L12 is what made the list five: `Usage history` had been reachable only from the
+/// panel's own footer, and on Linux the panel is one menu item further away than it is on
+/// Windows — so the feature that shipped in T-WP16 was, from the tray, two clicks and a
+/// guess. It is on every platform for the reason the gear in the panel's header is: a
+/// second door to a screen is not a Linux feature.
+///
+/// On Linux a row per provider goes above all of it, and a second separator: see
+/// [`QUOTA_IN_MENU`].
 fn build_menu(
     app: &AppHandle,
     catalog: &Catalog,
     view: &SnapshotView,
 ) -> tauri::Result<(Menu<tauri::Wry>, Vec<MenuItem<tauri::Wry>>)> {
-    let open = MenuItem::with_id(
-        app,
-        MENU_OPEN,
-        catalog.text("tray.menu.open"),
-        true,
-        None::<&str>,
-    )?;
-    let refresh_item = MenuItem::with_id(
-        app,
-        MENU_REFRESH,
-        catalog.text("tray.menu.refresh"),
-        true,
-        None::<&str>,
-    )?;
-    let settings = MenuItem::with_id(
-        app,
-        MENU_SETTINGS,
-        catalog.text("tray.menu.settings"),
-        true,
-        None::<&str>,
-    )?;
+    let mut actions: Vec<MenuItem<tauri::Wry>> = Vec::with_capacity(MENU_ACTIONS.len());
+    for (id, key) in MENU_ACTIONS.into_iter().zip(MENU_ACTION_KEYS) {
+        actions.push(MenuItem::with_id(
+            app,
+            id,
+            catalog.text(key),
+            true,
+            None::<&str>,
+        )?);
+    }
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(
         app,
@@ -249,7 +268,13 @@ fn build_menu(
     )?;
 
     if !QUOTA_IN_MENU {
-        let menu = Menu::with_items(app, &[&open, &refresh_item, &settings, &separator, &quit])?;
+        let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+        for action in &actions {
+            items.push(action);
+        }
+        items.push(&separator);
+        items.push(&quit);
+        let menu = Menu::with_items(app, &items)?;
         return Ok((menu, Vec::new()));
     }
 
@@ -274,9 +299,9 @@ fn build_menu(
         items.push(row);
     }
     items.push(&under_the_numbers);
-    items.push(&open);
-    items.push(&refresh_item);
-    items.push(&settings);
+    for action in &actions {
+        items.push(action);
+    }
     items.push(&separator);
     items.push(&quit);
     let menu = Menu::with_items(app, &items)?;
@@ -373,6 +398,8 @@ pub fn install(app: &AppHandle, strings: &Arc<Strings>) -> tauri::Result<()> {
             }
             // The settings live in the panel, so the menu asks the panel to show them.
             MENU_SETTINGS => crate::state::open_settings(app.clone()),
+            // And so does the usage view, which the menu could not reach at all until L12.
+            MENU_USAGE => crate::state::open_usage(app.clone()),
             MENU_QUIT => {
                 // The lock first, the process second. This is the whole reason the menu
                 // exists; see the module note.
@@ -1305,6 +1332,48 @@ mod tests {
             ),
             "nazar-tray: no data"
         );
+    }
+
+    #[test]
+    fn the_menu_opens_with_the_two_views_and_ends_with_the_way_out() {
+        // The order is the menu's contract with the user and it is written once. The two
+        // screens first, because a menu that names one of them and not the other leaves the
+        // second reachable only by opening the first — which is what T-WP-L12 found on a
+        // Linux machine, where the panel is one click further away than on Windows.
+        assert_eq!(
+            MENU_ACTIONS,
+            [MENU_OPEN, MENU_SETTINGS, MENU_USAGE, MENU_REFRESH]
+        );
+        // `Quit` is below the separator, so it must not be in the list that goes above it.
+        assert!(!MENU_ACTIONS.contains(&MENU_QUIT));
+        // Every id is its own, or two items would answer to one menu event.
+        let mut ids = MENU_ACTIONS.to_vec();
+        ids.push(MENU_QUIT);
+        ids.sort_unstable();
+        let unique = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), unique, "two menu items share an id");
+        // And no action's id is a prefix of the quota rows', which are matched with
+        // `starts_with` in the menu handler.
+        for id in MENU_ACTIONS {
+            assert!(
+                !id.starts_with(MENU_QUOTA),
+                "{id} would be read as a quota row"
+            );
+        }
+    }
+
+    #[test]
+    fn every_menu_label_is_a_key_all_six_languages_answer() {
+        assert_eq!(MENU_ACTIONS.len(), MENU_ACTION_KEYS.len());
+        for locale in nazar_core::config::LOCALES {
+            let catalog = i18n::catalog(locale);
+            for key in MENU_ACTION_KEYS.into_iter().chain(["tray.menu.quit"]) {
+                let text = catalog.text(key);
+                assert_ne!(text, key, "{locale} has no {key}");
+                assert!(!text.trim().is_empty(), "{locale}: {key} is blank");
+            }
+        }
     }
 
     #[test]

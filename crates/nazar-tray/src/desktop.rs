@@ -145,6 +145,25 @@ pub const AUTOSTART_PHRASE: &str = if cfg!(target_os = "windows") {
     "start with the desktop session"
 };
 
+/// Whether the settings page carries the two switches only a Linux shell can need.
+///
+/// **The mirror image of [`OVERFLOW_HINT`].** That constant hides a Windows sentence from a
+/// desktop with no overflow flyout; this one shows two rows to the desktop that is the only
+/// reason they exist, and hides them everywhere else:
+///
+/// * `tray.showLabel` — the percentage drawn beside the bead, which is [`crate::tray`]'s
+///   answer to a `set_tooltip` that does nothing at all on GTK. Windows has the tooltip and
+///   no label, so a "show the label" row there would switch off something never switched on.
+/// * `window.x11Positioning` — opening the panel beside the icon through XWayland, which is
+///   a trade only a Wayland session has to weigh. Windows and macOS place the panel and
+///   always have.
+///
+/// Both shipped as `config.json` keys with no way to reach them from the panel, which is one
+/// screen short of shipping them: the user this package is for opens a settings page, not a
+/// JSON file. A compile-time `cfg!` for the reason [`OVERFLOW_HINT`] is one — this is the
+/// shell the build was made for, not a property of the session.
+pub const DESKTOP_SWITCHES: bool = cfg!(target_os = "linux");
+
 /// Whether the autostart entry will be read from where it is written.
 ///
 /// **A measurement, not a guess.** `auto-launch 0.5.0` — under `tauri-plugin-autostart` —
@@ -972,5 +991,26 @@ mod tests {
             "the one sentence that has to name the thing to look for: {}",
             lines[2]
         );
+    }
+
+    /// The two shell switches are offered where they mean something and nowhere else.
+    ///
+    /// The mirror of [`the_overflow_hint_belongs_to_windows_and_to_nowhere_else`]: that one
+    /// keeps a Windows sentence off a Linux panel, this one keeps two Linux rows off a
+    /// Windows one. Both keys still round-trip through the form on every platform, which is
+    /// `ui/test/settings.test.mjs`'s half of the same rule — a hidden row must not be a
+    /// cleared setting.
+    #[test]
+    fn only_a_linux_build_offers_the_switches_only_a_linux_shell_needs() {
+        assert_eq!(DESKTOP_SWITCHES, cfg!(target_os = "linux"));
+        // And the two constants are opposites on every platform this ships to: the overflow
+        // hint is Windows's, the shell switches are Linux's, and neither is macOS's. Read
+        // through a binding rather than asserted on the constants themselves, which clippy
+        // rightly reads as an assertion that cannot fail — the point is the pair.
+        let pair = (DESKTOP_SWITCHES, OVERFLOW_HINT);
+        assert_ne!(pair, (true, true), "no shell has both");
+        if cfg!(target_os = "macos") {
+            assert_eq!(pair, (false, false), "macOS has neither");
+        }
     }
 }

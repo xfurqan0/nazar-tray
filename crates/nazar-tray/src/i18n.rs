@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(catalog("ru").text("panel.window.unknown"), "неизвестно");
         assert_eq!(catalog("es-MX").text("panel.window.unknown"), "desconocido");
         assert_eq!(catalog("de-DE").text("panel.window.unknown"), "unknown");
-        assert_eq!(catalog("").text("tray.menu.open"), "Open");
+        assert_eq!(catalog("").text("tray.menu.open"), "Open panel");
     }
 
     #[test]

@@ -21,6 +21,33 @@
         <h1 class="title" data-i18n="app.name"></h1>
         <span class="version" data-version></span>
         <span class="pill pill-demo" data-demo hidden data-i18n="panel.demo"></span>
+        <!--
+          The gear, and why it is in the header rather than the footer.
+
+          It used to be a word in the footer of the quota view, next to *Refresh now* and
+          *Usage*, which is a place a user reads once and then stops seeing. The maintainer
+          asked for a gear on 2026-09-17 after a week of the Linux build, where the settings
+          are one menu item further away than on Windows — so the answer is the shape every
+          desktop already agreed on, in the corner every desktop already put it in, on both
+          platforms rather than only on the one that asked.
+
+          The label is `settings.title` from the catalogue: the icon is the button and the
+          text is what a screen reader and a hover say, so there is no English word here.
+          `main.ts` hides it while the settings or usage view is up — a gear that opens the
+          page you are already on is a button that does nothing.
+        -->
+        <button type="button" class="gear" data-open-settings data-i18n-label="settings.title">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path
+              fill="currentColor"
+              d="M8 5.2A2.8 2.8 0 1 0 8 10.8 2.8 2.8 0 0 0 8 5.2Zm0 1.5a1.3 1.3 0 1 1 0 2.6 1.3 1.3 0 0 1 0-2.6Z"
+            />
+            <path
+              fill="currentColor"
+              d="M6.9 1h2.2l.3 1.7a5.3 5.3 0 0 1 1.2.7l1.6-.6 1.1 1.9-1.3 1.1a5.4 5.4 0 0 1 0 1.4l1.3 1.1-1.1 1.9-1.6-.6a5.3 5.3 0 0 1-1.2.7L9.1 15H6.9l-.3-1.7a5.3 5.3 0 0 1-1.2-.7l-1.6.6-1.1-1.9 1.3-1.1a5.4 5.4 0 0 1 0-1.4L2.7 4.7l1.1-1.9 1.6.6a5.3 5.3 0 0 1 1.2-.7L6.9 1Zm1.2 1.5h-.2l-.2 1.4-.5.2c-.4.1-.7.3-1 .6l-.4.3-1.3-.5-.1.2 1 .9-.1.5a3.9 3.9 0 0 0 0 1.2l.1.5-1 .9.1.2 1.3-.5.4.3c.3.3.6.5 1 .6l.5.2.2 1.4h.4l.2-1.4.5-.2c.4-.1.7-.3 1-.6l.4-.3 1.3.5.1-.2-1-.9.1-.5a3.9 3.9 0 0 0 0-1.2l-.1-.5 1-.9-.1-.2-1.3.5-.4-.3a3.8 3.8 0 0 0-1-.6l-.5-.2-.2-1.4h-.2Z"
+            />
+          </svg>
+        </button>
       </header>
 
       <!--
@@ -63,7 +90,6 @@
         <footer class="foot">
           <button type="button" class="button" data-refresh data-i18n="panel.action.refresh"></button>
           <button type="button" class="button" data-open-usage data-i18n="usage.title"></button>
-          <button type="button" class="button" data-open-settings data-i18n="settings.title"></button>
           <span class="esc" data-i18n="panel.hint.close"></span>
         </footer>
       </div>
@@ -344,6 +370,27 @@
             hidden
             data-i18n="settings.autostart.unavailable"
           ></p>
+        </fieldset>
+
+        <!--
+          The two rows that exist because of what one shell does, and that are drawn only
+          there: `ui.desktopSwitches` is `desktop::DESKTOP_SWITCHES` on the Rust side, the
+          mirror of the rule that keeps the Windows overflow hint off a Linux panel. Both
+          keys shipped in `config.json` with no way to reach them from here, which is one
+          screen short of shipping them.
+        -->
+        <fieldset class="group" data-desktop-switches hidden>
+          <legend data-i18n="settings.section.desktop"></legend>
+          <label class="row check">
+            <input type="checkbox" data-field="trayShowLabel" />
+            <span class="row-label" data-i18n="settings.tray.showLabel"></span>
+          </label>
+          <p class="help" data-i18n="settings.tray.showLabel.help"></p>
+          <label class="row check">
+            <input type="checkbox" data-field="windowX11Positioning" />
+            <span class="row-label" data-i18n="settings.window.x11Positioning"></span>
+          </label>
+          <p class="help" data-i18n="settings.window.x11Positioning.help"></p>
         </fieldset>
 
         <!--

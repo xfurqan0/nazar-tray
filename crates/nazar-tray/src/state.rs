@@ -70,6 +70,12 @@ pub const SNAPSHOT_CHANGED: &str = "snapshot-changed";
 /// no way to open a view inside a webview except to ask it.
 pub const OPEN_SETTINGS: &str = "open-settings";
 
+/// The event that asks the panel to show its usage view, on the tab it opens on.
+///
+/// The menu's third entry, for the same reason [`OPEN_SETTINGS`] is its second: the view
+/// lives in the webview and the menu does not, so the only thing the menu can do is ask.
+pub const OPEN_USAGE: &str = "open-usage";
+
 /// Everything about the panel that is a choice rather than a measurement.
 ///
 /// Sent to the webview once on load and again after every change, so the panel never has
@@ -201,6 +207,11 @@ pub struct SettingsView {
     pub version: String,
     /// Whether the numbers on screen are synthetic.
     pub demo: bool,
+    /// Whether the two shell-specific rows belong on this page.
+    ///
+    /// [`crate::desktop::DESKTOP_SWITCHES`], sent rather than guessed from
+    /// `navigator.platform` — the same rule the startup row's label follows.
+    pub desktop_switches: bool,
     /// Whether this run may write to `config.json` at all.
     ///
     /// `false` under the screenshot flags. The form is shown read-only rather than hidden,
@@ -252,6 +263,11 @@ pub struct SettingsForm {
     pub usage_count_like_claude_code: bool,
     /// Show the days before the transcripts, as Claude Code reported them.
     pub usage_fill_history_from_stats: bool,
+    /// Draw the binding percentage beside the tray icon. Linux only; see
+    /// [`crate::desktop::DESKTOP_SWITCHES`].
+    pub tray_show_label: bool,
+    /// Open the panel through XWayland so the compositor honours a position. Linux only.
+    pub window_x11_positioning: bool,
 }
 
 impl SettingsForm {
@@ -272,6 +288,8 @@ impl SettingsForm {
             detailed_windows: config.detailed_windows,
             usage_count_like_claude_code: config.usage.count_like_claude_code,
             usage_fill_history_from_stats: config.usage.fill_history_from_stats,
+            tray_show_label: config.tray.show_label,
+            window_x11_positioning: config.window.x11_positioning,
         }
     }
 
@@ -292,6 +310,8 @@ impl SettingsForm {
         config.detailed_windows = self.detailed_windows;
         config.usage.count_like_claude_code = self.usage_count_like_claude_code;
         config.usage.fill_history_from_stats = self.usage_fill_history_from_stats;
+        config.tray.show_label = self.tray_show_label;
+        config.window.x11_positioning = self.window_x11_positioning;
     }
 }
 
@@ -482,6 +502,7 @@ impl AppState {
             paths: settings_paths(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             demo: self.overrides.demo,
+            desktop_switches: crate::desktop::DESKTOP_SWITCHES,
             writable: self.persist,
         }
     }
@@ -554,6 +575,7 @@ impl AppState {
         let readers_changed = previous.providers != next.providers
             || previous.detailed_windows != next.detailed_windows;
         let thresholds_changed = previous.thresholds != next.thresholds;
+        let label_changed = previous.tray.show_label != next.tray.show_label;
 
         *self.held() = next.clone();
 
@@ -569,6 +591,7 @@ impl AppState {
             locale_changed,
             readers_changed,
             thresholds_changed,
+            label_changed,
             view: self.settings(strings),
         })
     }
@@ -595,6 +618,8 @@ pub struct Applied {
     pub readers_changed: bool,
     /// The thresholds moved, so the icon may be a different colour.
     pub thresholds_changed: bool,
+    /// The label beside the icon was switched on or off, so the tray has to be told.
+    pub label_changed: bool,
     /// The settings as they now are, for the form to redraw itself from.
     pub view: SettingsView,
 }
@@ -766,6 +791,17 @@ pub fn open_settings(app: tauri::AppHandle) {
     crate::panel::show(&app);
 }
 
+/// Show the panel with the usage view open. The tray menu's `Usage history` entry.
+///
+/// The tab is the panel's own default rather than one named here: a menu item that landed
+/// on *Models* when the last visit ended on *Week* would be a second place deciding what
+/// the view opens on.
+#[tauri::command]
+pub fn open_usage(app: tauri::AppHandle) {
+    let _ = app.emit(OPEN_USAGE, ());
+    crate::panel::show(&app);
+}
+
 /// Everything the settings form draws itself from.
 #[tauri::command]
 pub fn get_config(
@@ -791,7 +827,7 @@ pub fn set_config(
         // new menu. WP4 left that as an open risk; this is what closes it.
         crate::tray::rebuild_menu(&app, &strings);
     }
-    if applied.locale_changed || applied.thresholds_changed {
+    if applied.locale_changed || applied.thresholds_changed || applied.label_changed {
         crate::tray::refresh(&app, &strings.catalog());
     }
     Ok(applied.view)
@@ -1031,6 +1067,40 @@ mod tests {
             json.contains("\"usage\":{\"countLikeClaudeCode\":true"),
             "the settings document spells them under `usage`: {json}"
         );
+    }
+
+    /// The form owns the two shell switches, and a default save still writes nothing.
+    ///
+    /// T-WP-L12 put `tray.showLabel` and `window.x11Positioning` on the settings page, which
+    /// means every Save now carries them — including a Save on Windows, where the rows are
+    /// not drawn. The byte-equality rule survives that only because both keys are skipped
+    /// while they hold their defaults, and this is the assertion that says so: a fresh
+    /// document, through the form and back, is still a document with neither section in it.
+    #[test]
+    fn the_two_shell_switches_go_through_the_form_without_landing_in_the_file() {
+        let fresh = Config::default();
+        let mut round_trip = Config::default();
+        SettingsForm::from_config(&fresh).apply_to(&mut round_trip);
+        assert_eq!(round_trip, fresh);
+        let text = round_trip.to_json().unwrap();
+        assert!(!text.contains("showLabel"), "{text}");
+        assert!(!text.contains("x11Positioning"), "{text}");
+
+        // And a switch somebody actually moved does land, both ways round.
+        let chosen = Config {
+            tray: nazar_core::config::TraySwitches { show_label: false },
+            window: nazar_core::config::WindowSwitches {
+                x11_positioning: true,
+            },
+            ..Config::default()
+        };
+        let form = SettingsForm::from_config(&chosen);
+        assert!(!form.tray_show_label);
+        assert!(form.window_x11_positioning);
+        let mut back = Config::default();
+        form.apply_to(&mut back);
+        assert_eq!(back.tray, chosen.tray);
+        assert_eq!(back.window, chosen.window);
     }
 
     #[test]

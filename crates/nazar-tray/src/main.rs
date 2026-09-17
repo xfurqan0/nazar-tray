@@ -212,6 +212,7 @@ fn main() {
             state::set_panel_height,
             state::open_panel,
             state::open_settings,
+            state::open_usage,
             state::get_config,
             state::set_config,
             state::reset_hint,
@@ -319,6 +320,29 @@ fn main() {
             Ok(())
         })
         .on_window_event(move |window, event| match event {
+            // Closing the panel must not close the application. The panel is the only
+            // window this process has, and Tauri's default for the last window closing is
+            // to end the run — so on 2026-09-17 a `close()` on a Fedora 44 session took the
+            // tray icon, the refresh loop and `limits.json` with it, measured with a probe
+            // that asked the window to close and then waited for a process that was no
+            // longer there. Nothing in the product asks for that close, which is why it went
+            // unseen: the window is frameless and has no button. The *desktop* asks for it.
+            // GNOME's Super+Q and Alt+F4 reach a focused window whether or not it drew a
+            // title bar, and so does a Windows Alt+F4 — so this is not a Linux repair but a
+            // Linux sighting of a bug both platforms had.
+            //
+            // Hidden rather than closed, which is what every other way out of the panel
+            // already does: blur hides it, Esc hides it, and the way to end the run is the
+            // menu's `Quit`, which releases the advisory lock first.
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                if let Some(state) = window.try_state::<panel::PanelState>() {
+                    if let Some(panel) = window.app_handle().get_webview_window(panel::PANEL_LABEL)
+                    {
+                        panel::hide(&panel, &state);
+                    }
+                }
+            }
             // Clicking anywhere else closes the panel. This is what makes it feel like a
             // tray popup rather than a window the user has to dismiss.
             WindowEvent::Focused(false) => panel::on_blur(window),

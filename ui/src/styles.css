@@ -113,6 +113,52 @@ body {
   image-rendering: pixelated;
 }
 
+/*
+ * The gear, and the two things it is not.
+ *
+ * It is **not a `.button`**: the bordered pill next to a 15 px title would read as a second
+ * heading, and the header has no other framed control in it. It is a hit area with a drawing
+ * in the middle, and what marks it as a control is that it answers — the same `text` colour
+ * and `nodeHeader` ground every other control in the panel uses for hover and focus, so one
+ * rule changed in one place still moves this one too.
+ *
+ * It is **not 16 px**: the drawing is, and the box around it is 26, which is what keeps the
+ * pointer target above the twenty-four pixels a settings page is usually asked for while the
+ * mark stays the size of the bead it sits beside. `margin-left: auto` puts it in the corner
+ * the demo pill would otherwise take, which is why that pill comes first in the markup.
+ */
+.gear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-faint, #7d96b5);
+  cursor: pointer;
+}
+
+.gear svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.gear:hover,
+.gear:focus-visible {
+  color: var(--color-text, #eaf2ff);
+  background: var(--color-node-header, #14355f);
+}
+
+.gear:active {
+  transform: translateY(1px);
+}
+
 .title {
   margin: 0;
   font-size: var(--type-size-lg, 15px);

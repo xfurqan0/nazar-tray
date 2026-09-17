@@ -55,6 +55,11 @@ export interface SettingsForm {
   readonly usageCountLikeClaudeCode: boolean;
   /** Show the days before the transcripts, as Claude Code reported them. */
   readonly usageFillHistoryFromStats: boolean;
+  /** Draw the binding percentage beside the tray icon. Linux only; the row is hidden
+   * elsewhere, and the value still round-trips so a saved form cannot clear it. */
+  readonly trayShowLabel: boolean;
+  /** Open the panel through XWayland, where a position is honoured. Linux only. */
+  readonly windowX11Positioning: boolean;
 }
 
 /** Where the files live, with `~` already collapsed by the Rust side. */
@@ -75,6 +80,9 @@ export interface SettingsView {
   readonly paths: SettingsPaths;
   readonly version: string;
   readonly demo: boolean;
+  /** Whether the two shell-specific rows belong on this page. Rust's answer, not a guess
+   * from `navigator.platform` — the rule the startup row's label already follows. */
+  readonly desktopSwitches: boolean;
   readonly writable: boolean;
 }
 
@@ -105,6 +113,8 @@ export interface FormValues {
   detailedWindows: boolean;
   usageCountLikeClaudeCode: boolean;
   usageFillHistoryFromStats: boolean;
+  trayShowLabel: boolean;
+  windowX11Positioning: boolean;
 }
 
 /** A number as a form field should show it: `85`, not `85.0`. */
@@ -132,6 +142,8 @@ export function toValues(form: SettingsForm): FormValues {
     detailedWindows: form.detailedWindows,
     usageCountLikeClaudeCode: form.usageCountLikeClaudeCode,
     usageFillHistoryFromStats: form.usageFillHistoryFromStats,
+    trayShowLabel: form.trayShowLabel,
+    windowX11Positioning: form.windowX11Positioning,
   };
 }
 
@@ -162,6 +174,8 @@ export function toForm(values: FormValues): SettingsForm {
     detailedWindows: values.detailedWindows,
     usageCountLikeClaudeCode: values.usageCountLikeClaudeCode,
     usageFillHistoryFromStats: values.usageFillHistoryFromStats,
+    trayShowLabel: values.trayShowLabel,
+    windowX11Positioning: values.windowX11Positioning,
   };
 }
 
