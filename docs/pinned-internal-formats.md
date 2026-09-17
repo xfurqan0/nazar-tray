@@ -772,6 +772,54 @@ of the `StartupApproved` residue above. **Two things about the path**, both in `
   before a user reaches a settings page, which is why this is written down rather than worked
   around.
 
+## The panel window on GTK
+
+Not a file format, and here for the reason the `auto-launch` paragraph above is: it is a
+behaviour of somebody else's code that this product's own code is written around, and the
+next person to read `panel.rs` should not have to measure it again.
+
+**`gtk_window_resize` does nothing on a window that is not resizable.** `tauri.conf.json`
+declares the panel `resizable: false`, and `tao 0.35.3` turns every `set_inner_size` into a
+`WindowRequest::Size` that the event loop answers with `window.resize(w, h)` — GTK3 documents
+that call as having no effect while the resizable flag is off, and sizes the window from its
+*size request* instead. The size request of a window whose only child is a `WebKitWebView` is
+the natural height of the document.
+
+Measured on 2026-09-17, Fedora 44 / GNOME 50, the panel on the quota view with 480 CSS pixels
+of content in it:
+
+```
+# before: every set_size discarded, the window as tall as the document
+xprop -root _NET_CLIENT_LIST          -> 0x60000c   (WM_NAME "nazar-tray")
+import -window 0x60000c panel.png     -> 360 x 1105
+panel::resize asked for 480           -> outer_size() still 360 x 1105
+
+# after: resizable, then the minimum pinned to the maximum
+panel::resize asked for 480           -> outer_size() 360 x 480
+```
+
+`set_min_size` and `set_max_size` reach `gtk_window_set_geometry_hints` with
+`MIN_SIZE | MAX_SIZE`, and a minimum equal to the maximum is the size. They are only honoured
+on a resizable window, which is why `panel::pin` sets that flag first — and pinning both is
+what keeps the window unresizable by the user's own gestures, which is what `resizable: false`
+was asked for in the first place. Windows and macOS compile none of it.
+
+## The tray item on Linux
+
+Two properties of the `StatusNotifierItem` libayatana-appindicator publishes for us, read back
+over D-Bus on the same session, that decide what a click does:
+
+* There is **no `Activate` method** on the item's interface — `busctl introspect` lists
+  `Scroll`, `SecondaryActivate` and `XAyatanaSecondaryActivate` and nothing else — and **no
+  `ItemIsMenu` property**. A StatusNotifier host with nothing to activate opens the menu, so
+  on Linux the left and the right button do the same thing. This is the other half of the
+  measurement in `tray.rs`'s module note, where `tray-icon`'s GTK backend is shown never to
+  send a `TrayIconEvent` at all.
+* The menu itself is a `com.canonical.dbusmenu` object at
+  `/org/ayatana/NotificationItem/tray_icon_tray_app_nazar_tray/Menu`, and `GetLayout` reads it
+  back item by item — which is how the menu's order and its six languages are checked on a
+  running process rather than in a screenshot.
+
 ## The usage endpoint
 
 Read only while the opt-in detailed-windows mode is on;

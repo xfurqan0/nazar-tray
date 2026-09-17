@@ -220,7 +220,8 @@ and the tray icon is one click away.
 
 ![The settings page: language, theme, providers, notification thresholds and quiet hours](docs/screenshots/wp5-100-settings.png)
 
-In the panel, and from the tray menu's **Settings**:
+In the panel — the **gear** in the top-right corner of the header — and from the tray menu's
+**Settings…**:
 
 | | |
 |---|---|
@@ -231,6 +232,7 @@ In the panel, and from the tray menu's **Settings**:
 | **Start with Windows** / **Start with the desktop session** | Adds a startup entry for your account; nazar-tray starts hidden in the tray. The row is named after the desktop you are on — on Windows the switch reads the registry back, so it agrees with Task Manager's Startup tab; on Linux it writes `~/.config/autostart/nazar-tray.desktop`, which is what an XDG session reads. |
 | **Status line** | Whether the wrapper is Claude Code's status line, and the button that installs or removes it. It shows the diff first and writes nothing until you press again — [the section below](#the-status-line-wrapper). |
 | **Detailed windows** | The opt-in mode described above, off by default, with the whole of what it reads written out beside the switch. |
+| **This desktop** *(Linux only)* | Two switches that only a Linux shell can need, and that are not drawn anywhere else. **Show the percentage beside the tray icon** is the label GNOME and KDE draw next to the bead, which is where the number goes on a desktop with no tooltip. **Open the panel beside the tray icon** runs the application through XWayland so the compositor honours a position — the whole application, web view included — and takes effect at the next start. |
 | **Files** | Where `limits.json`, the status-line captures, your settings and the notification history live. |
 | **About** | The version, and a button that brings the first-run tray-icon tip back. |
 
@@ -242,6 +244,15 @@ that file: it lives in the registry, which is the thing that actually decides.
 
 `nazar-tray --autostart on|off|status` does the startup entry from a terminal, for when the
 panel will not open.
+
+### The tray menu
+
+**Open panel · Settings… · Usage history · Refresh now · Quit.** The two screens first, then
+the verb, then the way out under a separator. On Linux a live row per provider sits above all
+of it — see [the Linux notes](#what-it-does-not-do) — and **both mouse buttons open the same
+menu there**, because libappindicator owns the click and `tray-icon`'s GTK backend never hands
+one to the application. On Windows the left button opens the panel and the right opens the
+menu.
 
 Everything is read and written by **one process**: no scheduled task, no launch agent, no
 systemd timer, and no second copy of the app fighting the first one for the same file. The
@@ -383,8 +394,8 @@ explained somewhere in this repository.
   bead by the desktop rather than by us. `Open` then shows the panel wherever the compositor
   decides, because a Wayland client can neither read the pointer nor move its own window
   (both calls succeed and do nothing). If you would rather have the popup beside the cursor,
-  `{ "window": { "x11Positioning": true } }` in `config.json` puts GTK on XWayland, where the
-  position is honoured — at the price of running the whole application, webview included,
+  the settings page's **Open the panel beside the tray icon** — `window.x11Positioning` in
+  `config.json` — puts GTK on XWayland, where the position is honoured — at the price of running the whole application, webview included,
   through an X11 translation layer. It is ignored on a session that is already X11, and
   ignored with no `DISPLAY`. On GNOME the closer answer is
   [nazar-gnome](https://github.com/xfurqan0/nazar-gnome), which the first run points at:
@@ -394,10 +405,16 @@ explained somewhere in this repository.
   `XAyatanaLabel`, which GNOME's AppIndicator extension draws as a label next to the icon — so
   the binding window's percentage is readable without opening anything. One number, the one
   closest to running out, written the way your language writes a percentage, and `?` rather
-  than a reassuring `0 %` when nothing could be read. `{ "tray": { "showLabel": false } }` in
-  `config.json` leaves you the bead alone. Windows and macOS ignore the setting: they have the
+  than a reassuring `0 %` when nothing could be read. The settings page's **Show the
+  percentage beside the tray icon** — `tray.showLabel` — leaves you the bead alone. Windows and macOS ignore the setting: they have the
   tooltip, which on GTK does not exist — `set_tooltip` there is a no-op, which is why this
   exists at all.
+- **Closing the panel does not close nazar-tray, on any platform.** The panel is the only
+  window this process has, and the window a desktop closes with Alt+F4 or GNOME's Super+Q is
+  that one — so it is hidden rather than closed, like every other way out of it. The way to
+  end the run is the menu's **Quit**, which releases the advisory lock first; killing the
+  process instead leaves `~/.nazar/limits.lock` behind and the next launch waits out a grace
+  period as a reader.
 - **Claude Code's quota needs the wrapper, on every platform.** Claude Code reports its rate
   limits to its status-line command and to the usage endpoint, and writes them nowhere else on
   disk — measured across 71 transcript files and `stats-cache.json` in
