@@ -616,6 +616,38 @@ body {
   font-size: var(--type-size-sm, 11.5px);
 }
 
+/*
+ * A dropdown the panel draws itself, because one desktop will not draw ours.
+ *
+ * On WebKitGTK a `<select>` is rendered by the platform: the `background` and `color` above
+ * are ignored on the box and honoured on the text, which on a dark theme is near-white text
+ * on the GTK combo's light ground — **unreadable**, measured on Fedora 44 / GNOME 50 on
+ * 2026-09-17 with the language, theme and light/dark rows all blank. WebView2 on Windows
+ * honours the rule, which is why the same three rows are legible in `wp5-100-settings.png`
+ * and why nobody had seen this.
+ *
+ * `appearance: none` takes the native widget away on both platforms, so the box is the one
+ * `.control` describes everywhere. What it also takes away is the arrow, and an arrow is how
+ * a dropdown says it is one — so it is drawn here out of two gradients rather than out of an
+ * image: a data URI cannot read a custom property, and this chevron has to be the theme's
+ * own `textMuted` in four combinations of theme and mode. The popup list is still the
+ * platform's, which is right: that is a menu, not a part of this page.
+ */
+select.control {
+  appearance: none;
+  padding-right: 24px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--color-text-muted, #a8bfdc) 50%),
+    linear-gradient(135deg, var(--color-text-muted, #a8bfdc) 50%, transparent 50%);
+  background-position:
+    right 12px center,
+    right 8px center;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+
 .control:hover {
   border-color: var(--color-accent, #3fa9f5);
 }

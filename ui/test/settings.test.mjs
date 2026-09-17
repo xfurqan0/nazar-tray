@@ -99,6 +99,21 @@ test("the two shell switches are on the page, explained, and hidden off Linux", 
   assert.match(english["settings.window.x11Positioning.help"], /next time/);
 });
 
+test("the panel draws its own dropdowns, because one desktop will not draw ours", () => {
+  // On WebKitGTK a `<select>` is rendered by the platform: the background is the GTK combo's
+  // and only the text colour is ours, which on a dark theme is near-white on near-white.
+  // Measured on Fedora 44 / GNOME 50 with the language, theme and light/dark rows all blank.
+  // `appearance: none` is what makes the box the one `.control` describes on both platforms.
+  const css = read("ui/src/styles.css");
+  const rule = /select\.control\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, "there is no select.control rule");
+  assert.match(rule[1], /appearance:\s*none/);
+  // And the arrow it takes away is drawn back, in a colour that follows the theme — a data
+  // URI could not read a custom property, which is why this is gradients.
+  assert.match(rule[1], /--color-text-muted/);
+  assert.match(rule[1], /padding-right/, "the arrow needs room, or it sits on the text");
+});
+
 test("the gear is the door to the settings, and it is the only one in the header", () => {
   // The maintainer asked for a gear rather than the footer word it replaces; the word is
   // gone, so there is exactly one control that opens the page and it is the icon.
