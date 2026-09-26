@@ -61,9 +61,11 @@ node scripts/build-installer.mjs
   `WITH` clause either of them accepts. A copyleft dependency in an MIT product is a rewrite,
   not a paperwork problem. Adding a dependency also means running
   `node scripts/third-party-notices.mjs`; CI checks the result is current.
-- **`cargo deny check` is green, and is the gate CI does not run.** It covers what the script
-  cannot — advisories, yanked crates, duplicate versions, unexpected registries — and needs
-  `cargo install cargo-deny --locked`. Run it when you add or update a dependency. Every
+- **`cargo deny check` is green, and CI runs it weekly rather than on every push.** It covers
+  what the script cannot — advisories, yanked crates, duplicate versions, unexpected
+  registries — and needs `cargo install cargo-deny --locked`. Run it when you add or update a
+  dependency; `.github/workflows/deny.yml` runs it every Monday, because an advisory arrives
+  against a lock file nobody touched. There is no Dependabot, on purpose. Every
   entry in its `ignore` list carries a RUSTSEC id, the reason, and a review date; adding one
   without all three is how a red gate becomes a green lie.
 - **The default build makes no network call.** The one HTTP client is behind the

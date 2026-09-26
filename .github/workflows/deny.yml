@@ -1,0 +1,51 @@
+name: cargo-deny
+
+# The advisories half of `cargo deny check`, on a clock rather than on a push.
+#
+# `deny.toml` covers licences, bans and sources as well, and those only change when a
+# dependency does — which is a commit, and a maintainer runs `cargo deny check` before it.
+# Advisories are different: RUSTSEC publishes them against a lock file nobody touched, so a
+# gate that only ran on push would say nothing for weeks and then turn an unrelated commit
+# red. Once a week, and by hand, is the whole schedule. A failed scheduled run is reported to
+# the maintainer by GitHub's own notification for failed workflows; nothing opens a pull
+# request, and nothing here writes to the repository.
+#
+# Deliberately not Dependabot (2026-09-27): a bot that opens pull requests bumping crates
+# would bump them past the review this repository asks of every dependency — the licence
+# gate, the notices, the Linux and Windows builds — one pull request at a time. This job
+# says *that* something needs looking at; the decision stays a commit.
+#
+# GitHub disables schedules in a public repository after sixty days without activity. The
+# `workflow_dispatch` trigger is how to run it anyway, and how to rerun it after an ignore
+# entry's review date.
+
+on:
+  schedule:
+    # Mondays, 05:17 UTC: early in the maintainer's week, and off the hour everybody else's
+    # schedules pile up on.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Pinned to the version the maintainer runs, so a new cargo-deny release that renames
+      # a key in deny.toml is a deliberate bump rather than a red Monday.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Advisories, licences, bans and sources
+        run: cargo deny check

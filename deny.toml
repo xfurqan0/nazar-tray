@@ -1,7 +1,8 @@
 # cargo-deny policy. `cargo deny check` covers licences, advisories, duplicate versions
 # and unexpected sources; `node scripts/check-licenses.mjs` covers the licence half with
-# nothing installed beyond the toolchain the repo already needs. CI runs the script; a
-# maintainer with cargo-deny installed gets the rest.
+# nothing installed beyond the toolchain the repo already needs. CI runs the script on every
+# push, and `.github/workflows/deny.yml` runs this file every Monday — advisories arrive
+# against a lock file nobody touched, which is what a weekly run is for.
 #
 #   cargo install cargo-deny --locked
 #   cargo deny check
