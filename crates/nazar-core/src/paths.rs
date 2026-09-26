@@ -71,7 +71,8 @@ pub fn lock_path() -> Result<PathBuf> {
 /// two processes, and every portable way to build one is heavier than this: a file that
 /// exists for a moment, is noticed within five seconds by the loop that is already looking
 /// at this directory's neighbours, and is deleted as it is acted on. It carries a timestamp
-/// and nothing else.
+/// and, since T-WP27, the page the launch was asked to open — see
+/// [`crate::refresh::ShowRequest`].
 pub fn request_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("tray.request"))
 }

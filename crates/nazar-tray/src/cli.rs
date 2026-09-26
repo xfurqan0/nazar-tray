@@ -47,7 +47,7 @@
 //! | `--offer on\|off` | the same, for the one-time Max-plan offer |
 //! | `--locale tr` | the panel and the tooltip in one language, whatever the machine's is |
 //! | `--icons <dir>` | writes the bead's two states — the mark, and unknown — at 16, 32 and 64 px, plus one strip of all six, then exits; nothing else happens |
-//! | `--view settings` | opens the panel on the settings page, which is otherwise a click away |
+//! | `--view settings` | opens the panel on the settings page, which is otherwise a click away — and, since T-WP27, asks a tray that is already running for the same page |
 //! | `--view usage` | the same for the usage view, and `--usage-tab` says which of its tabs |
 //! | `--usage-tab <name>` | `week`, `weeks`, `all`, `models`, or `day` for the Week tab with its newest day opened |
 //!
@@ -210,10 +210,10 @@ fn write_icons(directory: &std::path::Path) -> bool {
 /// A list rather than an enum, because the value crosses into the webview as a string and a
 /// Rust spelling in `UiState` would be a third name for the same page. A name this build does
 /// not know is dropped: a typo leaves the panel where it opens rather than blanking it.
-const VIEWS: [&str; 2] = ["settings", "usage"];
+pub(crate) const VIEWS: [&str; 2] = ["settings", "usage"];
 
 /// What `--usage-tab` may name: the usage view's four tabs, plus one state inside the first.
-const USAGE_TABS: [&str; 5] = ["week", "weeks", "all", "models", "day"];
+pub(crate) const USAGE_TABS: [&str; 5] = ["week", "weeks", "all", "models", "day"];
 
 /// The tab the usage view opens on, and so the one `--view usage` lands on unasked.
 pub const USAGE_TAB_DEFAULT: &str = USAGE_TABS[0];
@@ -383,6 +383,24 @@ fn warn_about_the_autostart_directory(enabled: bool) {
 fn warn_about_the_autostart_directory(_enabled: bool) {}
 
 impl Options {
+    /// What this launch asks a tray that is already running to open, if one is.
+    ///
+    /// `--view` used to be a first launch's flag only: a second launch left a marker that
+    /// said "show your panel" and nothing else, so `nazar-tray --view settings` — which is
+    /// exactly what nazar-gnome's gear runs — opened the numbers on every machine where the
+    /// engine was already up (T-WP27). The tab goes along only with the view it belongs to,
+    /// the same rule [`parse_options`] applies to a first launch.
+    #[must_use]
+    pub fn show_request(&self) -> nazar_core::ShowRequest {
+        nazar_core::ShowRequest {
+            view: self.view.clone(),
+            usage_tab: self
+                .usage_tab
+                .clone()
+                .filter(|_| self.view.as_deref() == Some("usage")),
+        }
+    }
+
     /// Whether a change the panel makes may be written back to `config.json`.
     ///
     /// A screenshot must leave the maintainer's settings exactly as it found them.
@@ -778,6 +796,46 @@ mod tests {
             "the crossing run must not be able to take the writer's lock, so it is a demo run"
         );
         assert!(!crossing.may_persist());
+    }
+
+    /// T-WP27: the page a second launch names is the page the running tray is asked for.
+    #[test]
+    fn a_second_launch_passes_its_page_on() {
+        use nazar_core::ShowRequest;
+
+        assert_eq!(
+            parse_options(&[]).show_request(),
+            ShowRequest::default(),
+            "a plain second launch asks for the panel and nothing about where"
+        );
+        assert_eq!(
+            parse_options(&words("--view settings")).show_request(),
+            ShowRequest {
+                view: Some("settings".to_owned()),
+                usage_tab: None,
+            },
+            "what nazar-gnome's gear runs"
+        );
+        assert_eq!(
+            parse_options(&words("--view usage --usage-tab models")).show_request(),
+            ShowRequest {
+                view: Some("usage".to_owned()),
+                usage_tab: Some("models".to_owned()),
+            }
+        );
+        assert_eq!(
+            parse_options(&words("--view settings --usage-tab models")).show_request(),
+            ShowRequest {
+                view: Some("settings".to_owned()),
+                usage_tab: None,
+            },
+            "a tab belongs to the usage view and travels only with it"
+        );
+        assert_eq!(
+            parse_options(&words("--view nonsense")).show_request(),
+            ShowRequest::default(),
+            "a page this build does not have is not passed on to one that might"
+        );
     }
 
     #[test]

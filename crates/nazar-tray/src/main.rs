@@ -146,18 +146,30 @@ fn main() {
     let lock = if options.demo || options.autostart.is_some() {
         None
     } else {
-        match claim_the_writer_role(&now) {
+        let request = options.show_request();
+        match claim_the_writer_role(&now, &request) {
             Instance::Only(lock) => lock,
             Instance::Second(holder) => {
                 // A tray is already running and has been asked to show itself. Saying so is
                 // for a terminal; from Explorer nobody sees it, and the panel opening is
                 // the answer. The pid is named because this sentence used to be able to
-                // lie — see `claim_the_writer_role` — and a pid is what a user checks.
-                match holder {
-                    Some(pid) => eprintln!(
+                // lie — see `claim_the_writer_role` — and a pid is what a user checks. The
+                // page is named because it used to be dropped here without a word (T-WP27).
+                match (holder, request.view.as_deref()) {
+                    (Some(pid), Some(view)) => eprintln!(
+                        "nazar-tray is already running (pid {pid}); asked it to show its panel \
+                         on its {view} page"
+                    ),
+                    (Some(pid), None) => eprintln!(
                         "nazar-tray is already running (pid {pid}); asked it to show its panel"
                     ),
-                    None => eprintln!("nazar-tray is already running; asked it to show its panel"),
+                    (None, Some(view)) => eprintln!(
+                        "nazar-tray is already running; asked it to show its panel on its \
+                         {view} page"
+                    ),
+                    (None, None) => {
+                        eprintln!("nazar-tray is already running; asked it to show its panel");
+                    }
                 }
                 return;
             }
@@ -442,14 +454,15 @@ enum Instance {
 ///   check together is what produced the observed HTTP 429.
 ///
 /// Reaching the running instance is a marker file it is already watching: see
-/// [`nazar_core::paths::request_path`].
+/// [`nazar_core::paths::request_path`]. The marker carries the page this launch was asked to
+/// open, so `--view settings` means the same thing whether or not a tray was already up.
 ///
 /// **"Already running" is not allowed to be a guess.** `Taken` means the lock's own holder
 /// could not be shown to be gone: [`nazar_core::lock`] asks the operating system about the
 /// record's pid before it looks at the heartbeat at all, so a killed tray — which is what
 /// an installer upgrade leaves behind — is stale the instant its lock is read, and this
 /// process starts normally instead of asking a dead one to open a panel.
-fn claim_the_writer_role(now: &str) -> Instance {
+fn claim_the_writer_role(now: &str, request: &nazar_core::ShowRequest) -> Instance {
     let Ok(path) = paths::lock_path() else {
         // No home directory. An unusual environment, and the honest behaviour is to run,
         // show whatever can be read, and write nothing.
@@ -459,8 +472,8 @@ fn claim_the_writer_role(now: &str) -> Instance {
     match LimitsLock::acquire(&path, now) {
         Ok(Acquisition::Held(lock)) => Instance::Only(Some(lock)),
         Ok(Acquisition::Taken(holder)) => {
-            if let Ok(request) = paths::request_path() {
-                let _ = refresh::place_request(&request, now);
+            if let Ok(marker) = paths::request_path() {
+                let _ = refresh::place_request(&marker, now, request);
             }
             Instance::Second(holder.map(|record| record.pid))
         }
@@ -492,6 +505,6 @@ fn on_loop_event(app: &tauri::AppHandle, strings: &Arc<Strings>, event: Event) {
             let _ = app.emit(SNAPSHOT_CHANGED, ());
             tray::refresh(app, &strings.catalog());
         }
-        Event::ShowRequested => panel::show(app),
+        Event::ShowRequested(request) => state::open_requested(app, &request),
     }
 }

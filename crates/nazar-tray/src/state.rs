@@ -802,6 +802,61 @@ pub fn open_usage(app: tauri::AppHandle) {
     crate::panel::show(&app);
 }
 
+/// Where a second launch's request lands in the panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landing {
+    /// The numbers: the page the panel opens on anyway.
+    Panel,
+    /// The settings page.
+    Settings,
+    /// The usage view, on the named tab, or on the panel's own default when none was named.
+    Usage(Option<String>),
+}
+
+/// Decide where a request lands, against the pages **this** build has.
+///
+/// The marker's names are checked here rather than in `nazar-core`, because this is where the
+/// pages are defined: `cli::VIEWS` and `cli::USAGE_TABS` are the same lists a first launch's
+/// `--view` and `--usage-tab` are checked against, so the two ways of reaching a page cannot
+/// disagree about which pages exist. A name this build does not know opens the panel rather
+/// than nothing — somebody asked for it, and the panel is always an answer.
+#[must_use]
+pub fn landing(request: &nazar_core::ShowRequest) -> Landing {
+    let known = |name: &&str, list: &[&str]| list.contains(name);
+    match request
+        .view
+        .as_deref()
+        .filter(|view| known(view, &crate::cli::VIEWS))
+    {
+        Some("settings") => Landing::Settings,
+        Some("usage") => Landing::Usage(
+            request
+                .usage_tab
+                .clone()
+                .filter(|tab| known(&tab.as_str(), &crate::cli::USAGE_TABS)),
+        ),
+        _ => Landing::Panel,
+    }
+}
+
+/// Open the panel where a second launch asked for it. Called on the refresh loop's thread,
+/// like [`crate::panel::show`] before it, and safe there for the same reason: every call goes
+/// through the `AppHandle`.
+///
+/// The usage view takes the tab as the event's payload, and the menu's own `Usage history`
+/// sends none — so one listener serves both, and the menu still lands wherever the view's
+/// own default is.
+pub fn open_requested(app: &tauri::AppHandle, request: &nazar_core::ShowRequest) {
+    match landing(request) {
+        Landing::Panel => crate::panel::show(app),
+        Landing::Settings => open_settings(app.clone()),
+        Landing::Usage(tab) => {
+            let _ = app.emit(OPEN_USAGE, tab);
+            crate::panel::show(app);
+        }
+    }
+}
+
 /// Everything the settings form draws itself from.
 #[tauri::command]
 pub fn get_config(
@@ -902,6 +957,43 @@ mod tests {
             overrides,
             false,
         )
+    }
+
+    fn request(view: Option<&str>, tab: Option<&str>) -> nazar_core::ShowRequest {
+        nazar_core::ShowRequest {
+            view: view.map(str::to_owned),
+            usage_tab: tab.map(str::to_owned),
+        }
+    }
+
+    /// T-WP27: a request lands on the page it names, and only on a page this build has.
+    #[test]
+    fn a_second_launch_lands_on_the_page_it_asked_for() {
+        assert_eq!(landing(&request(None, None)), Landing::Panel);
+        assert_eq!(
+            landing(&request(Some("settings"), None)),
+            Landing::Settings,
+            "nazar-gnome's gear, with the engine already running"
+        );
+        assert_eq!(
+            landing(&request(Some("usage"), Some("models"))),
+            Landing::Usage(Some("models".to_owned()))
+        );
+        assert_eq!(
+            landing(&request(Some("usage"), None)),
+            Landing::Usage(None),
+            "no tab named: the view's own default, which is what the menu gets too"
+        );
+        assert_eq!(
+            landing(&request(Some("usage"), Some("hourly"))),
+            Landing::Usage(None),
+            "a tab this build has not got is dropped, and the view still opens"
+        );
+        assert_eq!(
+            landing(&request(Some("history"), Some("week"))),
+            Landing::Panel,
+            "a page a newer build wrote opens the panel rather than nothing"
+        );
     }
 
     /// The bug qarpus found on a Fedora 44 GNOME session on 2026-09-16.

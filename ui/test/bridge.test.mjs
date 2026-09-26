@@ -302,12 +302,13 @@ test("the panel and the settings agree on which languages exist", () => {
 });
 
 test("the panel listens for the event names the Rust side emits", () => {
-  for (const name of ["SNAPSHOT_CHANGED", "OPEN_SETTINGS"]) {
+  for (const name of ["SNAPSHOT_CHANGED", "OPEN_SETTINGS", "OPEN_USAGE"]) {
     const constant = new RegExp(`pub const ${name}: &str = "([^"]+)"`).exec(rustState);
     assert.ok(constant, `state.rs no longer names ${name}`);
     assert.match(
       panel,
-      new RegExp(`listen\\("${constant[1]}"`),
+      // A listener may name its payload's type: `listen<string | null>("open-usage", …)`.
+      new RegExp(`listen(?:<[^>]*>)?\\("${constant[1]}"`),
       `the panel does not listen for ${constant[1]}`,
     );
   }

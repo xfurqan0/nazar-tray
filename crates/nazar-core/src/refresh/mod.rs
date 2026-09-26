@@ -64,7 +64,10 @@ pub use watch::WatchSet;
 pub const REQUEST_MAX_AGE: Duration = Duration::from_secs(60);
 
 /// Something the loop wants the application to know.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy` since T-WP27: [`Event::ShowRequested`] carries the page a second launch asked
+/// for, and a page is a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A pass finished, whether or not anything moved.
     ///
@@ -76,8 +79,55 @@ pub enum Event {
     Refreshed,
     /// The document changed. The panel should re-read the snapshot.
     SnapshotChanged,
-    /// Somebody asked for the panel: a second launch of the application.
-    ShowRequested,
+    /// Somebody asked for the panel: a second launch of the application, and what it wanted
+    /// the panel to open on.
+    ShowRequested(ShowRequest),
+}
+
+/// What a second launch asked the running instance to show.
+///
+/// **Both fields are names the application defines** — the pages its panel has, and the tabs
+/// one of those pages has — and nothing in this crate knows which ones exist. The loop carries
+/// them from the marker to the listener and the application decides what they mean, so a name
+/// a newer build wrote and an older one does not know is dropped where the pages are known,
+/// not here. What *is* decided here is the shape: a name is short and made of lowercase
+/// letters, digits and hyphens, or it is not a name and is dropped on the way in.
+///
+/// The default is the request every launch made before T-WP27, and the one an older build
+/// still writes: "show the panel", with nothing about where.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowRequest {
+    /// The page to open, such as `settings`. `None` is the page the panel opens on anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
+    /// Which tab of that page, where it has tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_tab: Option<String>,
+}
+
+impl ShowRequest {
+    /// The longest name either field may carry. Every page and tab this application has
+    /// today is under ten characters; a marker is a file anybody can write, and a
+    /// kilobyte of "name" is not one.
+    pub const NAME_LIMIT: usize = 32;
+
+    /// Keep what has the shape of a name and drop what has not.
+    #[must_use]
+    fn sanitized(self) -> Self {
+        let name = |value: Option<String>| {
+            value.filter(|name| {
+                (1..=Self::NAME_LIMIT).contains(&name.len())
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            })
+        };
+        ShowRequest {
+            view: name(self.view),
+            usage_tab: name(self.usage_tab),
+        }
+    }
 }
 
 /// What one pass of the loop did.
@@ -292,8 +342,8 @@ impl Engine {
             self.schedule.signal(now_ms, Cause::Woke);
         }
         if observation.scan {
-            if self.take_request(&now) {
-                self.emit(Event::ShowRequested);
+            if let Some(request) = self.take_request(&now) {
+                self.emit(Event::ShowRequested(request));
                 self.schedule.signal(now_ms, Cause::Requested);
             }
             if self.watch.scan() {
@@ -406,25 +456,22 @@ impl Engine {
         }
     }
 
-    /// Whether somebody asked for the panel since the last look.
+    /// Whether somebody asked for the panel since the last look, and what they asked for.
     ///
     /// The file is removed either way: an old one is litter and a fresh one has been acted
     /// on, and leaving either behind would make the next launch ambiguous.
-    fn take_request(&self, now: &str) -> bool {
-        let Some(path) = self.request.as_deref() else {
-            return false;
-        };
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return false;
-        };
+    fn take_request(&self, now: &str) -> Option<ShowRequest> {
+        let path = self.request.as_deref()?;
+        let metadata = std::fs::metadata(path).ok()?;
         let fresh = metadata
             .modified()
             .ok()
             .zip(unix_seconds_from_rfc3339(now))
             .map(|(modified, now)| now - crate::clock::system_time_seconds(modified))
             .is_none_or(|age| age <= REQUEST_MAX_AGE.as_secs() as i64);
+        let request = read_request(path);
         let _ = std::fs::remove_file(path);
-        fresh
+        fresh.then_some(request)
     }
 
     fn snapshot_updated_at(&self) -> String {
@@ -449,14 +496,46 @@ impl Engine {
     }
 }
 
-/// Leave a marker asking the running instance to show its panel.
+/// Leave a marker asking the running instance to show its panel, and where to open it.
 ///
 /// Written atomically, so the running instance never sees half of it, and written with the
-/// current time inside for a human reading `~/.nazar` by hand. Only the file's existence and
-/// its modification time are ever read.
-pub fn place_request(path: &Path, now: &str) -> Result<()> {
-    let body = format!("{{\n  \"requestedAt\": \"{now}\"\n}}\n");
+/// current time inside for a human reading `~/.nazar` by hand. The time is not read back:
+/// the file's modification time is what decides whether it is fresh.
+pub fn place_request(path: &Path, now: &str, request: &ShowRequest) -> Result<()> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Marker<'a> {
+        requested_at: &'a str,
+        #[serde(flatten)]
+        request: &'a ShowRequest,
+    }
+    let mut body = serde_json::to_string_pretty(&Marker {
+        requested_at: now,
+        request,
+    })?;
+    body.push('\n');
     atomic::write_bytes(path, body.as_bytes())
+}
+
+/// What a marker asks for, read without trusting it.
+///
+/// **Every failure is the plain request.** A marker from 0.1.0 or 0.2.0 carries a timestamp
+/// and nothing else, a `touch` leaves an empty file, and a body cut short is a body this
+/// build cannot read: in each case somebody launched the application again, and the answer
+/// is the panel on the page it opens on anyway. Reading is bounded because the directory is
+/// the user's and the file is not ours alone to write.
+fn read_request(path: &Path) -> ShowRequest {
+    use std::io::Read;
+
+    const LIMIT: u64 = 4096;
+    let mut body = Vec::new();
+    let read = std::fs::File::open(path).and_then(|file| file.take(LIMIT).read_to_end(&mut body));
+    if read.is_err() {
+        return ShowRequest::default();
+    }
+    serde_json::from_slice::<ShowRequest>(&body)
+        .map(ShowRequest::sanitized)
+        .unwrap_or_default()
 }
 
 /// What the loop's owner can tell it to do.

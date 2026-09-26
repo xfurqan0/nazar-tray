@@ -61,7 +61,7 @@ Rules that follow from this table, and that the tests enforce:
 | `GET https://api.anthropic.com/api/oauth/usage` | `limits[]`, and inside each entry `{kind, percent, resets_at, scope.model.display_name}`; or the older top-level `five_hour`/`seven_day` `{utilization, resets_at}` | observed live 2026-09-07 | none — no fixture may hold a real response | **Opt-in, off by default.** See "The usage endpoint" below. |
 | `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json` | `claudeAiOauth.{accessToken, expiresAt, rateLimitTier, subscriptionType}` — **four values, and the token is never stored** | Claude Code 2.1.263 | none — and there never will be one | **Opt-in, off by default.** Read-only, never written. See "The sign-in file" below. |
 | `~/.nazar/limits.lock` | `{schemaVersion, pid, startedAt, heartbeatAt}` — **ours**, read and written | this build | none needed; `lock.rs`'s tests are the fixture | The advisory file that makes "one writer" true. See "The advisory lock" below. |
-| `~/.nazar/tray.request` | **existence and modification time only.** The contents are one timestamp, for a human reading the directory | this build | none | How a second launch reaches the running tray. See "The request marker" below. |
+| `~/.nazar/tray.request` | **ours**: existence and modification time decide whether it is obeyed; `view` and `usageTab` say where the panel opens (T-WP27); `requestedAt` is for a human reading the directory | this build | none needed; `refresh/tests.rs` writes every shape by hand | How a second launch reaches the running tray. See "The request marker" below. |
 | `%APPDATA%\nazar\config.json` | **ours**, read and written; every key the settings page owns, and unknown keys preserved verbatim | this build | none needed; `config.rs`'s tests are the fixture | The user's settings. See "The settings file" below. |
 | `%APPDATA%\nazar\alerts.json` | **ours**, read and written: `{schemaVersion, windows{<provider>/<window>{resetsAt, fired[]}}}` | this build | none needed; `alerts.rs`'s tests are the fixture | Which threshold notifications have already been shown. See "The notification log" below. |
 
@@ -614,14 +614,31 @@ exits; the tray notices it within five seconds, deletes it, and opens its panel.
 
 ```json
 {
-  "requestedAt": "2026-09-07T09:18:31Z"
+  "requestedAt": "2026-09-26T15:00:00Z",
+  "view": "usage",
+  "usageTab": "models"
 }
 ```
 
-Only two things about the file are ever read: **that it exists**, and **when it was last
+**Whether it is obeyed** is decided by two things: **that it exists**, and **when it was last
 written**. The timestamp inside is for a human looking at the directory. A marker older than
 sixty seconds is swept up without being obeyed — one left behind by a crash is litter, not an
 instruction, and a panel opening days later because of it would be a small haunting.
+
+**Where the panel opens** is the body's `view` and `usageTab`, both absent unless the launch
+that wrote the marker was given `--view` (T-WP27). Until 0.3.0 the body was the timestamp and
+nothing else, so `nazar-tray --view settings` — what nazar-gnome's gear runs — opened the
+numbers on any machine where the engine was already up. The body is read defensively, because
+the directory is the user's:
+
+- **At most 4 KiB is read**, and a body that is not JSON, or has a field of the wrong type,
+  is the plain request — the panel on the page it opens on anyway. A 0.1.0 or 0.2.0 marker
+  (timestamp only), an empty file from `touch`, and a truncated one all land there.
+- **A name is up to 32 lowercase letters, digits and hyphens**, or it is dropped on the way
+  in. The two fields are judged separately.
+- **The names are checked against this build's pages** by the application, not by the loop:
+  `settings` and `usage` for `view`; `week`, `weeks`, `all`, `models` and `day` for
+  `usageTab`, and only beside `view: "usage"`. A page a newer build wrote opens the panel.
 
 ## The settings file
 

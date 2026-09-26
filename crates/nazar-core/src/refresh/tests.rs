@@ -435,12 +435,14 @@ fn a_request_file_asks_for_the_panel_and_a_refresh() {
         .with_request_file(&request);
 
     engine.tick(&harness.clock);
-    place_request(&request, &harness.clock.now()).unwrap();
+    place_request(&request, &harness.clock.now(), &ShowRequest::default()).unwrap();
 
     harness.clock.advance(Duration::from_secs(5));
     engine.tick(&harness.clock);
     assert!(
-        harness.events().contains(&Event::ShowRequested),
+        harness
+            .events()
+            .contains(&Event::ShowRequested(ShowRequest::default())),
         "a second launch asks the running tray to show itself"
     );
     assert!(!request.exists(), "the marker is consumed, not left behind");
@@ -459,17 +461,155 @@ fn a_request_file_left_behind_by_a_crash_is_swept_up_not_obeyed() {
         .with_request_file(&request);
 
     engine.tick(&harness.clock);
-    place_request(&request, &harness.clock.now()).unwrap();
+    place_request(&request, &harness.clock.now(), &settings()).unwrap();
 
     // Five minutes later, nobody having noticed.
     harness.clock.advance(Duration::from_secs(300));
     engine.tick(&harness.clock);
 
     assert!(
-        !harness.events().contains(&Event::ShowRequested),
-        "a marker older than a minute is litter, not an instruction"
+        !harness
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ShowRequested(_))),
+        "a marker older than a minute is litter, not an instruction — whatever page it names"
     );
     assert!(!request.exists());
+}
+
+fn settings() -> ShowRequest {
+    ShowRequest {
+        view: Some("settings".to_owned()),
+        usage_tab: None,
+    }
+}
+
+/// Place a marker body by hand, tick past the scan, and say what the loop asked for.
+///
+/// `None` when it asked for nothing. The body is written raw rather than through
+/// [`place_request`] because two of the cases below are files [`place_request`] would never
+/// write: one an older build left, and one that is not JSON at all.
+fn asked_for(name: &str, body: &str) -> Option<ShowRequest> {
+    let harness = Harness::new(name);
+    let request = harness.dir.join("tray.request");
+    let codex = FakeReader::new("codex", reading(54.0));
+    let mut engine = harness
+        .engine(ReaderSet::new().with(Box::new(codex)), Some(harness.lock()))
+        .with_request_file(&request);
+
+    engine.tick(&harness.clock);
+    std::fs::write(&request, body).unwrap();
+    harness.clock.advance(Duration::from_secs(5));
+    engine.tick(&harness.clock);
+    assert!(
+        !request.exists(),
+        "the marker is consumed, whatever it said"
+    );
+
+    harness.events().into_iter().find_map(|event| match event {
+        Event::ShowRequested(request) => Some(request),
+        _ => None,
+    })
+}
+
+/// T-WP27, the package: `nazar-tray --view settings` while a tray is running.
+///
+/// nazar-gnome's gear runs exactly that, and until this the running instance was told "show
+/// your panel" and nothing else — so the gear opened the numbers, one click short of the page
+/// it is labelled with, on every machine where the engine was already up. Which is every
+/// machine the gear is for.
+#[test]
+fn a_second_launch_says_which_page_it_wants() {
+    let harness = Harness::new("refresh-request-view");
+    let request = harness.dir.join("tray.request");
+    let codex = FakeReader::new("codex", reading(54.0));
+    let mut engine = harness
+        .engine(ReaderSet::new().with(Box::new(codex)), Some(harness.lock()))
+        .with_request_file(&request);
+
+    engine.tick(&harness.clock);
+    place_request(&request, &harness.clock.now(), &settings()).unwrap();
+    harness.clock.advance(Duration::from_secs(5));
+    engine.tick(&harness.clock);
+
+    assert!(
+        harness.events().contains(&Event::ShowRequested(settings())),
+        "the page travels with the request: {:?}",
+        harness.events()
+    );
+}
+
+#[test]
+fn the_usage_tab_travels_with_the_usage_view() {
+    let wanted = ShowRequest {
+        view: Some("usage".to_owned()),
+        usage_tab: Some("models".to_owned()),
+    };
+    let dir = TempDir::new("refresh-request-tab");
+    let path = dir.join("tray.request");
+    place_request(&path, "2026-09-26T15:00:00Z", &wanted).unwrap();
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        body.contains("\"requestedAt\": \"2026-09-26T15:00:00Z\""),
+        "the timestamp a person reads is still there: {body}"
+    );
+
+    assert_eq!(asked_for("refresh-request-tab-read", &body), Some(wanted));
+}
+
+/// An older build's marker, and a file somebody touched by hand: both still open the panel.
+///
+/// The marker is how every launch reaches the running tray, and a running 0.3.0 can be
+/// reached by a 0.2.0 binary that is still on the `PATH`. A body this build cannot read is a
+/// request with nothing about where — never a request ignored.
+#[test]
+fn a_marker_that_names_no_page_still_opens_the_panel() {
+    assert_eq!(
+        asked_for(
+            "refresh-request-old",
+            "{\n  \"requestedAt\": \"2026-09-07T09:18:31Z\"\n}\n"
+        ),
+        Some(ShowRequest::default()),
+        "what 0.1.0 and 0.2.0 write"
+    );
+    assert_eq!(
+        asked_for("refresh-request-empty", ""),
+        Some(ShowRequest::default()),
+        "`touch ~/.nazar/tray.request`"
+    );
+    assert_eq!(
+        asked_for("refresh-request-junk", "not json at all"),
+        Some(ShowRequest::default())
+    );
+}
+
+/// A marker is a file anybody can write, so what it carries is a name or it is nothing.
+#[test]
+fn a_page_that_is_not_a_name_is_dropped_and_the_panel_still_opens() {
+    let long = "a".repeat(ShowRequest::NAME_LIMIT + 1);
+    for view in [
+        "../../etc/passwd",
+        "Settings",
+        "",
+        "set tings",
+        long.as_str(),
+    ] {
+        let body = serde_json::json!({ "view": view, "usageTab": "week" }).to_string();
+        assert_eq!(
+            asked_for("refresh-request-bad-name", &body),
+            Some(ShowRequest {
+                view: None,
+                usage_tab: Some("week".to_owned()),
+            }),
+            "{view:?} is not a page name, and the tab beside it is judged on its own"
+        );
+    }
+    let body = serde_json::json!({ "view": 7 }).to_string();
+    assert_eq!(
+        asked_for("refresh-request-bad-type", &body),
+        Some(ShowRequest::default()),
+        "a number where a name goes is a marker this build cannot read, not a refusal"
+    );
 }
 
 // ---------------------------------------------------------------- isolation

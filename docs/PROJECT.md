@@ -177,6 +177,18 @@ is *live* threads, and a live thread's rollout is by definition far newer than t
 threshold, so it stays plain. The thread-writer locks it reads were unchanged under 0.154.0.
 That is a note for Nazar rather than work here.
 
+### The 0.3.0 fixes (T-WP27 – T-WP30)
+
+From live use rather than an audit. On 2026-09-23 the maintainer's laptop showed a GNOME
+panel reading 67 % while the status line said 5 %: the engine had been dead for six days,
+nothing started it at login, and the number on screen was the last one it wrote. The sibling
+repository took the half that was about showing a dead number (nazar-gnome's expiry rule);
+these are the four things that session found on this side.
+
+| # | Package | Done when |
+|---|---|---|
+| T-WP27 ✅ | **A second launch says which page it wants**: the `tray.request` marker carries `view` and `usageTab`, the loop hands them over as `Event::ShowRequested(ShowRequest)`, and the running tray lands where a first launch with the same flags would | ~~`nazar-tray --view settings` opens the settings page whether or not a tray is already running, on both platforms; a marker from 0.2.0, an empty one and a damaged one still open the panel~~ — **landed 2026-09-26** |
+
 ### The Linux packages (T-WP-L0 – T-WP-L6)
 
 From a port audit on 2026-09-15 that started by building the tray on Linux for the first time
@@ -2058,3 +2070,21 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   `desktop::DESKTOP_SWITCHES`, and both still round-trip through the form on every platform:
   a hidden row must not be a cleared setting, which is what a Windows Save would otherwise
   have done to a Linux user's label.
+
+- 2026-09-26 18:30 — **T-WP27 landed: a second launch says which page it wants.** Found on
+  2026-09-23 from the nazar-gnome side: its gear runs `nazar-tray --view settings`, and with the
+  engine already up — which is the only state the gear is ever pressed in — the running tray
+  was told "show your panel" and nothing else, so the gear opened the numbers. `--view` had
+  only ever been a first launch's flag; the second launch's marker carried a timestamp.
+  The marker now carries `view` and `usageTab` beside it, `Event::ShowRequested` carries a
+  `ShowRequest`, and `state::landing` decides against `cli::VIEWS` and `cli::USAGE_TABS` — the
+  lists a first launch is checked against, so the two roads to a page cannot disagree about
+  which pages exist. **The old marker is still a request:** a 0.2.0 binary on the `PATH`
+  writing the timestamp only, a `touch`, and a truncated body all open the panel where it
+  opens anyway, and so does a page name this build has not got. The body is read up to 4 KiB,
+  and a name is 1–32 lowercase letters, digits and hyphens or it is dropped. The terminal line
+  names the page (`asked it to show its panel on its settings page`), which was the other half
+  of the report: the two requests used to be indistinguishable from outside. Red first: three
+  of the five new `refresh` tests failed with `left: Some(ShowRequest { view: None, … })` —
+  the page lost, which is the bug. Same code path on both platforms; the marker has always
+  been the single-instance channel on Windows and Linux alike.

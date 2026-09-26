@@ -73,7 +73,7 @@ pub use limits::{
     write_limits,
 };
 pub use lock::{Acquisition, LimitsLock};
-pub use refresh::{Cause, Engine, Event, LoopHandle, ReaderSet, Warnings};
+pub use refresh::{Cause, Engine, Event, LoopHandle, ReaderSet, ShowRequest, Warnings};
 pub use state::{Freshness, Rules, Severity, Snapshot, SnapshotView};
 pub use timefmt::now_rfc3339;
 pub use usage::{UsageSummary, UsageView, scan_claude, scan_codex};

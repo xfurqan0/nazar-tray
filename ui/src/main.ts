@@ -1886,8 +1886,14 @@ void listen("open-settings", () => {
 });
 
 // And its `Usage history`, added in T-WP-L12 — the same handler the footer button runs, so
-// the menu and the panel cannot open the view in two different states.
-void listen("open-usage", () => {
+// the menu and the panel cannot open the view in two different states. A second launch with
+// `--view usage --usage-tab <name>` sends the tab as the payload (T-WP27) and lands where a
+// first launch with the same flags would; the menu sends none.
+void listen<string | null>("open-usage", (event) => {
+  if (typeof event.payload === "string") {
+    void openUsageAt(event.payload);
+    return;
+  }
   showView("usage");
   usage = closeDetail(usage);
   void askUsage();
