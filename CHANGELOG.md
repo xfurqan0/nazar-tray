@@ -6,7 +6,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
-## [0.3.0] — 2026-09-26
+## [0.3.0] — 2026-09-27
 
 **Linux ships beside Windows.** 0.1.0 and 0.2.0 were one installer for one operating system.
 This release adds a `.deb` and an `.rpm`, built by the same release workflow from the same tag,
@@ -144,6 +144,17 @@ winget counterpart here — no COPR, no AUR, no Flatpak — so the packages are 
 
 ### Fixed
 
+- **A reboot left Linux with no engine for five minutes** (T-WP30). The kernel hands low pids
+  out again within seconds of boot, and the engine's lock still named its old one: on the
+  maintainer's laptop pid 4011 went to `gdbus` 24 seconds after boot, the autostart entry was
+  told `nazar-tray is already running (pid 4011)` and exited, and nothing ran until the last
+  heartbeat — written seconds before the shutdown — aged out. The pid-reuse check that
+  already protected Windows now reads a process's creation time on Linux too, from
+  `/proc/<pid>/stat`, `/proc/stat` and `sysconf`, so a lock whose pid now belongs to a
+  younger process is taken over at once. A genuine holder is still left alone.
+- **The wrapper's own status line rounded up.** For a user with no status line of their own,
+  `nazar-statusline` prints one, and it rounded to the nearest: 99.6 % was `5h 100%` in the
+  prompt while the tray said 99. It floors through the same tolerance as every other face.
 - **A 57 % window read as 56** (T-WP29). Claude Code reports a fraction times a hundred, so
   `0.57 * 100` arrives as `56.99999999999999`, and a bare floor took a point only binary
   arithmetic removed — on the label, the menu row, the tooltip, the panel and the Waybar
@@ -174,6 +185,10 @@ winget counterpart here — no COPR, no AUR, no Flatpak — so the packages are 
   `libappindicator` 0.9.0, the newest there is, and the affected functions are called by
   nothing in the resolved tree; it is ignored with that reason and a review date, beside six
   unmaintained crates under the Tauri tree whose chains no update reaches.
+- **And CI runs it every Monday.** Advisories arrive against a lock file nobody touched, so
+  `.github/workflows/deny.yml` checks on a schedule rather than on a push, and a failure
+  reaches the maintainer through GitHub's own notification. There is deliberately no
+  Dependabot: a dependency here moves in a reviewed commit, not a bot's pull request.
 
 ### Known limits
 
@@ -182,6 +197,10 @@ winget counterpart here — no COPR, no AUR, no Flatpak — so the packages are 
   (T-WP-L4). If you installed the wrapper, run `nazar-statusline uninstall` — or *Remove
   status-line wrapper* in the settings — before `apt remove` or `dnf remove`. Afterwards,
   `~/.nazar/statusline/chain.json` still holds the status line you had.
+- **Upgrading a Linux package does not restart a running tray.** `dnf` and `apt` replace the
+  file and leave the old process in memory, so the settings page goes on saying the old
+  version. Run `pkill -x nazar-tray` and start it again, or log out and back in. The Windows
+  installer stops and restarts it for you.
 - **A stock GNOME draws no tray icon** without the AppIndicator extension. The engine runs
   regardless; with no icon the panel opens by running `nazar-tray` a second time.
 - **The Linux startup entry ignores `XDG_CONFIG_HOME`**: `auto-launch` writes

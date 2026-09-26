@@ -2179,3 +2179,17 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   proves a live-but-younger pid is reclaimed, and the one that reads this process's own
   creation time, now run on Linux; a new one checks that a child reads as younger than its
   parent. macOS and the BSDs still answer `None`.
+
+- 2026-09-27 03:05 — **Two smaller things for 0.3.0, and its date.** `nazar-statusline`'s own
+  line — the one it prints for a user who had no status line — rounded to the nearest, so
+  99.6 % was `5h 100%` in the prompt beside a tray saying 99 (finding B15); it goes through
+  `display_percent` now, the same tolerant floor as every face. And `cargo deny check` runs
+  every Monday in `.github/workflows/deny.yml`, with `workflow_dispatch` beside the
+  schedule: advisories arrive against a lock file nobody touched, so a push-time gate would
+  be silent for weeks and then red on an unrelated commit. Deliberately no Dependabot — a
+  dependency moves here in a reviewed commit, with the licence gate, the notices and both
+  builds behind it. The first run, dispatched by hand, was green (run 36280877505).
+  CHANGELOG's 0.3.0 is dated 2026-09-27, carries T-WP30 under Fixed, and names the one
+  Linux upgrade trap as a known limit: `dnf` and `apt` replace the file and leave the old
+  process running, measured on the laptop the evening before (the settings page said 0.2.0
+  after the 0.3.0 package was installed).

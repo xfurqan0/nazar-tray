@@ -34,6 +34,9 @@ package, and winget is Windows only.
 - **Settings that belong to the desktop**: *Start with the desktop session*, the label
   switch, and an opt-in to open the panel through XWayland, where it can be placed.
   Quiet hours and the system language work on Linux now.
+- **The engine comes back after a reboot.** A lock left by the last session is taken over
+  at once when its process id now belongs to something else, instead of five minutes of
+  "already running" — which the kernel's pid reuse made happen on every reboot.
 
 ## What's new everywhere
 
@@ -42,7 +45,8 @@ package, and winget is Windows only.
 - **Alt+F4 hides the panel** instead of ending the run. *Quit* is the way out.
 - **`nazar-tray --help`** exists, and on Windows it — like `--print` — now prints into
   the terminal it was typed in.
-- **A 57 % window reads 57**, not 56. `limits.json` still stores what was reported.
+- **A 57 % window reads 57**, not 56, and 99.6 % reads 99 everywhere — the wrapper's own
+  status line included. `limits.json` still stores what was reported.
 - **"Not set up" says what to do**: Claude Code without the wrapper reads *status line
   wrapper not installed*, with the command that fixes it.
 - **Codex's compressed session logs are read**, for the day Codex turns that on.
@@ -53,6 +57,8 @@ package, and winget is Windows only.
 - **Removing the Linux package does not put Claude Code's status line back.** If you
   installed the wrapper, run `nazar-statusline uninstall` before `apt remove` or
   `dnf remove`. The Windows uninstaller does this for you.
+- **Upgrading a Linux package leaves the old process running.** Afterwards run
+  `pkill -x nazar-tray` and start it again, or log out and back in.
 - On Wayland the panel opens where the compositor puts it, and with no tray icon it
   opens only by running `nazar-tray` a second time.
 - Claude numbers move only while a session refreshes its status line. Between sessions
