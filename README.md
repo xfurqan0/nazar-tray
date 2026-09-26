@@ -9,8 +9,9 @@ A pixel bead sits in your tray. Hover it for your most-constrained window and wh
 > have moved, the icon and the panel, notifications, autostart, settings, six languages, the
 > installer, the winget manifests and the release pipeline. **0.2.0 adds the usage history**:
 > what you actually spent, per model, per day, per week and for all time, for both providers,
-> off files that were already on your disk. Windows first; macOS and Linux builds later from
-> the same codebase.
+> off files that were already on your disk. **Windows is the daily driver and Linux ships
+> beside it**: the same codebase, built by the same pipeline, with a `.deb` and an `.rpm` on
+> every release from 0.3.0 onwards. macOS waits for a signing certificate.
 >
 > **winget takes a day or two to catch up.** The package is submitted as a pull request
 > against `microsoft/winget-pkgs` once the release is out, and a reviewer there merges it. The
@@ -61,6 +62,39 @@ the meantime: [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md).
 deletes the wrapper. It keeps `~/.nazar` — `limits.json` is read by Nazar and the captures are
 yours — and keeps `%APPDATA%\nazar` unless you tick *delete application data*, which a silent
 uninstall never asks. Both are one `Remove-Item` away.
+
+**On Linux**, take the `.deb` or the `.rpm` from
+[Releases](https://github.com/xfurqan0/nazar-tray/releases). There is no winget equivalent
+yet — no COPR, no AUR, no Flatpak — so this is the only route, and it is the same file with
+the same `SHA256SUMS` line and the same attestation:
+
+```bash
+sudo apt install ./nazar-tray_0.3.0_amd64.deb      # Debian 12+, Ubuntu 22.04+
+sudo dnf install ./nazar-tray-0.3.0-1.x86_64.rpm   # Fedora
+
+gh attestation verify ./nazar-tray_0.3.0_amd64.deb --repo xfurqan0/nazar-tray
+```
+
+Built on `ubuntu-22.04` against glibc 2.35, so it runs on Debian 12 and anything newer. It
+installs `/usr/bin/nazar-tray`, `/usr/bin/nazar-statusline`, a `.desktop` entry and the
+icons; removing the package leaves `~/.nazar` and `~/.config/nazar` alone, for the same
+reasons the Windows uninstaller leaves `%APPDATA%\nazar`.
+
+**What the tray does on a desktop that has no tray.** On KDE, XFCE, Cinnamon, Budgie and
+Ubuntu's GNOME the bead is drawn, and its menu carries the numbers and opens the panel. A stock
+GNOME runs no StatusNotifier host, so nazar-tray asks the session bus before it builds an
+icon and, when the answer is no, says so once in a desktop notification and **keeps running
+as the engine** — the refresh loop, the advisory lock, the threshold notifications and
+`~/.nazar/limits.json` are all still there. Two faces read that file:
+[nazar-gnome](https://github.com/xfurqan0/nazar-gnome) puts the bead in the GNOME panel, and
+[`faces/waybar/`](faces/waybar/) is sixty lines of shell for a Waybar module.
+
+**Nothing starts at login until you switch it on**, as on Windows: *Start with the desktop
+session* on the settings page — nazar-gnome's gear opens it on a stock GNOME — or
+`nazar-tray --autostart on` writes `~/.config/autostart/nazar-tray.desktop`. The entry starts
+the binary the way you are running it: switched on from `nazar-tray --headless` it stays the
+engine, and otherwise it asks the session bus again at every login, so it is the tray where
+a host is running and the engine where none is.
 
 ## Why another quota tray
 
@@ -456,24 +490,40 @@ left in English.
 - Next: a code-signing certificate through SignPath Foundation, which asks that a project
   already be released — [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md)
 - v2: macOS build, multiple accounts, more providers
-- Linux: the tray icon, the menu that carries the numbers, `--print` and the Nazar canvas; a
-  tray *popup* beside the icon is not possible on Wayland and is opt-in through XWayland
+- Linux: **shipped from 0.3.0** — the engine on every desktop, the tray where the desktop
+  runs a StatusNotifier host, and faces ([nazar-gnome](https://github.com/xfurqan0/nazar-gnome),
+  [`faces/waybar/`](faces/waybar/)) where it does not. Packaged as `.deb` and `.rpm`; a COPR
+  or an AUR package is wanted and not scheduled
 - Anything else that is wanted but not scheduled is [docs/FUTURE.md](docs/FUTURE.md)
 
 ## Development
 
-Windows, because that is what v1 targets. `nazar-core` builds and tests on Linux and
-macOS too, and CI keeps it that way.
+Windows and Linux, both of which CI builds the whole application on. `nazar-core` and
+`nazar-statusline` are pure Rust and are tested on macOS as well, which is what keeps that
+build a step rather than a rewrite.
 
 **Prerequisites**
 
 | Tool | Version | Why |
 |---|---|---|
 | Rust | stable, ≥ 1.87 | `rust-toolchain.toml` pins the channel and pulls `clippy` and `rustfmt` |
-| MSVC Build Tools 2022 | with the C++ workload | there is no linker without it |
-| WebView2 | already part of Windows 10 1803+ and Windows 11 | the panel runs in it |
 | Node | 22 | builds the panel and runs its tests |
 | `tauri-cli` | 2.x | `cargo install tauri-cli --locked` — only needed for `tauri build`. **Not** for the icons: see below |
+
+On **Windows**: MSVC Build Tools 2022 with the C++ workload (there is no linker without it),
+and WebView2, which is already part of Windows 10 1803+ and Windows 11.
+
+On **Linux**: the GTK and WebKitGTK development packages, plus `patchelf` for the bundler.
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+                 librsvg2-dev libdbus-1-dev patchelf
+```
+
+`libayatana-appindicator3-dev` looks optional and is not. Without it the tray icon has no
+library to `dlopen`, and — the half that leaves the machine — the packages ask for the
+2018-era `libappindicator3` names, which no longer exist in Debian 12 or Ubuntu 24.04.
+`scripts/build-installer.mjs` refuses to build a package without it and names it.
 
 **Layout**
 
@@ -482,7 +532,8 @@ crates/nazar-core       the limits.json contract, its writer and reader. No Taur
                         `--no-default-features` drops the opt-in detailed-windows mode
 crates/nazar-statusline the status-line wrapper and its installer. Three dependencies,
                         no Tauri: it runs on every status-line refresh
-crates/nazar-tray       the Tauri v2 app: tray icon, panel window. Windows first.
+crates/nazar-tray       the Tauri v2 app: tray icon, panel window, and the engine mode
+                        it falls back to on a desktop with no tray. Windows and Linux
 ui/                     the panel: plain TypeScript, HTML and CSS, bundled by esbuild
 fixtures/               limits.sample.json, the file consumers copy into their tests
 packaging/winget/       the three manifests the winget package is submitted as
