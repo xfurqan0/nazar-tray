@@ -190,6 +190,7 @@ these are the four things that session found on this side.
 | T-WP27 ✅ | **A second launch says which page it wants**: the `tray.request` marker carries `view` and `usageTab`, the loop hands them over as `Event::ShowRequested(ShowRequest)`, and the running tray lands where a first launch with the same flags would | ~~`nazar-tray --view settings` opens the settings page whether or not a tray is already running, on both platforms; a marker from 0.2.0, an empty one and a damaged one still open the panel~~ — **landed 2026-09-26** |
 | T-WP-L13 ✅ | **The startup entry starts what wrote it**: `Options::startup_arguments` puts `--headless` beside `--hidden` when the run flipping the switch is the engine somebody asked for, and a test runs the real binary under `dbus-run-session` to show that the plain entry falls into the engine on a bus with no tray host | ~~Turning the switch on from nazar-gnome's gear writes an entry that starts the engine and no icon; the plain entry still becomes a tray wherever a host exists; the default stays off, as on Windows~~ — **landed 2026-09-26** |
 | T-WP28 ✅ | **`--help`**: `-h` / `--help` anywhere on the line prints every flag and exits before the lock; a test reads the parser's own string literals so a flag without a help line fails the build; every printing mode attaches to the parent console on Windows | ~~`nazar-tray --help` prints the usage on both platforms, in a release build too, and never starts a tray or reaches a running one~~ — **landed 2026-09-26** |
+| T-WP29 ✅ | **A floor that does not take a point binary arithmetic removed**: `nazar_core::display_percent` floors through `PERCENT_NOISE` (1e-9), and the label, the menu row, the panel and the Waybar module all go through it; `limits.json` keeps what was reported | ~~A 29 %, 57 % or 58 % window reported as a fraction times a hundred reads as itself on every face; 99.6 % is still 99; `docs/limits-contract.md` is untouched~~ — **landed 2026-09-26** |
 
 ### The Linux packages (T-WP-L0 – T-WP-L6)
 
@@ -2132,3 +2133,28 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   `--autostart` go through it too, which closes the "attach to the parent console" line this
   module had deferred to WP8. The prompt still comes back before the text, because no shell
   waits for a GUI program; piping it makes the shell wait. Red first: all three new tests.
+
+- 2026-09-26 19:25 — **T-WP29 landed: the floor no longer takes a point that only binary
+  arithmetic removed.** The 2026-09-23 report was `percent: 14.000000000000002` in
+  `limits.json`, and the source is upstream: this PC's own status-line capture carries
+  `"used_percentage":14.000000000000002`, which is `0.14 * 100` — Claude Code reports a
+  fraction times a hundred, and the wrapper and the reader pass it through as the contract
+  says they must (`percent` is stored **unrounded**; rule 5 puts the rounding at display
+  time). So the contract was left alone and the display was measured instead. Upwards the
+  noise is only ugly — every face floors it away. **Downwards it costs a point**: of the 101
+  whole percentages, `0.29 * 100`, `0.57 * 100` and `0.58 * 100` land just below themselves
+  (`28.999999999999996` …), and a bare floor showed a 57 % window as `56`. On the tray label,
+  the Linux menu row, the Windows tooltip, the panel and the Waybar module alike.
+  `nazar_core::display_percent` floors through `PERCENT_NOISE` = 1e-9 — nine orders finer
+  than anything either provider reports, five coarser than the error one multiplication
+  leaves near 100 — and `ui/src/snapshot.ts` and `faces/waybar/nazar-waybar.sh` carry the same
+  constant. 99.6 % is still 99, and a real 28.9999 is still 28. Red first: `left: 28.0,
+  right: 29.0` in core, `"56%"` for `"57%"` on the label, `28` for `29` in the panel, and
+  `nazar 56%` from the Waybar script before the change against `nazar 57%` after, run with
+  jq 1.7.1 against the sample with one window set to `56.99999999999999`.
+  **Two faces this does not reach.** The default thresholds are safe — 60, 85 and 100 are
+  exact — but a custom threshold of 29, 57 or 58 is still compared against the stored value,
+  so at exactly that threshold the colour can be one step behind the number beside it. nazar-gnome floors in its own
+  `lib/contract.js` and wants the same tolerance in its own repository. And
+  `nazar-statusline`'s own fallback line rounds to the **nearest** (`percent.round()`), which
+  has no noise problem and does break B15 at 99.6 %; it is written down here, not changed.

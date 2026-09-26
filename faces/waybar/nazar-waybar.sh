@@ -26,8 +26,11 @@ line=$(jq -cn --argjson gone "$gone" --slurpfile doc "$limits" --slurpfile lk "$
   def span($s): if $s < 3600 then "\(($s/60)|floor) m"
     elif $s < 86400 then "\(($s/3600)|floor) h \((($s%3600)/60)|floor) m"
     else "\(($s/86400)|floor) d \((($s%86400)/3600)|floor) h" end;
+  # Rule 5, rounded down at display time -- through the tolerance the tray and the panel
+  # use, so a 57 % window that Claude Code reports as 56.99999999999999 is not 56 (T-WP29).
+  def shown($p): $p + 1e-9 | floor;
   # Rule 2 of the contract: a window with no percent is unknown, and never a reassuring 0.
-  def pct($w): if ($w.percent // null) == null then "?" else "\($w.percent|floor) %" end;
+  def pct($w): if ($w.percent // null) == null then "?" else "\(shown($w.percent)) %" end;
   now as $t
   | ($doc[0].providers // {}) as $ps
   | (($gone | not) and (at($lk[0].heartbeatAt) // 0) > $t - 300) as $up
@@ -38,7 +41,7 @@ line=$(jq -cn --argjson gone "$gone" --slurpfile doc "$limits" --slurpfile lk "$
          then $p.windows[$p.binding].percent
          else (([$p.windows // {} | .[].percent // empty] | max) // empty) end ]) as $tops
   # Rule 5: rounded down, at display time. 99.6 % is not 100 %.
-  | (if ($tops | length) == 0 then null else ($tops | max | floor) end) as $n
+  | (if ($tops | length) == 0 then null else shown($tops | max) end) as $n
   | (if $up | not then "stale" elif $n == null then "unknown"
      elif $n >= 85 then "crit" elif $n >= 60 then "warn" else "ok" end) as $class
   | ([ $ps | to_entries[] | .key as $k | .value as $p

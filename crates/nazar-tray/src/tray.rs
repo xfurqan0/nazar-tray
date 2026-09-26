@@ -647,8 +647,9 @@ fn binding_entry(provider: &ProviderView, catalog: &Catalog) -> Option<(String, 
                 &catalog.text(&format!("tray.provider.{}", provider.name)),
             ),
             ("window", &short_label(catalog, window)),
-            // Floored, never rounded up: 99.6 % has not run out (finding B15).
-            ("percent", &percent.floor().to_string()),
+            // Floored, never rounded up: 99.6 % has not run out (finding B15). Through the
+            // shared tolerance, so a 57 % window is not `56` (T-WP29).
+            ("percent", &nazar_core::display_percent(percent).to_string()),
         ],
     );
     Some((entry, percent, window.remaining_ms))
@@ -685,7 +686,7 @@ fn label(view: &SnapshotView, catalog: &Catalog) -> String {
     };
     catalog.format(
         "tray.label.percent",
-        &[("percent", &percent.floor().to_string())],
+        &[("percent", &nazar_core::display_percent(percent).to_string())],
     )
 }
 
@@ -845,6 +846,25 @@ mod tests {
             vec![window("secondary", Some(99.6), 10080, true)],
         )]);
         assert_eq!(label(&nearly, &catalog), "99%");
+    }
+
+    /// T-WP29: the floor is not allowed to take a point that only binary arithmetic removed.
+    ///
+    /// `0.57 * 100` is `56.99999999999999`, which is what Claude Code's status line reports
+    /// for a 57 % window. The label and the menu row said `56`.
+    #[test]
+    fn the_label_and_the_row_do_not_lose_a_point_to_float_noise() {
+        let catalog = i18n::catalog("en");
+        let noisy = view(vec![provider(
+            "claude",
+            vec![window("five_hour", Some(0.57 * 100.0), 300, true)],
+        )]);
+        assert_eq!(label(&noisy, &catalog), "57%");
+
+        let (entry, _, _) =
+            binding_entry(&noisy.providers[0], &catalog).expect("a binding window is read");
+        assert!(entry.contains("57"), "{entry}");
+        assert!(!entry.contains("56"), "{entry}");
     }
 
     /// A reading nobody has is a question mark, and never a reassuring zero.

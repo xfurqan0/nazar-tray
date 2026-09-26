@@ -68,7 +68,7 @@ as the class. An **array** is indexed by `percentage`, and walks into the same t
 
 | Field | Value |
 |---|---|
-| `text` | `nazar 70%`, the binding window rounded **down** — 99.6 % is `99%`, because a bar that says a window is spent when it is not is wrong at the moment it matters most. `nazar ?` when no window carries a number. |
+| `text` | `nazar 70%`, the binding window rounded **down** — 99.6 % is `99%`, because a bar that says a window is spent when it is not is wrong at the moment it matters most. Down through the same billionth-of-a-point tolerance the tray uses, so a 57 % window Claude Code reports as `56.99999999999999` is `57%`. `nazar ?` when no window carries a number. |
 | `alt`, `class` | One of `ok`, `warn`, `crit`, `stale`, `unknown`. |
 | `tooltip` | One line per window — `codex secondary 70 % · resets in 4 d 2 h` — plus how old each provider's reading is, `\r` between them. A window that could not be read is `?`. When nazar-tray is not running, the first line says so. |
 | `percentage` | The same number as `text`, or `0` when there is none. **For `format-icons` only**; see above. |

@@ -286,6 +286,26 @@ where
     }
 }
 
+/// How far below a whole number a reported percentage may sit and still be that number.
+///
+/// A billionth of a percentage point: nine orders of magnitude finer than anything either
+/// provider reports (Codex sends whole numbers, Claude Code hundredths), and five coarser than
+/// the error one multiplication leaves in a double near 100 (about `1.4e-14`).
+pub const PERCENT_NOISE: f64 = 1e-9;
+
+/// A percentage as a person should read it: a whole number, rounded **down** (rule 5 of
+/// `docs/limits-contract.md`) — after the last bits of binary arithmetic are forgiven.
+///
+/// **The document keeps what the provider said**, `14.000000000000002` included, because the
+/// contract stores `percent` unrounded; this is the display half of the same rule, and every
+/// face in this repository — the tray's label and menu, the panel, the Waybar module — floors
+/// through the same tolerance (T-WP29). Without it `0.29 * 100`, which is how Claude Code
+/// reports a 29 % window, is `28.999999999999996` and shows as `28`.
+#[must_use]
+pub fn display_percent(percent: f64) -> f64 {
+    (percent + PERCENT_NOISE).floor()
+}
+
 /// Read and parse `limits.json`.
 pub fn read_limits(path: &Path) -> Result<Limits> {
     let text = std::fs::read_to_string(path).map_err(|source| Error::io(path, source))?;
@@ -312,6 +332,45 @@ mod tests {
 
     fn sample() -> Limits {
         Limits::from_json(SAMPLE).expect("the shipped sample must parse")
+    }
+
+    /// T-WP29: a percentage that is a whole number up to the last bits of a double is that
+    /// whole number on screen.
+    ///
+    /// Claude Code reports `used_percentage` as a fraction times a hundred, and binary
+    /// floating point cannot hold most hundredths: this machine's own capture on 2026-09-26
+    /// carried `14.000000000000002`, which is `0.14 * 100`. Upwards that is only ugly, since
+    /// a floor removes it. **Downwards it costs a point**: `0.29 * 100` is
+    /// `28.999999999999996`, and rule 5's floor turned a 29 % window into `28 %`. Of the 101
+    /// whole percentages, 29, 57 and 58 are the three that land below themselves.
+    #[test]
+    fn a_whole_percentage_is_not_floored_through_its_own_rounding_error() {
+        for (reported, shown) in [
+            (0.29 * 100.0, 29.0),
+            (0.57 * 100.0, 57.0),
+            (0.58 * 100.0, 58.0),
+            (0.14 * 100.0, 14.0),
+            (14.000_000_000_000_002, 14.0),
+        ] {
+            assert_eq!(display_percent(reported), shown, "{reported:?}");
+        }
+        // And every whole percentage a hundredth-based report can produce.
+        for whole in 0..=100_u32 {
+            let reported = f64::from(whole) / 100.0 * 100.0;
+            assert_eq!(display_percent(reported), f64::from(whole), "{reported:?}");
+        }
+    }
+
+    /// Rule 5 is still rule 5: rounded down, never up. The noise tolerance is nine orders of
+    /// magnitude below the finest precision either provider reports.
+    #[test]
+    fn a_real_fraction_of_a_percent_is_still_rounded_down() {
+        assert_eq!(display_percent(99.6), 99.0, "99.6 % has not run out");
+        assert_eq!(display_percent(99.99), 99.0);
+        assert_eq!(display_percent(12.5), 12.0);
+        assert_eq!(display_percent(0.0), 0.0);
+        assert_eq!(display_percent(100.0), 100.0);
+        assert_eq!(display_percent(28.9999), 28.0, "a real 28.9999 is 28");
     }
 
     #[test]

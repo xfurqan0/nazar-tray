@@ -94,6 +94,18 @@ test("a percentage is rounded down, never up", { skip: windows }, () => {
   assert.equal(module.class, "crit");
 });
 
+test("a whole percentage is not floored through its own rounding error", { skip: windows }, () => {
+  // T-WP29. The writer stores what Claude Code reported, and for a 57 % window that is
+  // `0.57 * 100` = 56.99999999999999. Rule 5's floor must not turn it into 56.
+  const limits = variant((doc) => {
+    doc.providers.codex.windows.secondary.percent = 56.99999999999999;
+  });
+  const module = run(home({ limits, lock: alive() }));
+  assert.equal(module.text, "nazar 57%");
+  assert.equal(module.percentage, 57);
+  assert.match(module.tooltip, /codex secondary 57 %/);
+});
+
 test("a window that could not be read is a question mark and never a zero", { skip: windows }, () => {
   // Rule 2. Codex goes unreadable — no percent, no binding, state error — and the bar falls
   // back to the provider that can still be read rather than to a reassuring 0 %.

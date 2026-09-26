@@ -30,6 +30,17 @@ test("a percentage is floored, never rounded up", () => {
   assert.equal(displayPercent(100), 100);
 });
 
+test("a whole percentage is not floored through its own rounding error", () => {
+  // T-WP29. Claude Code reports a fraction times a hundred, and `0.29 * 100` is
+  // 28.999999999999996 — which a bare floor turned into 28 %. Of the 101 whole percentages,
+  // 29, 57 and 58 land below themselves; every one of them must read as itself.
+  for (let whole = 0; whole <= 100; whole += 1) {
+    assert.equal(displayPercent((whole / 100) * 100), whole, `${(whole / 100) * 100}`);
+  }
+  assert.equal(displayPercent(14.000000000000002), 14);
+  assert.equal(displayPercent(28.9999), 28, "a real fraction is still rounded down");
+});
+
 const provider = (name, severity) => ({
   name,
   configured: true,

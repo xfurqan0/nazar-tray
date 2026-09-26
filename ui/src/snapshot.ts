@@ -237,13 +237,23 @@ export function formatClock(milliseconds: number): string {
 }
 
 /**
+ * How far below a whole number a reported percentage may sit and still be that number.
+ * The same constant as `nazar_core::PERCENT_NOISE`, and for the same reason.
+ */
+export const PERCENT_NOISE = 1e-9;
+
+/**
  * The percentage as it should be shown: floored, never rounded up.
  *
  * A window at 99.6 % has not run out, and a display that says `100` is telling the user
  * something that is not true at the exact moment it matters most.
+ *
+ * Floored **through a tolerance** (T-WP29): Claude Code reports a fraction times a hundred,
+ * and `0.29 * 100` is 28.999999999999996 — a 29 % window that a bare floor showed as 28.
+ * `limits.json` keeps the reported number; only the display forgives the last bits.
  */
 export function displayPercent(percent: number): number {
-  return Math.floor(percent);
+  return Math.floor(percent + PERCENT_NOISE);
 }
 
 /**

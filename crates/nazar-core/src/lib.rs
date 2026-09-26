@@ -69,8 +69,8 @@ pub use codex::CodexReader;
 pub use config::{Config, Invalid, ProviderSwitches, QuietHours};
 pub use error::{Error, Result};
 pub use limits::{
-    Limits, Provider, Providers, SCHEMA_VERSION, Source, Window, WindowState, read_limits,
-    write_limits,
+    Limits, PERCENT_NOISE, Provider, Providers, SCHEMA_VERSION, Source, Window, WindowState,
+    display_percent, read_limits, write_limits,
 };
 pub use lock::{Acquisition, LimitsLock};
 pub use refresh::{Cause, Engine, Event, LoopHandle, ReaderSet, ShowRequest, Warnings};
