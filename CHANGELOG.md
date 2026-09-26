@@ -6,6 +6,200 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `limits.json` has its own compatibility promise, separate from the app version: see
 [docs/limits-contract.md](docs/limits-contract.md).
 
+## [0.3.0] — 2026-09-26
+
+**Linux ships beside Windows.** 0.1.0 and 0.2.0 were one installer for one operating system.
+This release adds a `.deb` and an `.rpm`, built by the same release workflow from the same tag,
+on `ubuntu-22.04` so that they link against glibc 2.35 and start on Debian 12 and anything
+newer. What a Linux desktop gets was measured rather than assumed, and it is three things:
+**the engine everywhere** — the refresh loop, the lock, `~/.nazar/limits.json` and the
+threshold notifications, whether or not anything is drawn; **the tray wherever the desktop
+runs a StatusNotifier host**, which KDE, XFCE, Cinnamon, Budgie and Ubuntu's GNOME do; and
+**faces** for the desktops that do not. Nothing in the contract moved to admit any of it:
+`limits.json` is unchanged and stays at `schemaVersion: 1`, and Nazar reads 0.3.0 exactly as
+it read 0.2.0.
+
+**Most of what a Linux first run found was true of Windows too**, so Windows gets the fixes:
+the tray menu gains *Usage history*, a gear in the panel header opens the settings, Alt+F4
+hides the panel instead of ending the run, `--help` exists and prints into the terminal it was
+typed in, and a 57 % window no longer reads 56.
+
+**Still unsigned, winget is still Windows only, and there is one `SHA256SUMS` for the whole
+release.** The signing story is unchanged since 0.1.0 —
+[docs/CODE_SIGNING.md](docs/CODE_SIGNING.md). The hash list used to be written by the Windows
+build job, the one job that could only see its own output; it is now written by the job that
+holds all three artefacts, and each of them carries a GitHub build attestation. Linux has no
+winget counterpart here — no COPR, no AUR, no Flatpak — so the packages are on the
+[Releases](https://github.com/xfurqan0/nazar-tray/releases) page and nowhere else.
+
+### Added
+
+- **Two Linux packages, and the three fields that decided whether they work** (T-WP-L3).
+  Both carry `/usr/bin/nazar-tray`, `/usr/bin/nazar-statusline`, a `.desktop` entry and the
+  `hicolor` icons, and nothing else. What the bundler produced unconfigured was not shippable:
+  it depended on `libappindicator3-1`, which Debian 12 and Ubuntu 24.04 no longer have; it did
+  not ask for `ca-certificates`, whose absence makes the opt-in detailed-windows mode look like
+  an unreadable quota rather than a missing package; and its maintainer was not the name the
+  Windows side carries. The Ayatana dependency is now settled by the build rather than by
+  whatever `pkg-config` happened to see, and `scripts/build-installer.mjs` refuses to build a
+  package without the Ayatana headers and names the one to install. `StartupNotify=false`,
+  because launching a tray opens no window and a launcher that was not told reports a running
+  program as one that did not respond. No AppImage: its bundler downloads `linuxdeploy` at
+  build time, which a release job should not do.
+- **Engine mode** (T-WP-L2). libappindicator reports success whether or not a host is
+  listening, so on a stock GNOME the tray ran, wrote `limits.json` and showed nothing, with no
+  way to find that out from inside. nazar-tray now asks the session bus whether
+  `org.kde.StatusNotifierWatcher` has an owner **before** it builds an icon, and when nobody
+  does it runs as the engine — everything but the icon — and says so once per machine, in a
+  desktop notification, the one channel GNOME delivers with no extension. `--headless` asks
+  for the engine on purpose. The notice is recorded in a `notices` array in `alerts.json`,
+  omitted while empty, so a Windows machine writes the bytes it wrote before.
+- **A host that turns up later is noticed** (T-WP-L10). GNOME switches its extensions off
+  while the screen is locked and the watcher's bus name goes with them, so a tray started
+  behind a lock screen fell into engine mode and stayed there — which is autostart, every
+  morning. One `NameOwnerChanged` subscription on that one name builds the icon when a host
+  appears, once per run however often the name changes hands, and notifies nobody about it.
+- **On Linux the menu carries the numbers** (T-WP-L8). `tray-icon`'s GTK backend sends no
+  click, reports no icon rectangle and implements the tooltip as a no-op, so the left button
+  was never this application's and everything the Windows tooltip says reached a Linux user
+  nowhere. The menu is what the shell places beside the icon, so it opens with a live row per
+  provider — `Claude week 88 % (resets in 2 h 10 m)` — rewritten on every refresh, while it is
+  open too. A provider with nothing to report says why and never says `0 %`.
+- **The percentage beside the bead** (T-WP-L11). The icon's title is the one call that
+  backend does pass through, and GNOME's AppIndicator extension draws it as a label, so the
+  binding percentage is on the panel with no click at all: one number, floored, written the
+  way the language writes a percentage (`%88` in Turkish), and `?` when nothing was read.
+- **A This desktop section on the settings page, on Linux builds only** (T-WP-L12). **Show the
+  percentage beside the tray icon**, and **Open the panel beside the tray icon** — a Wayland
+  client may neither read the pointer nor place its own window, so the panel opens where the
+  compositor puts it, and this switch runs the whole application, web view included, through
+  XWayland, where a position is honoured. Off by default. Both round-trip through the form on
+  every platform, so a Windows save cannot clear a Linux user's choice.
+- **Quiet hours and the language, on Linux** (T-WP-L1). Both are the operating system's
+  answers, and everything that was not Windows answered neither: quiet hours did not exist,
+  and a Turkish desktop got an English tooltip beside a Turkish panel. The hour comes from
+  `localtime_r` behind one `tzset`; the language from `LC_ALL`, then `LC_MESSAGES`, then
+  `LANG`, the first one set winning, so `LC_ALL=C` is not overruled by a leftover `LANG`.
+- **Faces.** [`faces/waybar/`](faces/waybar/) is a Waybar module — a POSIX shell script and
+  `jq`, `nazar 70%` in the bar and every window in the tooltip. It writes nothing, opens no
+  socket, and is tested against `fixtures/limits.sample.json` in the same CI run as the
+  writer, so contract drift fails the build rather than somebody's bar. Its `format` is `"{}"`
+  and never `"{percentage}"`, because Waybar needs that field to be a number and an unreadable
+  window would print `nazar 0%`. On a stock GNOME the answer is
+  [nazar-gnome](https://github.com/xfurqan0/nazar-gnome), a Shell extension in a repository of
+  its own, over `nazar-tray --headless`; a GNOME machine is told about it once.
+- **`--help`** (T-WP28). There was none, and "unknown options are ignored" did the rest:
+  `nazar-tray --help` started a tray and took the lock, or asked a running one for its panel.
+  `-h` and `--help`, anywhere on the line, now print every flag grouped by what the run does
+  next, and exit before the lock; a test fails the build when a flag has no line in it.
+- **Codex's compressed session logs are read** (T-WP25, T-WP26). Codex ships a worker that
+  rewrites a rollout untouched for seven days as `<name>.jsonl.zst` and deletes the plain
+  file. Its flag measured off on 2026-09-15, so this has happened to nobody yet; on the day it
+  does, both readers would have lost a full `sessions/` tree and the quota reader would have
+  said *no rollout log* about a directory full of them. Archives are decoded by `ruzstd`, pure
+  Rust so no C toolchain enters the build, whole, and refused rather than truncated past
+  64 MiB. **Compression is a rename**, so the usage cursor is filed under the plain name and a
+  swept log is a replaced one rather than a new one — without that, a forty-event log swept
+  credits eight of its events twice. Building from source now needs Rust 1.87.
+- **Linux in CI and in the release** (T-WP-L0, T-WP-L6). A Linux job builds and tests the
+  whole workspace, clippy included, which is the only thing that sees `cfg(unix)` code; the
+  release gains `verify-linux` and `build-linux` on `ubuntu-22.04`, with the same build
+  script, build-machine-path check, tag check and attestation as the Windows job.
+
+### Changed
+
+- **The tray menu is one list on both platforms**: **Open panel · Settings… · Usage history ·
+  Refresh now · Quit**, the two screens, then the verb, then the way out under a separator.
+  *Usage history* had not been in the menu at all. On Windows the left button still opens the
+  panel; on Linux both buttons open this menu, because libappindicator owns the click.
+- **A gear in the panel header opens the settings**, on both platforms, and the footer's
+  *Settings* word is gone — one control on the panel opens the page, not two.
+- **A second launch says which page it wants** (T-WP27). nazar-gnome's gear runs
+  `nazar-tray --view settings`, always while the engine is up, and the running tray was told
+  "show your panel" and nothing else — so the gear opened the numbers. The `tray.request`
+  marker now carries the page, checked against the list a first launch is checked against. A
+  marker from 0.2.0, an empty one and a damaged one still open the panel.
+- **The startup entry starts what wrote it** (T-WP-L13). Switched on from a run started with
+  `--headless`, the entry carries `--headless` too; otherwise it stays `--hidden`, and on Linux
+  asks the bus again at every login. Before, flipping the switch from a headless engine's
+  settings page would have replaced a hand-written engine entry with one that starts a tray
+  icon beside the GNOME indicator. **The default is still off** on both platforms. On Linux
+  the row says *Start with the desktop session*, not *Start with Windows*.
+- **"Not set up" says what to do** (T-WP-L9). For Claude Code it only ever meant that the
+  status-line wrapper is not installed, and said neither that nor the command. The reason is
+  per provider now — *status line wrapper not installed*, with a sentence naming
+  `nazar-statusline install`. A second place to read Claude Code's quota from was searched for
+  across 71 transcript files and `stats-cache.json`; there is none, so none was added.
+- **Terminal output reaches the terminal on Windows** (T-WP28). The release build is a
+  GUI-subsystem program with no standard handles, so `--help` would have printed into nothing,
+  as `--print`, `--icons` and `--autostart` already did. All four attach to the parent console
+  when they have no handle, and leave a redirect or a pipe where the caller put it.
+- **The first-run overflow tip is Windows's alone** (T-WP-L7). A Fedora first run was told to
+  drag the bead onto a taskbar it did not have; the tip and the row that brings it back are
+  Windows-only now.
+- **`THIRD-PARTY-NOTICES.md` is true on every platform** (T-WP-L5). Resolved for the build
+  host alone it listed 310 packages and none of the 94 a Linux build adds. It is resolved for
+  Windows, Linux and macOS now, a section each plus one for what all three share — 444
+  packages — and it is byte for byte the same whichever machine generates it.
+
+### Fixed
+
+- **A 57 % window read as 56** (T-WP29). Claude Code reports a fraction times a hundred, so
+  `0.57 * 100` arrives as `56.99999999999999`, and a bare floor took a point only binary
+  arithmetic removed — on the label, the menu row, the tooltip, the panel and the Waybar
+  module. Every one of them floors through a tolerance of `1e-9` now, nine orders finer than
+  either provider reports. 99.6 % is still 99, and `limits.json` still stores what was sent.
+- **Closing the panel ended the run** (T-WP-L12). The only window closing took the process,
+  the icon and the writer with it — on both platforms, since Alt+F4 reaches the frameless
+  panel on Windows too; GNOME's Super+Q only made it easy. The panel is hidden instead, and
+  **Quit** stays the way out, because it is the one that releases the lock.
+- **On Linux the panel was as tall as its document** — 1105 physical pixels around 480 of
+  content, never shrinking back — because GTK ignores a resize on a window that is not
+  resizable. It is pinned to the size the panel asks for.
+- **The settings page's three dropdowns were blank on Linux.** WebKitGTK draws a `<select>`
+  itself and honoured the text colour but not the background: near-white on light. The page
+  draws them now, on both platforms.
+- **The licence gate accepted any `-exception`**, so `Apache-2.0 WITH Commons-Clause` — which
+  takes commercial use away — would have passed. The word after `WITH` must be
+  `LLVM-exception`, the one this tree carries. No dependency changed verdict.
+
+### Security
+
+- **rustls 0.23.45 closes RUSTSEC-2026-0285** — TLS 1.3 handshake messages accepted across
+  encryption-level boundaries. rustls reaches the build through the updater plugin and
+  through the opt-in detailed-windows mode, on one lock entry, so both are covered.
+- **`cargo deny check` is green, after it was made to look further.** With `unsound = "all"` it
+  reproduces the repository's one open Dependabot alert, GHSA-wrw7-89jp-8q8g against `glib`
+  0.18.5, which is in the Linux build only. The fix is `glib` 0.20, pinned out of reach by
+  `libappindicator` 0.9.0, the newest there is, and the affected functions are called by
+  nothing in the resolved tree; it is ignored with that reason and a review date, beside six
+  unmaintained crates under the Tauri tree whose chains no update reaches.
+
+### Known limits
+
+- **Removing the Linux package does not put Claude Code's status line back.** The Windows
+  uninstaller asks the wrapper to undo itself first; the packages have no such hook yet
+  (T-WP-L4). If you installed the wrapper, run `nazar-statusline uninstall` — or *Remove
+  status-line wrapper* in the settings — before `apt remove` or `dnf remove`. Afterwards,
+  `~/.nazar/statusline/chain.json` still holds the status line you had.
+- **A stock GNOME draws no tray icon** without the AppIndicator extension. The engine runs
+  regardless; with no icon the panel opens by running `nazar-tray` a second time.
+- **The Linux startup entry ignores `XDG_CONFIG_HOME`**: `auto-launch` writes
+  `~/.config/autostart` whatever it says, and a line on standard error names the mismatch.
+- **A custom threshold of 29, 57 or 58 %** is compared against the stored value, so at exactly
+  that threshold the colour can be a step behind the number. 60, 85 and 100 are exact.
+- **On Windows the prompt comes back before `--help`'s text**, because no shell waits for a
+  GUI program. Pipe it and the shell waits.
+
+### Notes
+
+- **Every file another program reads is where it was.** The usage store stays at
+  `version: 1`. `tray.request` gains two optional fields, and `config.json` two keys —
+  `tray.showLabel` and `window.x11Positioning` — that are absent while they hold their
+  defaults, so a Windows `config.json` does not change a byte.
+- **176 keys in every locale file, from 158**, in all six languages. Terminal output,
+  `--help` included, stays English, as it always has.
+
 ## [0.2.0] — 2026-09-13
 
 **Usage history.** 0.1.0 answered *how much of my window is gone?* The tray now also answers

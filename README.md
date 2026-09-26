@@ -4,10 +4,10 @@
 
 A pixel bead sits in your tray. Hover it for your most-constrained window and what this week has cost; click it for the full picture: every window, its percentage, when it resets, and where your tokens went. Orange at 60 %, red at 85 %, a notification before you hit the wall.
 
-> Status: **0.2.0, released.** 0.1.0 brought both readers, the refresh loop inside the tray
+> Status: **0.3.0, released.** 0.1.0 brought both readers, the refresh loop inside the tray
 > process, `~/.nazar/limits.json` written atomically by one process and only when the numbers
 > have moved, the icon and the panel, notifications, autostart, settings, six languages, the
-> installer, the winget manifests and the release pipeline. **0.2.0 adds the usage history**:
+> installer, the winget manifests and the release pipeline. **0.2.0 added the usage history**:
 > what you actually spent, per model, per day, per week and for all time, for both providers,
 > off files that were already on your disk. **Windows is the daily driver and Linux ships
 > beside it**: the same codebase, built by the same pipeline, with a `.deb` and an `.rpm` on
@@ -15,7 +15,7 @@ A pixel bead sits in your tray. Hover it for your most-constrained window and wh
 >
 > **winget takes a day or two to catch up.** The package is submitted as a pull request
 > against `microsoft/winget-pkgs` once the release is out, and a reviewer there merges it. The
-> 0.1.0 pull request is still in review and 0.2.0 follows it, so until
+> package's first pull request, for 0.2.0, is still in review and 0.3.0 follows it, so until
 > `winget install xfurqan0.nazar-tray` resolves, take the installer from
 > [Releases](https://github.com/xfurqan0/nazar-tray/releases) — the same file, with its hash
 > and its attestation.
@@ -47,8 +47,8 @@ Or take the installer from [Releases](https://github.com/xfurqan0/nazar-tray/rel
 it. Every release carries a `SHA256SUMS` file and a GitHub build attestation:
 
 ```powershell
-Get-FileHash .\nazar-tray_0.2.0_x64-setup.exe -Algorithm SHA256
-gh attestation verify .\nazar-tray_0.2.0_x64-setup.exe --repo xfurqan0/nazar-tray
+Get-FileHash .\nazar-tray_0.3.0_x64-setup.exe -Algorithm SHA256
+gh attestation verify .\nazar-tray_0.3.0_x64-setup.exe --repo xfurqan0/nazar-tray
 ```
 
 **It is not code-signed, so a browser download raises SmartScreen** — "Windows protected your

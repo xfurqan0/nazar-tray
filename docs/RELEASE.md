@@ -37,10 +37,10 @@ gate rather than the release.
 
 ```powershell
 # Edit by hand, all in the same commit:
-#   Cargo.toml                        -> [workspace.package] version = "0.2.0"
-#   crates/nazar-tray/tauri.conf.json -> "version": "0.2.0"
-#   ui/package.json                   -> "version": "0.2.0"
-#   packaging/winget/*.yaml           -> PackageVersion: 0.2.0  (three files)
+#   Cargo.toml                        -> [workspace.package] version = "0.3.0"
+#   crates/nazar-tray/tauri.conf.json -> "version": "0.3.0"
+#   ui/package.json                   -> "version": "0.3.0"
+#   packaging/winget/*.yaml           -> PackageVersion: 0.3.0  (three files)
 
 Select-String -Path Cargo.toml, crates\nazar-tray\tauri.conf.json, ui\package.json -Pattern 'version'
 Select-String -Path packaging\winget\*.yaml -Pattern 'PackageVersion'
@@ -56,7 +56,7 @@ The `Cargo.lock` moves with the version. Let cargo do it rather than editing it:
 ```powershell
 cargo check --workspace --locked   # fails if the lock file is behind
 git add -A
-git commit -m "Release 0.2.0"
+git commit -m "Release 0.3.0"
 ```
 
 ---
@@ -87,17 +87,20 @@ passed. Step 5 runs the same check by hand.
 
 Expected, on `x86_64-pc-windows-msvc`:
 
-| Artefact | 0.1.0 | 0.2.0 |
-|---|---|---|
-| `nazar-tray.exe` | 4.74 MB | 5.03 MB |
-| `nazar-statusline.exe` | 340 KB | 340 KB |
-| `nazar-tray_<version>_x64-setup.exe` | 1.95 MB | 2.07 MB |
+| Artefact | 0.1.0 | 0.2.0 | 0.3.0 |
+|---|---|---|---|
+| `nazar-tray.exe` | 4.74 MB | 5.03 MB | 5.15 MB |
+| `nazar-statusline.exe` | 340 KB | 340 KB | 340.5 KB |
+| `nazar-tray_<version>_x64-setup.exe` | 1.95 MB | 2.07 MB | 2.12 MB |
 
 The usage history cost 290 KB of tray binary and 120 KB of installer: a scanner, a
 deduplicator, a store and a view, all of it compiled in rather than fetched. The
-wrapper did not move, because none of it is in the wrapper.
+wrapper did not move, because none of it is in the wrapper. 0.3.0 is 120 KB more
+tray binary and 50 KB more installer; the two packages it added to the Windows
+dependency graph are T-WP26's `ruzstd` and `twox-hash`, and the Linux half of the
+release is compiled out of the Windows build.
 
-Measured 2026-09-09 and 2026-09-13 with the release profile in `Cargo.toml` (`opt-level = "s"`,
+Measured 2026-09-09, 2026-09-13 and 2026-09-26 with the release profile in `Cargo.toml` (`opt-level = "s"`,
 `lto`, one codegen unit, stripped, `panic = "abort"`) and the path remapping this
 script passes. Cargo's stock release settings gave 11.95 MB, 497 KB and 3.06 MB
 for the same source on 2026-09-07, which is what those four lines are worth.
@@ -144,7 +147,7 @@ Read the file list out of the package itself:
 
 ```powershell
 # 7-Zip reads an NSIS installer's contents without running it.
-& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\nazar-tray_0.2.0_x64-setup.exe
+& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\nazar-tray_0.3.0_x64-setup.exe
 ```
 
 Then install it and look at what landed:
@@ -158,7 +161,7 @@ Get-ChildItem -Recurse "$env:LOCALAPPDATA\nazar-tray" | Select-Object Name, Leng
 ## 4. Smoke the installer as a user would
 
 ```powershell
-$setup = "target\release\bundle\nsis\nazar-tray_0.2.0_x64-setup.exe"
+$setup = "target\release\bundle\nsis\nazar-tray_0.3.0_x64-setup.exe"
 
 # Silent, per user, no elevation prompt.
 Start-Process $setup -ArgumentList "/S" -Wait
@@ -335,10 +338,10 @@ Also confirm by eye:
 Write the release notes, which the workflow will attach to the draft:
 
 ```powershell
-# docs/release-notes-0.2.0.md — the CHANGELOG entry, shortened, with the known
+# docs/release-notes-0.3.0.md — the CHANGELOG entry, shortened, with the known
 # limits kept rather than buried. Template at the bottom of this page.
 git add -A
-git commit -m "Release notes for 0.2.0"
+git commit -m "Release notes for 0.3.0"
 git push origin main
 ```
 
@@ -349,8 +352,8 @@ git push origin main
 **From here on, nothing is reversible.**
 
 ```powershell
-git tag -a v0.2.0 -m "nazar-tray 0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "nazar-tray 0.3.0"
+git push origin v0.3.0
 ```
 
 The tag starts `.github/workflows/release.yml`. It re-runs the whole gate on both
@@ -389,7 +392,7 @@ Then, after the tag:
 
 ```powershell
 gh run watch
-gh release view v0.2.0        # a draft, with four assets
+gh release view v0.3.0        # a draft, with four assets
 ```
 
 Take the installer's hash from the release's own `SHA256SUMS` — the one built by
@@ -399,11 +402,11 @@ and until there is a COPR or an AUR package a Linux user downloads them from the
 release page.
 
 ```powershell
-gh release download v0.2.0 --pattern SHA256SUMS --dir .
+gh release download v0.3.0 --pattern SHA256SUMS --dir .
 Get-Content SHA256SUMS
 # Paste the *-setup.exe hash into packaging/winget/xfurqan0.nazar-tray.installer.yaml
 winget validate --manifest packaging\winget
-git add packaging/winget && git commit -m "winget: hash for 0.2.0" && git push
+git add packaging/winget && git commit -m "winget: hash for 0.3.0" && git push
 ```
 
 ---
@@ -430,27 +433,27 @@ gh api -X PUT repos/xfurqan0/nazar-tray/vulnerability-alerts
 
 ## 8. Publish the release
 
-Read the draft on github.com first — the notes, the two assets, the file names.
+Read the draft on github.com first — the notes, the four assets, the file names.
 Then:
 
 ```powershell
-gh release edit v0.2.0 --draft=false
+gh release edit v0.3.0 --draft=false
 ```
 
 Check what a user gets:
 
 ```powershell
-gh release view v0.2.0 --web
-gh attestation verify (gh release download v0.2.0 --pattern "*-setup.exe" --dir . --clobber; ".\nazar-tray_0.2.0_x64-setup.exe") --repo xfurqan0/nazar-tray
+gh release view v0.3.0 --web
+gh attestation verify (gh release download v0.3.0 --pattern "*-setup.exe" --dir . --clobber; ".\nazar-tray_0.3.0_x64-setup.exe") --repo xfurqan0/nazar-tray
 ```
 
 The Linux packages are attested the same way, and a Linux user can check them
 without trusting anything on this page:
 
 ```bash
-gh release download v0.2.0 --pattern "*.deb" --pattern "*.rpm" --dir .
-gh attestation verify nazar-tray_0.2.0_amd64.deb --repo xfurqan0/nazar-tray
-gh attestation verify nazar-tray-0.2.0-1.x86_64.rpm --repo xfurqan0/nazar-tray
+gh release download v0.3.0 --pattern "*.deb" --pattern "*.rpm" --dir .
+gh attestation verify nazar-tray_0.3.0_amd64.deb --repo xfurqan0/nazar-tray
+gh attestation verify nazar-tray-0.3.0-1.x86_64.rpm --repo xfurqan0/nazar-tray
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 

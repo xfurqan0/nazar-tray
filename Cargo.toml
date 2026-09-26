@@ -3,7 +3,7 @@ members = ["crates/nazar-core", "crates/nazar-statusline", "crates/nazar-tray"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # 1.85 is what edition 2024 needs. The extra two releases are `ruzstd`'s own declared
 # minimum (T-WP26), written down here rather than left for somebody on an older toolchain

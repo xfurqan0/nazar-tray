@@ -4,7 +4,7 @@ Internal project notes. Kept in English so the repo is readable by everyone.
 
 > **The system-tray face of Nazar.** Shows your Claude Code and Codex usage windows (5-hour and weekly) in the tray, with a bead icon that fills up as you burn quota. Writes the same `limits.json` that the Nazar canvas reads. **By default it reads nothing but local files: no credentials, no network.** An opt-in "detailed windows" mode adds the model-scoped weekly windows from the official usage endpoint for users who need them.
 
-- Folder: `C:\nazar-tray` · Repo: `github.com/xfurqan0/nazar-tray` — public since 2026-09-08; no release cut yet, so the source is ahead of anything installable
+- Folder: `C:\nazar-tray` · Repo: `github.com/xfurqan0/nazar-tray` — public since 2026-09-08; 0.1.0 and 0.2.0 released 2026-09-13, 0.3.0 — the first with Linux packages — prepared 2026-09-26
 - Started: 2026-09-07 · License: MIT · Siblings: [Nazar](https://github.com/xfurqan0/nazar) (canvas monitor), Dile (dictation)
 - Research phase closed 2026-09-07 03:00: market study (8 competitors, issue clustering, stack and distribution analysis) + code audit of the existing prototype (36 findings). Internal notes hold the full reports.
 - Order: **second of the three projects to code** (maintainer decision 2026-09-07). Nazar is first — it is the CV piece and its Node/TS stack needs neither the new machine nor a Tauri/Rust toolchain; Dile is third. WP0 here is also where the shared Tauri v2 / CI skeleton that Dile copies is born.
@@ -177,7 +177,7 @@ is *live* threads, and a live thread's rollout is by definition far newer than t
 threshold, so it stays plain. The thread-writer locks it reads were unchanged under 0.154.0.
 That is a note for Nazar rather than work here.
 
-### The 0.3.0 fixes (T-WP27 – T-WP30)
+### The 0.3.0 fixes (T-WP27 – T-WP29, T-WP-L13)
 
 From live use rather than an audit. On 2026-09-23 the maintainer's laptop showed a GNOME
 panel reading 67 % while the status line said 5 %: the engine had been dead for six days,
@@ -192,7 +192,7 @@ these are the four things that session found on this side.
 | T-WP28 ✅ | **`--help`**: `-h` / `--help` anywhere on the line prints every flag and exits before the lock; a test reads the parser's own string literals so a flag without a help line fails the build; every printing mode attaches to the parent console on Windows | ~~`nazar-tray --help` prints the usage on both platforms, in a release build too, and never starts a tray or reaches a running one~~ — **landed 2026-09-26** |
 | T-WP29 ✅ | **A floor that does not take a point binary arithmetic removed**: `nazar_core::display_percent` floors through `PERCENT_NOISE` (1e-9), and the label, the menu row, the panel and the Waybar module all go through it; `limits.json` keeps what was reported | ~~A 29 %, 57 % or 58 % window reported as a fraction times a hundred reads as itself on every face; 99.6 % is still 99; `docs/limits-contract.md` is untouched~~ — **landed 2026-09-26** |
 
-### The Linux packages (T-WP-L0 – T-WP-L6)
+### The Linux packages (T-WP-L0 – T-WP-L12)
 
 From a port audit on 2026-09-15 that started by building the tray on Linux for the first time
 and found almost nothing broken: 651 tests green, no missing system library the GTK
@@ -2074,7 +2074,7 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   a hidden row must not be a cleared setting, which is what a Windows Save would otherwise
   have done to a Linux user's label.
 
-- 2026-09-26 18:30 — **T-WP27 landed: a second launch says which page it wants.** Found on
+- 2026-09-26 18:28 — **T-WP27 landed: a second launch says which page it wants.** Found on
   2026-09-23 from the nazar-gnome side: its gear runs `nazar-tray --view settings`, and with the
   engine already up — which is the only state the gear is ever pressed in — the running tray
   was told "show your panel" and nothing else, so the gear opened the numbers. `--view` had
@@ -2092,7 +2092,7 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   the page lost, which is the bug. Same code path on both platforms; the marker has always
   been the single-instance channel on Windows and Linux alike.
 
-- 2026-09-26 18:45 — **T-WP-L13 landed: the startup entry starts what wrote it.** The report
+- 2026-09-26 18:32 — **T-WP-L13 landed: the startup entry starts what wrote it.** The report
   was "Linux has no autostart", and the measurement says otherwise: the switch has written
   `~/.config/autostart/nazar-tray.desktop` since WP5 and T-WP-L11 gave it a Linux name. What the
   laptop lacked on 2026-09-17 was an entry at all — the engine had been started by hand, and
@@ -2114,7 +2114,7 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   the packages or a first run turns it on; the only two callers of `enable()` are the switch
   and `--autostart on`. Red first: `left: ["--hidden"]`, `right: ["--hidden", "--headless"]`.
 
-- 2026-09-26 19:05 — **T-WP28 landed: `--help`.** There was none, and "unknown arguments are
+- 2026-09-26 18:37 — **T-WP28 landed: `--help`.** There was none, and "unknown arguments are
   ignored" did the rest: on 2026-09-23 `nazar-tray --help` with no tray running **started the
   tray and took the lock**, and with one running asked it to show its panel. `-h` and `--help`
   are now the first thing `cli::run_if_requested` looks at, ahead of `--icons`, `--print` and
@@ -2134,7 +2134,7 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   module had deferred to WP8. The prompt still comes back before the text, because no shell
   waits for a GUI program; piping it makes the shell wait. Red first: all three new tests.
 
-- 2026-09-26 19:25 — **T-WP29 landed: the floor no longer takes a point that only binary
+- 2026-09-26 18:39 — **T-WP29 landed: the floor no longer takes a point that only binary
   arithmetic removed.** The 2026-09-23 report was `percent: 14.000000000000002` in
   `limits.json`, and the source is upstream: this PC's own status-line capture carries
   `"used_percentage":14.000000000000002`, which is `0.14 * 100` — Claude Code reports a
