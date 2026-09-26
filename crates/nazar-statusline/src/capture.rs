@@ -276,7 +276,9 @@ pub fn render_default_line(document: &Value) -> String {
         else {
             continue;
         };
-        parts.push(format!("{label} {}%", percent.round() as i64));
+        // Down, through the tolerance every face shares: 99.6 % is not 100 % (B15), and a
+        // 57 % window that arrives as 56.99999999999999 is not 56 (T-WP29).
+        parts.push(format!("{label} {}%", nazar_core::display_percent(percent)));
     }
 
     parts.join(" · ")
@@ -501,5 +503,27 @@ mod tests {
             "5h 12%",
             "the percentage is rounded at display time, which is here"
         );
+    }
+
+    /// The wrapper's own line rounds the way every other face does: **down**, through the
+    /// tolerance T-WP29 gave them (finding B15).
+    ///
+    /// It used to round to the nearest, which is the one thing the rest of the product was
+    /// written not to do: 99.6 % printed `100%` in the prompt of somebody who still had room,
+    /// while the tray beside it said 99. Down, but not through binary noise — Claude Code
+    /// reports a fraction times a hundred, and `0.57 * 100` is `56.99999999999999`.
+    #[test]
+    fn the_default_line_rounds_down_like_every_other_face() {
+        let line = |percent: f64| {
+            render_default_line(&serde_json::json!({
+                "rate_limits": {"five_hour": {"used_percentage": percent}}
+            }))
+        };
+        assert_eq!(line(99.6), "5h 99%", "99.6 % has not run out");
+        assert_eq!(line(12.5), "5h 12%");
+        assert_eq!(line(0.57 * 100.0), "5h 57%", "a 57 % window is not 56");
+        assert_eq!(line(14.000_000_000_000_002), "5h 14%");
+        assert_eq!(line(100.0), "5h 100%");
+        assert_eq!(line(0.0), "5h 0%");
     }
 }
