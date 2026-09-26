@@ -283,6 +283,10 @@ mod platform {
         }
     }
 
+    // `c_long` is `i64` on the 64-bit targets this ships for, which makes the conversion
+    // below a no-op there — and `i32` on 32-bit Linux, where it is not. Clippy on the
+    // Linux runner is right about the one and cannot see the other.
+    #[allow(clippy::useless_conversion)]
     #[cfg(target_os = "linux")]
     pub(super) fn start_seconds(pid: u32) -> Option<i64> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
