@@ -1,4 +1,4 @@
-//! The command-line modes: `nazar-tray --print`, and `--print --write`.
+//! The command-line modes: `nazar-tray --print`, `--print --write`, and `--help`.
 //!
 //! `--print` builds the `limits.json` document from whichever readers exist and writes it
 //! to standard output. Nothing else happens: no window, no tray icon, and nothing on disk.
@@ -15,11 +15,20 @@
 //! **reads instead of writing**: it prints the document the running tray maintains and
 //! touches nothing. One writer, many readers, with no way to ask for an exception.
 //!
-//! One limitation, deliberate and documented rather than worked around here: the tray is a
-//! GUI-subsystem binary on Windows, so a release build launched from an interactive console
-//! has no console to print to. Redirected output — `nazar-tray --print > out.json` or a
-//! pipe, which is how a consumer actually calls it — works in every build. Attaching to the
-//! parent console belongs with the rest of the command-line surface in WP8.
+//! The tray is a GUI-subsystem binary on Windows, so a release build launched from an
+//! interactive console used to have **no console to print to**: `--print`, `--autostart` and
+//! `--icons` wrote into a null handle and the terminal showed nothing. Redirected output —
+//! `nazar-tray --print > out.json` or a pipe, which is how a consumer actually calls it —
+//! always worked. Since T-WP28 every mode that prints attaches to the parent's console
+//! first, when it has no standard output of its own; see `reach_the_terminal`. The one
+//! thing that cannot be fixed from inside: a shell does not wait for a GUI program, so the
+//! prompt returns before the text does.
+//!
+//! ## `--help`
+//!
+//! `-h` or `--help`, anywhere on the line, prints every flag below and exits — before the
+//! lock, before a running tray is asked for anything. Until T-WP28 there was no such flag,
+//! and "unknown arguments are ignored" meant `nazar-tray --help` started the tray.
 //!
 //! ## `--detailed`
 //!
@@ -117,6 +126,125 @@ const ICONS_FLAG: &str = "--icons";
 /// The flag that runs the engine and draws no tray icon.
 const HEADLESS_FLAG: &str = "--headless";
 
+/// The two spellings that print [`usage`] and exit.
+const HELP_FLAGS: [&str; 2] = ["--help", "-h"];
+
+/// What `--help` prints: every flag this module reads, grouped by what the run then does.
+///
+/// English, like everything else this binary writes to a terminal (`ui/locales/README.md`),
+/// and held to eighty columns. Built with `write!` rather than kept in a constant for the
+/// reason every other terminal sentence here sits inside a printing macro: the grep in
+/// `ui/test/i18n.test.mjs` reads a macro's literal as a diagnostic and anything else as a
+/// word the panel forgot to translate. The test that reads this file's own string literals
+/// is what keeps the text the whole list: a flag added without a line here fails the build.
+fn usage() -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::new();
+    let _ = write!(
+        text,
+        "nazar-tray {} - Claude Code and Codex quota in the tray
+
+Usage: nazar-tray [options]
+
+With no options it starts the tray, or the engine on a desktop that has no
+tray host. A second launch asks the running one to show its panel, and exits.
+
+Print or change something, then exit:
+  --print                 print the limits.json document; nothing is written
+  --print --write         ...and write ~/.nazar/limits.json if no tray does
+  --print --detailed      ...with the opt-in detailed windows, this run only
+  --autostart on|off|status
+                          turn the startup entry on or off, or show it
+  --icons <dir>           write the tray bead as PNG files into <dir>
+  -h, --help              show this text
+
+Start the tray:
+  --headless              the engine only: no tray icon, limits.json written
+  --hidden                open no window at start-up (the startup entry's flag)
+  --view settings|usage   open the panel on that page; if a tray is already
+                          running, it is asked to open the same page
+  --usage-tab <tab>       with --view usage: week, weeks, all, models or day
+
+For screenshots (nothing here is saved to the settings):
+  --demo                  invented numbers; takes no lock and writes no file
+  --demo-cross            step the demo numbers across the thresholds
+  --scale <factor>        draw the panel at a scale from 0.5 to 4
+  --theme nazar|graphite  the theme for this run
+  --mode light|dark       light or dark for this run
+  --locale <tag>          the language for this run, such as tr
+  --hint on|off           show or hide the first-run tray tip (Windows only)
+  --offer on|off          show or hide the one-time detailed-windows offer
+
+Unknown options are ignored. The numbers live in ~/.nazar and the settings
+in ~/.config/nazar (%APPDATA%\\nazar on Windows); NAZAR_HOME moves both.
+https://github.com/xfurqan0/nazar-tray
+",
+        env!("CARGO_PKG_VERSION")
+    );
+    text
+}
+
+/// Whether this run asked for the usage text.
+///
+/// Anywhere on the line, and ahead of every other flag: somebody who types
+/// `nazar-tray --view settings --help` is asking what `--view` does, not asking for it.
+fn wants_help(arguments: &[String]) -> bool {
+    arguments
+        .iter()
+        .any(|argument| HELP_FLAGS.contains(&argument.as_str()))
+}
+
+/// Print the usage, and say so to whoever is reading.
+fn print_usage() -> bool {
+    reach_the_terminal();
+    let mut stdout = std::io::stdout().lock();
+    // A closed pipe (`nazar-tray --help | head`) is not an error worth a message.
+    let _ = stdout.write_all(usage().as_bytes());
+    let _ = stdout.flush();
+    true
+}
+
+/// Give a release build on Windows a console to print into.
+///
+/// **The release build is a GUI-subsystem program** — a tray has no console, and a console
+/// window flashing up at every login would be the first thing anybody saw of it. The price
+/// is that a GUI program started from a terminal gets **no standard handles at all**: Rust's
+/// `stdout` writes into a null handle, reports success, and the text goes nowhere. Measured
+/// on 2026-09-26 with a probe built the same way, started by `cmd` with no redirection:
+/// `GetStdHandle` answered `0x0` before, and after `AttachConsole(ATTACH_PARENT_PROCESS)` a
+/// handle whose `GetFileType` is `FILE_TYPE_CHAR` — the terminal's own console.
+///
+/// Only when there is no handle: output that is already redirected (`--print > file`, a
+/// pipe) is exactly where the caller wants it and must not be moved. One thing no attach can
+/// change: a shell does not wait for a GUI program, so the prompt comes back first and the
+/// text arrives under it. Piping it (`nazar-tray --help | more`) makes the shell wait.
+#[cfg(windows)]
+fn reach_the_terminal() {
+    /// `(DWORD)-1`: the console of the process that started this one.
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    /// `(DWORD)-11`.
+    const STD_OUTPUT_HANDLE: u32 = -11_i32 as u32;
+    unsafe extern "system" {
+        /// Returns the handle, `NULL` when the process has none, or `INVALID_HANDLE_VALUE`.
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        /// Nonzero on success. Fails harmlessly when the parent has no console — a launch
+        /// from Explorer — or when this process already has one.
+        fn AttachConsole(process: u32) -> i32;
+    }
+    // SAFETY: `GetStdHandle` takes a constant and returns a value; nothing is dereferenced.
+    let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if handle.is_null() || handle as isize == -1 {
+        // SAFETY: takes a constant, returns a status, and on success sets this process's
+        // standard handles to the parent's console, which is the whole point.
+        unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    }
+}
+
+/// Everywhere else a terminal program already has its terminal.
+#[cfg(not(windows))]
+fn reach_the_terminal() {}
+
 /// Run a command-line mode if one was asked for.
 ///
 /// Returns `true` when the process has done its job and should exit without starting the
@@ -125,12 +253,18 @@ const HEADLESS_FLAG: &str = "--headless";
 /// understand must not stop it from starting.
 pub fn run_if_requested() -> bool {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // First, before anything can take the lock or reach a running tray (T-WP28).
+    if wants_help(&arguments) {
+        return print_usage();
+    }
     if let Some(directory) = value_of(&arguments, ICONS_FLAG) {
+        reach_the_terminal();
         return write_icons(std::path::Path::new(&directory));
     }
     if !arguments.iter().any(|argument| argument == PRINT_FLAG) {
         return false;
     }
+    reach_the_terminal();
     let asked = |flag: &str| arguments.iter().any(|argument| argument == flag);
 
     // Before the document, and only when there is something to say: how a normal launch
@@ -328,6 +462,7 @@ impl Autostart {
 pub fn run_autostart(app: &tauri::AppHandle, action: Autostart) -> ! {
     use tauri_plugin_autostart::ManagerExt;
 
+    reach_the_terminal();
     let manager = app.autolaunch();
     let outcome = match action {
         Autostart::On => manager.enable(),
@@ -817,6 +952,88 @@ mod tests {
             "the crossing run must not be able to take the writer's lock, so it is a demo run"
         );
         assert!(!crossing.may_persist());
+    }
+
+    /// T-WP28: `--help` is a request for the usage, wherever it is on the line.
+    ///
+    /// Before this there was no such flag, and "unknown arguments are ignored" did the rest:
+    /// with no tray running, `nazar-tray --help` **started the tray** and took the lock; with
+    /// one running, it asked that one to show its panel. Neither printed a word.
+    #[test]
+    fn help_is_asked_for_in_either_spelling_and_wins_over_everything_else() {
+        assert!(wants_help(&words("--help")));
+        assert!(wants_help(&words("-h")));
+        assert!(
+            wants_help(&words("--view settings --help")),
+            "a user who asks what a flag does must not get the flag's effect instead"
+        );
+        assert!(wants_help(&words("--print --help")));
+        assert!(!wants_help(&[]));
+        assert!(!wants_help(&words("--helpful")));
+    }
+
+    /// Every flag this module reads is in the usage text.
+    ///
+    /// Read off the source rather than listed a second time: every flag the parser knows is
+    /// a string literal in this file that starts with two dashes, so a flag added without a
+    /// line in [`usage`] fails here — which is how the help stays the whole list rather than
+    /// the list as it was the day it was written.
+    #[test]
+    fn the_usage_names_every_flag_the_parser_reads() {
+        let source = include_str!("cli.rs");
+        let code = source
+            .split("mod tests {")
+            .next()
+            .expect("the module has code above its tests");
+        let mut flags: Vec<&str> = code
+            .match_indices("\"--")
+            .filter_map(|(at, _)| {
+                let rest = &code[at + 1..];
+                let end = rest.find('"')?;
+                let flag = &rest[..end];
+                flag[2..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+                    .then_some(flag)
+            })
+            .collect();
+        flags.sort_unstable();
+        flags.dedup();
+        assert!(
+            flags.len() >= 18,
+            "the scan found too few flags to be reading this file: {flags:?}"
+        );
+        let usage = usage();
+        for flag in flags.iter().copied().chain(HELP_FLAGS) {
+            assert!(
+                usage
+                    .split(|character: char| character.is_whitespace() || character == ',')
+                    .any(|word| word == flag || word.starts_with(&format!("{flag}="))),
+                "{flag} is read by the parser and missing from --help"
+            );
+        }
+    }
+
+    /// The usage text fits a terminal and says which build it is.
+    #[test]
+    fn the_usage_fits_eighty_columns_and_names_the_version() {
+        let usage = usage();
+        assert!(usage.starts_with("nazar-tray "));
+        assert!(
+            usage
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .contains(env!("CARGO_PKG_VERSION")),
+            "the first line is the version, so a bug report can quote it"
+        );
+        for line in usage.lines() {
+            assert!(
+                line.chars().count() <= 80,
+                "{} columns: {line}",
+                line.chars().count()
+            );
+        }
     }
 
     /// T-WP-L13: the startup entry starts the product that wrote it.

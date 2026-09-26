@@ -189,6 +189,7 @@ these are the four things that session found on this side.
 |---|---|---|
 | T-WP27 ✅ | **A second launch says which page it wants**: the `tray.request` marker carries `view` and `usageTab`, the loop hands them over as `Event::ShowRequested(ShowRequest)`, and the running tray lands where a first launch with the same flags would | ~~`nazar-tray --view settings` opens the settings page whether or not a tray is already running, on both platforms; a marker from 0.2.0, an empty one and a damaged one still open the panel~~ — **landed 2026-09-26** |
 | T-WP-L13 ✅ | **The startup entry starts what wrote it**: `Options::startup_arguments` puts `--headless` beside `--hidden` when the run flipping the switch is the engine somebody asked for, and a test runs the real binary under `dbus-run-session` to show that the plain entry falls into the engine on a bus with no tray host | ~~Turning the switch on from nazar-gnome's gear writes an entry that starts the engine and no icon; the plain entry still becomes a tray wherever a host exists; the default stays off, as on Windows~~ — **landed 2026-09-26** |
+| T-WP28 ✅ | **`--help`**: `-h` / `--help` anywhere on the line prints every flag and exits before the lock; a test reads the parser's own string literals so a flag without a help line fails the build; every printing mode attaches to the parent console on Windows | ~~`nazar-tray --help` prints the usage on both platforms, in a release build too, and never starts a tray or reaches a running one~~ — **landed 2026-09-26** |
 
 ### The Linux packages (T-WP-L0 – T-WP-L6)
 
@@ -2111,3 +2112,23 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   **The default is unchanged and the same on both platforms: off.** Nothing in the installer,
   the packages or a first run turns it on; the only two callers of `enable()` are the switch
   and `--autostart on`. Red first: `left: ["--hidden"]`, `right: ["--hidden", "--headless"]`.
+
+- 2026-09-26 19:05 — **T-WP28 landed: `--help`.** There was none, and "unknown arguments are
+  ignored" did the rest: on 2026-09-23 `nazar-tray --help` with no tray running **started the
+  tray and took the lock**, and with one running asked it to show its panel. `-h` and `--help`
+  are now the first thing `cli::run_if_requested` looks at, ahead of `--icons`, `--print` and
+  the lock, and the text lists every flag grouped by what the run does next. It is built with
+  `write!` rather than kept in a constant for the reason the other terminal sentences sit in
+  printing macros — `ui/test/i18n.test.mjs` reads a macro's literal as a diagnostic — and a
+  test reads `cli.rs`'s own `"--…"` literals, 18 of them, so a flag added without a line in the
+  help fails the build. Eighty columns, version on the first line.
+  **The half that was not in the report: on Windows none of it would have been visible.** The
+  release build is a GUI-subsystem program, and one started from a terminal has no standard
+  handles — measured with a probe built the same way and started by `cmd`: `GetStdHandle`
+  answered `0x0`, and Rust's `stdout` reported success writing into it. After
+  `AttachConsole(ATTACH_PARENT_PROCESS)` the handle's `GetFileType` is `FILE_TYPE_CHAR`, the
+  terminal's own console. `cli::reach_the_terminal` does that, only when there is no handle —
+  a redirect or a pipe is left where the caller put it — and `--print`, `--icons` and
+  `--autostart` go through it too, which closes the "attach to the parent console" line this
+  module had deferred to WP8. The prompt still comes back before the text, because no shell
+  waits for a GUI program; piping it makes the shell wait. Red first: all three new tests.
