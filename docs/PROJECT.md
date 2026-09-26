@@ -188,6 +188,7 @@ these are the four things that session found on this side.
 | # | Package | Done when |
 |---|---|---|
 | T-WP27 ✅ | **A second launch says which page it wants**: the `tray.request` marker carries `view` and `usageTab`, the loop hands them over as `Event::ShowRequested(ShowRequest)`, and the running tray lands where a first launch with the same flags would | ~~`nazar-tray --view settings` opens the settings page whether or not a tray is already running, on both platforms; a marker from 0.2.0, an empty one and a damaged one still open the panel~~ — **landed 2026-09-26** |
+| T-WP-L13 ✅ | **The startup entry starts what wrote it**: `Options::startup_arguments` puts `--headless` beside `--hidden` when the run flipping the switch is the engine somebody asked for, and a test runs the real binary under `dbus-run-session` to show that the plain entry falls into the engine on a bus with no tray host | ~~Turning the switch on from nazar-gnome's gear writes an entry that starts the engine and no icon; the plain entry still becomes a tray wherever a host exists; the default stays off, as on Windows~~ — **landed 2026-09-26** |
 
 ### The Linux packages (T-WP-L0 – T-WP-L6)
 
@@ -2088,3 +2089,25 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   of the five new `refresh` tests failed with `left: Some(ShowRequest { view: None, … })` —
   the page lost, which is the bug. Same code path on both platforms; the marker has always
   been the single-instance channel on Windows and Linux alike.
+
+- 2026-09-26 18:45 — **T-WP-L13 landed: the startup entry starts what wrote it.** The report
+  was "Linux has no autostart", and the measurement says otherwise: the switch has written
+  `~/.config/autostart/nazar-tray.desktop` since WP5 and T-WP-L11 gave it a Linux name. What the
+  laptop lacked on 2026-09-17 was an entry at all — the engine had been started by hand, and
+  nobody had turned the switch on — and what it had on 2026-09-23 was a hand-written one,
+  `Exec=nazar-tray --headless`, under **the same file name the plugin uses**. That is where
+  the real gap was: the switch wrote `--hidden` whatever was running, so flipping it off and on
+  from the headless engine's own settings page — which T-WP27 puts one gear away, in
+  nazar-gnome's menu — would have replaced that entry with one that starts a tray icon beside
+  the GNOME indicator at the next login. `Options::startup_arguments` now carries `--headless`
+  when the writing run was asked for the engine, on both platforms (the registry value gets
+  the same words). An engine that fell back because the bus had no host writes plain
+  `--hidden` and is asked again at every login, which is the half the maintainer wanted
+  checked: `tests/engine_on_a_bare_bus.rs` runs the real binary under `dbus-run-session` —
+  a session bus with nobody on `org.kde.StatusNotifierWatcher`, which is what a stock GNOME is
+  to this process — with an empty `HOME`, and asserts `engine mode: no StatusNotifierWatcher`
+  on standard error with no `--headless` on the command line. It fails rather than skips under
+  `CI`, and both Linux jobs now name `dbus` in their package lists the way they name `jq`.
+  **The default is unchanged and the same on both platforms: off.** Nothing in the installer,
+  the packages or a first run turns it on; the only two callers of `enable()` are the switch
+  and `--autostart on`. Red first: `left: ["--hidden"]`, `right: ["--hidden", "--headless"]`.

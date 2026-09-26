@@ -383,6 +383,27 @@ fn warn_about_the_autostart_directory(enabled: bool) {
 fn warn_about_the_autostart_directory(_enabled: bool) {}
 
 impl Options {
+    /// What the startup entry passes back to this binary at the next login.
+    ///
+    /// `--hidden` always: the entry means "open no window". And `--headless` when **this**
+    /// run was asked for the engine, because the entry is written by whichever run the user
+    /// flips the switch in — on a stock GNOME that is the headless engine behind
+    /// nazar-gnome, reached through the extension's gear — and an entry that started a tray
+    /// icon at the next login would put a second indicator beside the one they chose
+    /// (T-WP-L13). An engine that fell back because the bus had **no tray host** is not
+    /// carried over: the next session is asked again, which is what lets the same entry grow
+    /// an icon the day an AppIndicator host is installed.
+    ///
+    /// The same file on Windows, where the registry value gets the same words.
+    #[must_use]
+    pub fn startup_arguments(&self) -> Vec<&'static str> {
+        let mut arguments = vec!["--hidden"];
+        if self.headless {
+            arguments.push(HEADLESS_FLAG);
+        }
+        arguments
+    }
+
     /// What this launch asks a tray that is already running to open, if one is.
     ///
     /// `--view` used to be a first launch's flag only: a second launch left a marker that
@@ -796,6 +817,47 @@ mod tests {
             "the crossing run must not be able to take the writer's lock, so it is a demo run"
         );
         assert!(!crossing.may_persist());
+    }
+
+    /// T-WP-L13: the startup entry starts the product that wrote it.
+    ///
+    /// The laptop that ran six days without an engine had a hand-written entry saying
+    /// `nazar-tray --headless`, beside nazar-gnome and an AppIndicator host. The settings
+    /// switch writes the same file, and used to write `--hidden` whatever was running — so
+    /// turning it off and on again from a headless engine's own settings page would have
+    /// started a tray icon at the next login, beside the GNOME indicator the user chose
+    /// instead of it. `--headless` is a decision and it travels; "no tray host" is a
+    /// measurement and it does not, because the next session's bus may answer differently.
+    #[test]
+    fn the_startup_entry_starts_what_wrote_it() {
+        assert_eq!(parse_options(&[]).startup_arguments(), ["--hidden"]);
+        assert_eq!(
+            parse_options(&words("--hidden")).startup_arguments(),
+            ["--hidden"],
+            "the entry's own launch writes the entry it came from"
+        );
+        assert_eq!(
+            parse_options(&words("--headless")).startup_arguments(),
+            ["--hidden", "--headless"],
+            "an engine the user asked for is an engine at the next login too"
+        );
+        assert_eq!(
+            parse_options(&words("--hidden --headless")).startup_arguments(),
+            ["--hidden", "--headless"],
+            "and the entry that says so is stable: it writes itself back unchanged"
+        );
+        for line in [
+            "--view settings",
+            "--demo",
+            "--locale tr",
+            "--theme graphite",
+        ] {
+            assert_eq!(
+                parse_options(&words(line)).startup_arguments(),
+                ["--hidden"],
+                "{line} is about this launch, not about every login after it"
+            );
+        }
     }
 
     /// T-WP27: the page a second launch names is the page the running tray is asked for.

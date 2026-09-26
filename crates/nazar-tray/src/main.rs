@@ -209,10 +209,11 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            // What the startup entry passes back to us. It means "open no window", and it is
-            // the difference between a tray that starts quietly and one that greets you with
-            // a popup every time you log in.
-            Some(vec!["--hidden"]),
+            // What the startup entry passes back to us. `--hidden` means "open no window", and
+            // it is the difference between a tray that starts quietly and one that greets you
+            // with a popup every time you log in; `--headless` rides along when this run is the
+            // engine somebody asked for. See `Options::startup_arguments`.
+            Some(options.startup_arguments()),
         ))
         .invoke_handler(tauri::generate_handler![
             state::get_snapshot,

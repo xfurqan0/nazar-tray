@@ -127,7 +127,8 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       # The same list `ci.yml` installs, and for the same reasons. `jq` is the Waybar face's
-      # only dependency and this is the only runner that can execute its eleven tests.
+      # only dependency and this is the only runner that can execute its eleven tests; `dbus`
+      # carries `dbus-run-session`, which the engine-on-a-bare-bus test needs and may not skip.
       - name: Install the GTK stack
         run: |
           sudo apt-get update
@@ -138,7 +139,8 @@ jobs:
             librsvg2-dev \
             libdbus-1-dev \
             patchelf \
-            jq
+            jq \
+            dbus
 
       - name: Install panel dependencies
         working-directory: ui

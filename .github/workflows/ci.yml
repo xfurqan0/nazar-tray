@@ -143,6 +143,11 @@ jobs:
       # `ui/test/waybar.test.mjs` needs a POSIX shell, so it skips itself on the Windows
       # runner. It is already in the runner image; naming it here is what stops a quiet
       # change to that image from turning a test into a skip.
+      #
+      # `dbus` is here for the same reason: `dbus-run-session` is what
+      # `crates/nazar-tray/tests/engine_on_a_bare_bus.rs` starts the real binary under, to ask
+      # whether a desktop with no tray host gets the engine — and that test fails rather than
+      # skips when `CI` is set.
       - name: Install the GTK stack
         run: |
           sudo apt-get update
@@ -153,7 +158,8 @@ jobs:
             librsvg2-dev \
             libdbus-1-dev \
             patchelf \
-            jq
+            jq \
+            dbus
 
       - name: Install panel dependencies
         working-directory: ui

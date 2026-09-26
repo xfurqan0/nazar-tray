@@ -254,8 +254,17 @@ test("the plugins are initialised, and the panel is granted neither", () => {
   assert.match(main, /tauri_plugin_notification::init\(\)/);
   assert.match(main, /tauri_plugin_autostart::init\(/);
   // The autostart entry passes `--hidden`, which is the difference between a tray that
-  // starts quietly and one that opens a popup at every login.
-  assert.match(main, /Some\(vec!\["--hidden"\]\)/);
+  // starts quietly and one that opens a popup at every login. Since T-WP-L13 the list is
+  // built by `Options::startup_arguments`, which adds `--headless` for an engine run — so
+  // the promise is checked where it now lives: it starts with `--hidden`, whatever follows.
+  assert.match(
+    main,
+    /tauri_plugin_autostart::init\([\s\S]*?Some\(options\.startup_arguments\(\)\)/,
+  );
+  assert.match(
+    read("crates/nazar-tray/src/cli.rs"),
+    /fn startup_arguments\(&self\)[^{]*\{\s*let mut arguments = vec!\["--hidden"\];/,
+  );
 
   // Both plugins are driven from Rust, so the webview needs no plugin permission at all.
   // A capability the panel does not use is a capability it should not have.

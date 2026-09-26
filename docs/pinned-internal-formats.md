@@ -748,7 +748,7 @@ because it is a change this application makes outside its own directories.
 
 | Key | Value |
 |---|---|
-| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | `nazar-tray` = `<path to nazar-tray.exe> --hidden` (`REG_SZ`) |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | `nazar-tray` = `<path to nazar-tray.exe> --hidden` (`REG_SZ`), or `… --hidden --headless` when the run that wrote it was the engine (T-WP-L13) |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` | `nazar-tray` = `02 00 …` (`REG_BINARY`), which is what Task Manager's Startup tab reads as *Enabled* |
 
 Observed live on 2026-09-07 by turning the switch on and off again on the maintainer's own
@@ -775,8 +775,22 @@ throwaway directory:
 ```
 
 `--autostart off` removes the file and leaves the directory, so there is no Linux equivalent
-of the `StartupApproved` residue above. **Two things about the path**, both in `auto-launch`
-0.5.0 rather than in this repository:
+of the `StartupApproved` residue above.
+
+**What `Exec` says is decided by the run that writes it** (T-WP-L13, 2026-09-26). `--hidden`
+always; `--headless` as well when that run was started with `--headless`, because on a stock
+GNOME the run a user flips the switch in is the engine behind nazar-gnome, and an entry that
+started a tray icon at the next login would put a second indicator beside the one they
+chose. An engine that fell back because the bus had **no tray host** writes plain `--hidden`
+and is asked again at every login — so the same entry becomes a tray the day an AppIndicator
+host is installed, and `crates/nazar-tray/tests/engine_on_a_bare_bus.rs` holds the other half:
+the plain binary, under `dbus-run-session` with nobody on `org.kde.StatusNotifierWatcher`,
+says it is running as the engine. **The file's name is the plugin's own**, and "on" means
+only that the file exists: a `nazar-tray.desktop` somebody wrote by hand reads as the switch
+being on, turning the switch off deletes it, and turning it on again replaces it with the
+lines above.
+
+**Two things about the path**, both in `auto-launch` 0.5.0 rather than in this repository:
 
 * The directory is built as `dirs::home_dir().join(".config").join("autostart")`, **hard-coded**
   — `XDG_CONFIG_HOME` is not consulted. The XDG autostart specification says a session reads
