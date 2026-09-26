@@ -579,7 +579,7 @@ fn has_owner(dbus: &zbus::blocking::fdo::DBusProxy<'_>) -> bool {
 
 /// On GNOME, once: the numbers can live in the panel, where the shell places them.
 ///
-/// **This is a different failure from the one above, and it is the one qarpus hit.** The
+/// **This is a different failure from the one above, and it is the one the maintainer hit.** The
 /// AppIndicator extension was installed, the icon was drawn, and the click still did not
 /// behave like a tray popup — because on GNOME Wayland nothing this process owns can be put
 /// beside that icon. The menu is as close as the tray gets (the shell positions it, and
@@ -937,9 +937,9 @@ mod tests {
     /// direction is "yes, it is read", which is what every ordinary machine gets.
     #[test]
     fn the_startup_entry_is_read_from_where_the_plugin_writes_it() {
-        let home = std::path::Path::new("/home/qarpus");
-        let ordinary = std::ffi::OsStr::new("/home/qarpus/.config");
-        let moved = std::ffi::OsStr::new("/home/qarpus/.local/config");
+        let home = std::path::Path::new("/home/somebody");
+        let ordinary = std::ffi::OsStr::new("/home/somebody/.config");
+        let moved = std::ffi::OsStr::new("/home/somebody/.local/config");
 
         assert!(
             autostart_is_read(Some(home), None),

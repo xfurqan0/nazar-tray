@@ -996,7 +996,7 @@ mod tests {
         );
     }
 
-    /// The bug qarpus found on a Fedora 44 GNOME session on 2026-09-16.
+    /// The bug the maintainer found on a Fedora 44 GNOME session on 2026-09-16.
     ///
     /// A fresh machine opened the panel and was told to drag the bead onto the taskbar and
     /// pin it out of the `^` overflow — a flyout and a taskbar that only Windows 11 has.

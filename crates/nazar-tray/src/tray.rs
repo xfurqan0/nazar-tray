@@ -957,7 +957,8 @@ mod tests {
         assert_ne!(not_set_up, silent.replace("Codex", "Claude"));
     }
 
-    /// The bug qarpus reported on 2026-09-16: "Claude yok", on a machine running Claude Code.
+    /// The bug the maintainer reported on 2026-09-16: "Claude yok", on a machine running
+    /// Claude Code.
     ///
     /// `configured: false` for Claude means one thing and one thing only — there is no
     /// capture in `~/.nazar/statusline`, because the wrapper that writes them is not in
