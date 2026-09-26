@@ -50,8 +50,11 @@
 //! **The pid-reuse guard.** A pid the kernel *does* own is still not proof that it is the
 //! same process: ids are reused, quickly on Windows after a kill. So when the platform can
 //! name a process's creation time, a holder whose process started **after** the record says
-//! it did is a reused id, and the record is stale. When the creation time cannot be read —
-//! every POSIX platform — the heartbeat decides, which is the conservative answer.
+//! it did is a reused id, and the record is stale. Windows and Linux can say (Linux since
+//! T-WP30, from `/proc`); when the creation time cannot be read — macOS and the BSDs — the
+//! heartbeat decides, which is the conservative answer. On Linux that answer cost five
+//! minutes of no engine after **every** reboot, because the kernel hands low pids out again
+//! within seconds and the last heartbeat is always seconds before the shutdown.
 //!
 //! `pid` and `startedAt` are also what a holder recognises its own record by, and what the
 //! human reading `~/.nazar` by hand wants first: which process, since when.
@@ -653,10 +656,13 @@ mod tests {
 
     /// A pid that is alive but is not the one that wrote the record: the id was reused.
     ///
-    /// Windows only, because it is the only platform here that can name a process's
-    /// creation time. Everywhere else the guard does not fire and the heartbeat decides,
-    /// which is what the test below asserts.
-    #[cfg(windows)]
+    /// Windows and Linux, the two platforms here that can name a process's creation time.
+    /// On Linux this is **every reboot** (T-WP30): the kernel hands low pids out again within
+    /// seconds of boot, the engine's last heartbeat is seconds before the shutdown, and until
+    /// this test ran there the autostart entry was told "already running" by a `gdbus` and
+    /// exited. Everywhere else the guard does not fire and the heartbeat decides, which is
+    /// what the test below asserts.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn a_running_pid_that_started_after_its_record_is_a_reused_id() {
         let dir = TempDir::new("lock-reused-pid");

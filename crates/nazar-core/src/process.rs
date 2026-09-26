@@ -27,7 +27,8 @@
 //! [`start_seconds`] answers the second question a stale lock raises: process ids are
 //! reused, so a *running* pid is not proof that the process which wrote the record is the
 //! one running under it now. A creation time older than the record settles it. Windows
-//! answers that one; the POSIX probe does not, and says so by returning `None`.
+//! answers that one from `GetProcessTimes` and Linux from `/proc` (T-WP30); the other POSIX
+//! platforms cannot, and say so by returning `None`.
 
 /// What the operating system says about a process id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,10 +237,14 @@ mod platform {
     //! `ESRCH` is "no such process" and `EPERM` is "there is one, and it is not yours" —
     //! which is still a process, and still a reason not to evict its lock.
     //!
-    //! There is no portable POSIX call for a process's creation time, so
-    //! [`start_seconds`](super::start_seconds) answers `None` here and the pid-reuse guard
-    //! in [`crate::lock`] falls back to the heartbeat. On these platforms the tray is not
-    //! shipped yet; the wrapper and the core are, and they take the same lock.
+    //! There is no portable POSIX call for a process's creation time. **Linux has one that
+    //! is not a call**: `/proc`, read by [`super::procfs`]. That is the platform the tray
+    //! ships on beside Windows, and until T-WP30 it answered `None` here too — so after a
+    //! reboot, when the kernel hands the dead engine's pid to something else within seconds,
+    //! the lock saw a running process, the autostart entry was told the engine was already
+    //! up and exited, and nothing ran until the heartbeat aged out five minutes later.
+    //! Measured on 2026-09-26: pid 4011 went to `gdbus` 24 seconds after boot. macOS and the
+    //! BSDs still answer `None`, and the heartbeat decides there as it always did.
 
     use super::Presence;
 
@@ -247,9 +252,15 @@ mod platform {
     const NO_SUCH_PROCESS: i32 = 3;
     /// `EPERM`.
     const NOT_PERMITTED: i32 = 1;
+    /// `_SC_CLK_TCK`, which is 2 in glibc, musl and bionic alike.
+    #[cfg(target_os = "linux")]
+    const CLOCK_TICKS: std::ffi::c_int = 2;
 
     unsafe extern "C" {
         fn kill(pid: i32, signal: i32) -> i32;
+        /// POSIX `sysconf`. Takes one integer and returns one; `-1` when the name is unknown.
+        #[cfg(target_os = "linux")]
+        fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
     }
 
     pub(super) fn presence(pid: u32) -> Presence {
@@ -272,8 +283,77 @@ mod platform {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn start_seconds(pid: u32) -> Option<i64> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let proc_stat = std::fs::read_to_string("/proc/stat").ok()?;
+        // SAFETY: one integer by value, one integer back; no pointers and no state.
+        let ticks_per_second = unsafe { sysconf(CLOCK_TICKS) };
+        super::procfs::start_seconds(&stat, &proc_stat, i64::from(ticks_per_second))
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub(super) fn start_seconds(_pid: u32) -> Option<i64> {
         None
+    }
+}
+
+// ----------------------------------------------------------------------------------- procfs
+
+/// A process's creation time, read out of the text Linux keeps under `/proc` (T-WP30).
+///
+/// Three readings, all of them documented kernel ABI (`proc(5)`):
+///
+/// ```text
+///   /proc/<pid>/stat   field 22, starttime   clock ticks between boot and the process
+///   /proc/stat         btime                 the boot, in Unix seconds
+///   sysconf            _SC_CLK_TCK           ticks per second, asked rather than assumed
+/// ```
+///
+/// Separated from the file reads so that the arithmetic and the parsing are tested on every
+/// platform CI builds, against the lines the kernel writes, rather than only on the one
+/// machine that has a `/proc`.
+#[cfg(any(target_os = "linux", test))]
+mod procfs {
+    /// Where `starttime` is among the fields after the process name: field 22, counted from
+    /// 1, with fields 1 and 2 (`pid` and `comm`) in front of the name's closing parenthesis.
+    const STARTTIME_AFTER_COMM: usize = 22 - 3;
+
+    /// When the process whose `/proc/<pid>/stat` is `stat` started, as Unix seconds, floored.
+    ///
+    /// `None` for anything that is not the shape the kernel writes, which the caller reads
+    /// as "cannot tell" — the one answer that never evicts a holder.
+    pub(super) fn start_seconds(stat: &str, proc_stat: &str, ticks_per_second: i64) -> Option<i64> {
+        if ticks_per_second <= 0 {
+            return None;
+        }
+        let since_boot = i64::try_from(start_ticks(stat)?).ok()?;
+        boot_seconds(proc_stat)?.checked_add(since_boot / ticks_per_second)
+    }
+
+    /// Field 22 of `/proc/<pid>/stat`.
+    ///
+    /// The second field is the program's own name in parentheses, and a program may call
+    /// itself anything — `Web Content`, `(sd-pam)`, a name with a `)` in it. So the fields
+    /// are counted from the **last** closing parenthesis, which is the kernel's, rather than
+    /// split on spaces from the start of the line.
+    fn start_ticks(stat: &str) -> Option<u64> {
+        let after_comm = &stat[stat.rfind(')')? + 1..];
+        after_comm
+            .split_whitespace()
+            .nth(STARTTIME_AFTER_COMM)?
+            .parse()
+            .ok()
+    }
+
+    /// The `btime` line of `/proc/stat`.
+    fn boot_seconds(proc_stat: &str) -> Option<i64> {
+        proc_stat
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .trim()
+            .parse()
+            .ok()
     }
 }
 
@@ -331,6 +411,81 @@ mod tests {
         );
     }
 
+    /// `/proc/stat` as a Fedora 44 laptop writes it, cut to the lines around the one read.
+    const PROC_STAT: &str = "cpu  1188 0 1073 157427 216 244 116 0 0 0\n\
+                             intr 108283 10 0 0\n\
+                             ctxt 213407\n\
+                             btime 1790449481\n\
+                             processes 12997\n";
+
+    /// `/proc/<pid>/stat` for a process named `comm`, started `ticks` clock ticks after boot.
+    ///
+    /// Fields 3 to 21 are what the kernel writes for a sleeping process; field 22 is the one
+    /// under test, and the fields after it are there so a parser that counted from the end
+    /// would be caught.
+    fn stat_line(comm: &str, ticks: u64) -> String {
+        format!(
+            "4011 ({comm}) S 1 4011 4011 0 -1 4194560 1044 0 0 0 2 1 0 0 20 0 3 0 {ticks} \
+             243793920 3412 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 5 0 0 0 0 0"
+        )
+    }
+
+    /// T-WP30: the creation time is the boot time plus field 22 over the clock rate.
+    ///
+    /// The reboot the laptop was measured on: booted at `btime 1790449481` (19:04:41Z), and
+    /// pid 4011 — the engine's before the reboot — handed to `gdbus` 24 seconds later.
+    #[test]
+    fn a_creation_time_is_the_boot_time_plus_the_ticks_since() {
+        assert_eq!(
+            procfs::start_seconds(&stat_line("gdbus", 2_400), PROC_STAT, 100),
+            Some(1_790_449_481 + 24)
+        );
+        assert_eq!(
+            procfs::start_seconds(&stat_line("gdbus", 2_499), PROC_STAT, 100),
+            Some(1_790_449_481 + 24),
+            "a fraction of a second is floored, like every other instant here"
+        );
+        assert_eq!(
+            procfs::start_seconds(&stat_line("gdbus", 2_400), PROC_STAT, 250),
+            Some(1_790_449_481 + 9),
+            "the clock rate is asked for, not assumed to be 100"
+        );
+    }
+
+    /// `comm` is whatever the program called itself, spaces and parentheses included, so the
+    /// fields are counted from the **last** `)` rather than split from the start.
+    #[test]
+    fn a_process_name_with_spaces_and_parentheses_does_not_shift_the_fields() {
+        for comm in ["Web Content", "a) S 1 2 3", "(sd-pam)", "))"] {
+            assert_eq!(
+                procfs::start_seconds(&stat_line(comm, 700), PROC_STAT, 100),
+                Some(1_790_449_481 + 7),
+                "{comm:?}"
+            );
+        }
+    }
+
+    /// Anything that is not the shape the kernel writes is "cannot tell", never a number.
+    #[test]
+    fn a_stat_that_is_not_one_answers_nothing() {
+        let good = stat_line("nazar-tray", 700);
+        for (stat, proc_stat, rate) in [
+            ("", PROC_STAT, 100),
+            ("4011 (nazar-tray S 1 2", PROC_STAT, 100),
+            ("4011 (nazar-tray) S 1 2 3", PROC_STAT, 100),
+            (good.as_str(), "cpu 1 2 3\nctxt 4\n", 100),
+            (good.as_str(), "btime soon\n", 100),
+            (good.as_str(), PROC_STAT, 0),
+            (good.as_str(), PROC_STAT, -1),
+        ] {
+            assert_eq!(
+                procfs::start_seconds(stat, proc_stat, rate),
+                None,
+                "{stat:?} / {proc_stat:?} / {rate}"
+            );
+        }
+    }
+
     #[test]
     fn the_blind_probe_never_claims_to_know() {
         let blind = BlindProbe;
@@ -347,13 +502,13 @@ mod tests {
         assert_eq!(system.start_seconds(mine), start_seconds(mine));
     }
 
-    /// Windows can name a process's creation time; the POSIX probe cannot, and says `None`
-    /// rather than something it worked out.
+    /// Windows and Linux can name a process's creation time; the other POSIX platforms
+    /// cannot, and say `None` rather than something they worked out.
     #[test]
     fn this_process_started_before_now_and_not_in_the_last_century() {
         let started = start_seconds(std::process::id());
-        if cfg!(windows) {
-            let started = started.expect("Windows can read a creation time");
+        if cfg!(any(windows, target_os = "linux")) {
+            let started = started.expect("Windows and Linux can read a creation time");
             let now = crate::timefmt::unix_seconds_from_rfc3339(&crate::timefmt::now_rfc3339())
                 .expect("the clock to name an instant");
             assert!(
@@ -367,5 +522,30 @@ mod tests {
         } else {
             assert_eq!(started, None, "there is no portable POSIX creation time");
         }
+    }
+
+    /// A process this test started a moment ago is younger than this one, and not by a day.
+    ///
+    /// The same measurement from the other side: a child is the closest thing to "a pid
+    /// that somebody else now owns", and its creation time has to read as after ours.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_child_started_now_reads_as_younger_than_its_parent() {
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "ping -n 3 127.0.0.1 >NUL"])
+                .spawn()
+        } else {
+            Command::new("sleep").arg("2").spawn()
+        }
+        .expect("a child to spawn");
+        let parent = start_seconds(std::process::id()).expect("our own creation time");
+        let born = start_seconds(child.id()).expect("the child's creation time");
+        let _ = child.wait();
+        assert!(
+            born >= parent,
+            "a child cannot predate its parent: {born} < {parent}"
+        );
+        assert!(born - parent < 86_400, "{born} vs {parent}");
     }
 }

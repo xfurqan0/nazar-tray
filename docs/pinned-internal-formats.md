@@ -579,9 +579,24 @@ way would put two writers on one `limits.json`, which is what this file is for.
 
 **The pid-reuse guard.** A pid the operating system *does* own is not proof it is the same
 process, since ids are reused. Where the platform can name a process's creation time
-(`GetProcessTimes` on Windows), a holder whose process started **after** its own `startedAt`
-is a reused id and the record is stale. Where it cannot — every POSIX platform here — the
-heartbeat decides.
+(`GetProcessTimes` on Windows, `/proc` on Linux), a holder whose process started **after**
+its own `startedAt` is a reused id and the record is stale. Where it cannot — macOS and the
+BSDs — the heartbeat decides.
+
+On Linux the creation time is three readings of documented kernel ABI (`proc(5)`), with no
+new dependency (T-WP30):
+
+| Reading | Where | What |
+|---|---|---|
+| `starttime` | `/proc/<pid>/stat`, field 22 | clock ticks between boot and the process. Counted from the **last** `)`, because field 2 is the program's own name in parentheses and may contain spaces and parentheses of its own |
+| `btime` | `/proc/stat` | the boot, in Unix seconds |
+| `_SC_CLK_TCK` | `sysconf` | ticks per second, asked rather than assumed to be 100 |
+
+Creation time = `btime + starttime / _SC_CLK_TCK`, floored. Anything that does not parse is
+"cannot tell", which never evicts a holder. Why it matters: on 2026-09-26 a laptop rebooted
+at 19:04:41Z, the engine's pid 4011 went to `gdbus` 24 seconds later, the autostart entry was
+told "already running (pid 4011)" and exited, and nothing ran until the last heartbeat —
+written seconds before the shutdown — was five minutes old. Every reboot does this.
 
 **An unreadable lock file is respected until it ages out.** Between `create_new` and the
 record being written there is a moment when the file is empty; a competitor that read it then

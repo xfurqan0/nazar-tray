@@ -177,7 +177,7 @@ is *live* threads, and a live thread's rollout is by definition far newer than t
 threshold, so it stays plain. The thread-writer locks it reads were unchanged under 0.154.0.
 That is a note for Nazar rather than work here.
 
-### The 0.3.0 fixes (T-WP27 – T-WP29, T-WP-L13)
+### The 0.3.0 fixes (T-WP27 – T-WP30, T-WP-L13)
 
 From live use rather than an audit. On 2026-09-23 the maintainer's laptop showed a GNOME
 panel reading 67 % while the status line said 5 %: the engine had been dead for six days,
@@ -191,6 +191,7 @@ these are the four things that session found on this side.
 | T-WP-L13 ✅ | **The startup entry starts what wrote it**: `Options::startup_arguments` puts `--headless` beside `--hidden` when the run flipping the switch is the engine somebody asked for, and a test runs the real binary under `dbus-run-session` to show that the plain entry falls into the engine on a bus with no tray host | ~~Turning the switch on from nazar-gnome's gear writes an entry that starts the engine and no icon; the plain entry still becomes a tray wherever a host exists; the default stays off, as on Windows~~ — **landed 2026-09-26** |
 | T-WP28 ✅ | **`--help`**: `-h` / `--help` anywhere on the line prints every flag and exits before the lock; a test reads the parser's own string literals so a flag without a help line fails the build; every printing mode attaches to the parent console on Windows | ~~`nazar-tray --help` prints the usage on both platforms, in a release build too, and never starts a tray or reaches a running one~~ — **landed 2026-09-26** |
 | T-WP29 ✅ | **A floor that does not take a point binary arithmetic removed**: `nazar_core::display_percent` floors through `PERCENT_NOISE` (1e-9), and the label, the menu row, the panel and the Waybar module all go through it; `limits.json` keeps what was reported | ~~A 29 %, 57 % or 58 % window reported as a fraction times a hundred reads as itself on every face; 99.6 % is still 99; `docs/limits-contract.md` is untouched~~ — **landed 2026-09-26** |
+| T-WP30 ✅ | **A reboot does not leave the engine waiting on a stranger's pid**: `process::start_seconds` reads `/proc/<pid>/stat` field 22, `/proc/stat` `btime` and `sysconf(_SC_CLK_TCK)` on Linux, so the pid-reuse guard T-WP24 gave Windows fires there too | ~~After a reboot the autostart entry takes a lock whose pid now belongs to another process at once, instead of exiting with "already running" and leaving five minutes of no engine~~ — **landed 2026-09-27** |
 
 ### The Linux packages (T-WP-L0 – T-WP-L12)
 
@@ -2158,3 +2159,23 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   `lib/contract.js` and wants the same tolerance in its own repository. And
   `nazar-statusline`'s own fallback line rounds to the **nearest** (`percent.round()`), which
   has no noise problem and does break B15 at 99.6 %; it is written down here, not changed.
+
+- 2026-09-27 02:50 — **T-WP30 landed: a reboot no longer leaves the engine waiting on a
+  stranger's pid.** Found on the laptop the evening 0.3.0 was prepared: rebooted at 19:04:41Z,
+  the engine's pid 4011 handed to `gdbus` 24 seconds later, and the autostart entry — the one
+  T-WP-L13 had just made correct — was told `nazar-tray is already running (pid 4011)` and
+  exited. Six clicks on nazar-gnome's gear wrote six markers nobody read; the engine came up
+  at 19:09:23Z, five minutes and nine seconds after the last heartbeat (19:04:14Z), which had
+  been written seconds before the shutdown. **T-WP24's pid-reuse guard was Windows-only**: the POSIX probe
+  answered `start_seconds` with `None`, and on Linux "cannot tell" handed the decision back to
+  the heartbeat. Every reboot hands low pids out again, so every reboot hit it.
+  Linux now reads three things the kernel documents in `proc(5)` — field 22 of
+  `/proc/<pid>/stat`, `btime` from `/proc/stat`, and `_SC_CLK_TCK` from `sysconf` — with no new
+  dependency: one more hand-declared libc function beside `kill`. The parsing lives in a
+  `procfs` module that every platform's test build compiles, so the arithmetic and the one
+  trap in it (field 2 is the program's own name, spaces and parentheses included, so fields
+  are counted from the last `)`) are tested on the Windows runner too. Red first: `left:
+  None, right: Some(1790449505)`, the laptop's own boot plus 24 seconds. The lock test that
+  proves a live-but-younger pid is reclaimed, and the one that reads this process's own
+  creation time, now run on Linux; a new one checks that a child reads as younger than its
+  parent. macOS and the BSDs still answer `None`.
