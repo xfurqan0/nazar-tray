@@ -270,11 +270,13 @@ In the panel — the **gear** in the top-right corner of the header — and from
 | **Files** | Where `limits.json`, the status-line captures, your settings and the notification history live. |
 | **About** | The version, and a button that brings the first-run tray-icon tip back. |
 
-Everything is written to `%APPDATA%\nazar\config.json`, atomically, and **a form that does
-not make sense is refused as a whole** — thresholds that do not climb get an error and your
-old settings, not an error and a half-changed tray. Keys a newer version of nazar-tray wrote
-are preserved when an older one saves. There is no separate switch for the startup entry in
-that file: it lives in the registry, which is the thing that actually decides.
+Everything is written to `config.json` — in `%APPDATA%\nazar` on Windows, `~/.config/nazar`
+on Linux — atomically, and **a form that does not make sense is refused as a whole** —
+thresholds that do not climb get an error and your old settings, not an error and a
+half-changed tray. Keys a newer version of nazar-tray wrote are preserved when an older one
+saves. There is no separate switch for the startup entry in that file: it lives in the
+registry on Windows and in `~/.config/autostart` on Linux, which is the thing that actually
+decides.
 
 `nazar-tray --autostart on|off|status` does the startup entry from a terminal, for when the
 panel will not open.
@@ -333,8 +335,10 @@ a reassuring zero.
 **By hand, if the binary is gone.** Open `~/.nazar/statusline/chain.json`, copy the `previous`
 object over `statusLine` in `~/.claude/settings.json`, or delete the `statusLine` key if
 `previous` is absent. The backup beside the settings file
-(`settings.json.nazar-bak-<stamp>`) is the same thing in whole-file form. Uninstalling
-nazar-tray does this for you, before it deletes the wrapper.
+(`settings.json.nazar-bak-<stamp>`) is the same thing in whole-file form. The Windows
+uninstaller does this for you, before it deletes the wrapper. **The Linux packages do not
+yet**: run `nazar-statusline uninstall` before `apt remove` or `dnf remove`, or this
+paragraph is the way back.
 
 The whole contract — what a capture holds, where it lives, why it is keyed by session id, and
 what is deliberately *not* in `limits.json` — is in
