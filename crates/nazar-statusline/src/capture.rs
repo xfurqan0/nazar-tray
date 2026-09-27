@@ -277,8 +277,13 @@ pub fn render_default_line(document: &Value) -> String {
             continue;
         };
         // Down, through the tolerance every face shares: 99.6 % is not 100 % (B15), and a
-        // 57 % window that arrives as 56.99999999999999 is not 56 (T-WP29).
-        parts.push(format!("{label} {}%", nazar_core::display_percent(percent)));
+        // 57 % window that arrives as 56.99999999999999 is not 56 (T-WP29). Printed as an
+        // integer: formatting the `f64` itself pulls float printing into a binary that runs
+        // on every status-line refresh, 15 KB for the same two digits.
+        parts.push(format!(
+            "{label} {}%",
+            nazar_core::display_percent(percent) as i64
+        ));
     }
 
     parts.join(" · ")

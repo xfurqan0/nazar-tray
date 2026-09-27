@@ -2180,7 +2180,7 @@ as its own fixture, writing nothing. The engine mode T-WP-L2 built is what it st
   creation time, now run on Linux; a new one checks that a child reads as younger than its
   parent. macOS and the BSDs still answer `None`.
 
-- 2026-09-27 03:05 — **Two smaller things for 0.3.0, and its date.** `nazar-statusline`'s own
+- 2026-09-27 02:55 — **Two smaller things for 0.3.0, and its date.** `nazar-statusline`'s own
   line — the one it prints for a user who had no status line — rounded to the nearest, so
   99.6 % was `5h 100%` in the prompt beside a tray saying 99 (finding B15); it goes through
   `display_percent` now, the same tolerant floor as every face. And `cargo deny check` runs
