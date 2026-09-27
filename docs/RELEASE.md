@@ -91,16 +91,16 @@ Expected, on `x86_64-pc-windows-msvc`:
 |---|---|---|---|
 | `nazar-tray.exe` | 4.74 MB | 5.03 MB | 5.15 MB |
 | `nazar-statusline.exe` | 340 KB | 340 KB | 340.5 KB |
-| `nazar-tray_<version>_x64-setup.exe` | 1.95 MB | 2.07 MB | 2.12 MB |
+| `nazar-tray_<version>_x64-setup.exe` | 1.95 MB | 2.07 MB | 2.13 MB |
 
 The usage history cost 290 KB of tray binary and 120 KB of installer: a scanner, a
 deduplicator, a store and a view, all of it compiled in rather than fetched. The
 wrapper did not move, because none of it is in the wrapper. 0.3.0 is 120 KB more
-tray binary and 50 KB more installer; the two packages it added to the Windows
+tray binary and 60 KB more installer; the two packages it added to the Windows
 dependency graph are T-WP26's `ruzstd` and `twox-hash`, and the Linux half of the
 release is compiled out of the Windows build.
 
-Measured 2026-09-09, 2026-09-13 and 2026-09-26 with the release profile in `Cargo.toml` (`opt-level = "s"`,
+Measured 2026-09-09, 2026-09-13 and 2026-09-27 with the release profile in `Cargo.toml` (`opt-level = "s"`,
 `lto`, one codegen unit, stripped, `panic = "abort"`) and the path remapping this
 script passes. Cargo's stock release settings gave 11.95 MB, 497 KB and 3.06 MB
 for the same source on 2026-09-07, which is what those four lines are worth.
